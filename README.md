@@ -138,3 +138,6 @@ pixi run build-doc
     year={2025}
 }
 ```
+
+## AI Usage
+Claude was used to produce full documentation and some test cases. All code was reviewed by a human (Tom)
