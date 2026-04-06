@@ -20,7 +20,7 @@ jobs:
       with:
         fetch-depth: 0
 
-    - uses: prefix-dev/setup-pixi@v0.9.4
+    - uses: prefix-dev/setup-pixi@v0.9.5
       with:
         pixi-version: v0.41.4
         environments: doc
@@ -48,4 +48,4 @@ jobs:
     steps:
     - name: Deploy to GitHub Pages
       id: deployment
-      uses: actions/deploy-pages@v4
+      uses: actions/deploy-pages@v5
