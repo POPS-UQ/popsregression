@@ -9,6 +9,8 @@ popsregression
 package providing `POPSRegression`, a Bayesian regression method for low-noise
 data that accounts for model misspecification uncertainty.
 
+**paper** *Parameter uncertainties for imperfect surrogate models in the low-noise regime* [Machine Learning: Science and Technology 2025](http://iopscience.iop.org/article/10.1088/2632-2153/ad9fce)
+
 **Try it out!** [online demo from Kermode group](https://kermodegroup.github.io/demos/regression-demo.html) comparing multiple regression schemes.
 
 ## Misspecification-aware Bayesian regression 
