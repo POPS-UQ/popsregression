@@ -1,15 +1,17 @@
 popsregression
 =================================================
 
-![tests](https://github.com/POPS-UQ/popsregression/actions/workflows/python-app.yml/badge.svg)
+[![tests](https://github.com/POPS-UQ/popsregression/actions/workflows/python-app.yml/badge.svg)](https://github.com/POPS-UQ/popsregression/actions/workflows/python-app.yml)
 [![codecov](https://codecov.io/gh/POPS-UQ/popsregression/graph/badge.svg?token=L0XPWwoPLw)](https://codecov.io/gh/POPS-UQ/popsregression)
-![doc](https://github.com/POPS-UQ/popsregression/actions/workflows/deploy-gh-pages.yml/badge.svg)
+[![docs](https://img.shields.io/badge/docs-POPS--UQ.github.io%2Fpopsregression-blue)](https://POPS-UQ.github.io/popsregression)
 
 **popsregression** is a [scikit-learn](https://scikit-learn.org) compatible
 package providing `POPSRegression`, a Bayesian regression method for low-noise
 data that accounts for model misspecification uncertainty.
 
 **paper** *Parameter uncertainties for imperfect surrogate models in the low-noise regime* [Machine Learning: Science and Technology 2025](http://iopscience.iop.org/article/10.1088/2632-2153/ad9fce)
+
+**Documentation** 📖 [POPS-UQ.github.io/popsregression](https://POPS-UQ.github.io/popsregression)
 
 **Try it out!** [online demo from Kermode group](https://kermodegroup.github.io/demos/regression-demo.html) comparing multiple regression schemes.
 
