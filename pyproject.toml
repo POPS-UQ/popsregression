@@ -76,18 +76,16 @@ pytest-cov = "*"
 test = { cmd = "pytest -vsl --cov=popsregression --cov-report=xml popsregression" }
 
 [tool.pixi.feature.doc.dependencies]
-matplotlib = "*"
-numpydoc = "*"
-pydata-sphinx-theme = "*"
+black = "*"  # used by mkdocstrings to format rendered signatures
+mkdocs-material = "*"
+mkdocstrings = "*"
+mkdocstrings-python = "*"
 setuptools-scm = ">=8"  # needed for the versioning
-sphinx = "*"
-sphinx-design = "*"
-sphinx-gallery = "*"
-sphinx-prompt = "*"
 
 [tool.pixi.feature.doc.tasks]
-build-doc = { cmd = "make html", cwd = "doc" }
-clean-doc = { cmd = "rm -rf _build", cwd = "doc" }
+build-doc = { cmd = "mkdocs build" }
+serve-doc = { cmd = "mkdocs serve" }
+clean-doc = { cmd = "rm -rf site" }
 
 [tool.pixi.environments]
 doc = ["doc"]
@@ -116,8 +114,7 @@ exclude=[
     ".git",
     "__pycache__",
     "dist",
-    "doc/_build",
-    "doc/auto_examples",
+    "site",
     "build",
     "popsregression/_version.py",
 ]
@@ -138,8 +135,6 @@ ignore=[
 # It's fine not to put the import at the top of the file in the examples
 # folder.
 "examples/*"=["E402"]
-"doc/conf.py"=["E402"]
-"doc/_templates/numpydoc_docstring.py"=["F821", "W292"]
 
 [tool.pytest.ini_options]
 addopts = "--doctest-modules --color=yes"

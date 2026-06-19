@@ -6,12 +6,6 @@ __pycache__/
 # C extensions
 *.so
 
-# scikit-learn specific
-doc/_build/
-doc/auto_examples/
-doc/modules/generated/
-doc/datasets/generated/
-
 # Distribution / packaging
 
 .Python
@@ -59,10 +53,8 @@ coverage.xml
 # Django stuff:
 *.log
 
-# Sphinx documentation
-doc/_build/
-doc/generated/
-doc/sg_execution_times.rst
+# MkDocs documentation
+site/
 
 # PyBuilder
 target/
