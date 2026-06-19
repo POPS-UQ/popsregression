@@ -1,9 +1,9 @@
 site_name: popsregression
 site_description: >-
   Misspecification-aware Bayesian regression for low-noise data (POPS algorithm).
-site_url: https://tomswinburne.github.io/popsregression
-repo_url: https://github.com/tomswinburne/popsregression
-repo_name: tomswinburne/popsregression
+site_url: https://POPS-UQ.github.io/popsregression
+repo_url: https://github.com/POPS-UQ/popsregression
+repo_name: POPS-UQ/popsregression
 edit_uri: edit/main/docs/
 
 theme:

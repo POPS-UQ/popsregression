@@ -14,7 +14,7 @@ vanishes with more data. POPS regression corrects this by estimating
 wider, more honest error bars that properly cover the true function.
 
 The full script is available in the repository under
-[`examples/plot_pops_regression.py`](https://github.com/tomswinburne/popsregression/blob/main/examples/plot_pops_regression.py).
+[`examples/plot_pops_regression.py`](https://github.com/POPS-UQ/popsregression/blob/main/examples/plot_pops_regression.py).
 
 ## A misspecified, low-noise problem
 

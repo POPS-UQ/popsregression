@@ -38,4 +38,4 @@ jobs:
         continue-on-error: true
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
-          slug: tomswinburne/popsregression
+          slug: POPS-UQ/popsregression
