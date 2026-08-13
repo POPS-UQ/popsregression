@@ -19,7 +19,7 @@ from scipy.linalg import eigh
 from scipy.optimize import minimize
 from sklearn.base import BaseEstimator, RegressorMixin, _fit_context
 from sklearn.utils import check_random_state
-from sklearn.utils._param_validation import Interval, StrOptions
+from sklearn.utils._param_validation import Interval, Options, StrOptions
 from sklearn.utils.validation import (
     _check_sample_weight,
     check_is_fitted,
@@ -249,6 +249,9 @@ class POPSRegressionEllipse(RegressorMixin, BaseEstimator):
     hyperprior_scale : float, default=1.0
         Variance ``tau2`` of the isotropic Gaussian hyperprior
         ``N(psi_0, tau2 * I)`` centered on the POPS warm start.
+        ``np.inf`` is allowed and recovers the ``pac_bayes=False``
+        optimum exactly (the prior ridge vanishes); in that improper
+        limit ``kl_`` and ``bound_`` are infinite.
 
     update_hyperprior : bool, default=False
         If True (and ``pac_bayes=True``), update ``tau2`` by a
@@ -393,7 +396,10 @@ class POPSRegressionEllipse(RegressorMixin, BaseEstimator):
         "weights": ["array-like", None],
         "random_state": ["random_state"],
         "pac_bayes": ["boolean"],
-        "hyperprior_scale": [Interval(Real, 0, None, closed="neither")],
+        "hyperprior_scale": [
+            Interval(Real, 0, None, closed="neither"),
+            Options(Real, {np.inf}),
+        ],
         "update_hyperprior": ["boolean"],
         "hh_lambda_1": [Interval(Real, 0, None, closed="left")],
         "hh_lambda_2": [Interval(Real, 0, None, closed="left")],
@@ -609,7 +615,7 @@ class POPSRegressionEllipse(RegressorMixin, BaseEstimator):
         self._baseline_factor = None
         if self.baseline == "pops":
             pops = POPSRegression(fit_intercept=False)
-            pops.fit(design, yc)
+            pops.fit(design, yc, sample_weight=sample_weight)
             support = pops._hypercube_support
             low, high = pops._hypercube_bounds
             mid = 0.5 * (low + high)
