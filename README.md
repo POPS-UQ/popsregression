@@ -92,6 +92,38 @@ All `BayesianRidge` parameters (`max_iter`, `tol`, `alpha_1`, `alpha_2`,
 | `posterior_samples_` | Samples from the POPS posterior |
 | `alpha_` | Estimated noise precision (not used for prediction) |
 
+## Ellipsoid posteriors: `POPSRegressionEllipse`
+
+`POPSRegressionEllipse` fits a **uniform-ellipsoid** parameter posterior by
+directly optimizing the empirical generalization error of the exact
+projected-ball predictive pushforward. The POPS covering condition enters as a
+log-barrier, so the fit is an interior-point method for POPS coverage; an
+optional hierarchical PAC-Bayes layer (`pac_bayes=True`) provides closed-form
+KL and bound components via a Laplace hyperposterior — no sampling anywhere.
+
+```python
+from popsregression import POPSRegressionEllipse
+
+model = POPSRegressionEllipse()  # baseline='pops': POPS warm start + baseline
+model.fit(X_train, y_train)
+
+# std = pushforward std sqrt(v/(P+2)); bounds = support mean +/- sqrt(v)
+y_pred, y_std, y_max, y_min = model.predict(
+    X_test, return_std=True, return_bounds=True
+)
+```
+
+| Parameter | Default | Description |
+|---|---|---|
+| `rank` | `32` | Rank of the low-rank ellipsoid update `B = B0 + U U^T` |
+| `delta` | `1e-3` | Aleatoric width floor added (squared) to predictive widths |
+| `baseline` | `'pops'` | Fixed baseline `B0`: `'pops'`, `'ridge'`, or `'zero'` |
+| `rho_schedule` | `(1e-1, ..., 1e-4)` | Continuation schedule of the log-barrier |
+| `pac_bayes` | `False` | Closed-form PAC-Bayes layer (`kl_`, `bound_`, ...) |
+
+See the [documentation](https://POPS-UQ.github.io/popsregression) and
+[examples/EllipseExample.ipynb](examples/EllipseExample.ipynb) for details.
+
 ## Pipeline compatibility
 
 `POPSRegression` is fully compatible with scikit-learn pipelines and
