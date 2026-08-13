@@ -214,32 +214,53 @@ def test_compute_score():
     assert len(model.scores_) > 0
 
 
-# --- Minimal error ---
+# --- Minimum relative error ---
 
 
-@pytest.mark.parametrize("minimal_error", [0.0, 1e-3, 1.0])
-def test_minimal_error(minimal_error):
+@pytest.mark.parametrize("minimum_relative_error", [0.0, 0.01, 0.5])
+def test_minimum_relative_error(minimum_relative_error):
     X, y, _ = _make_low_noise_data()
-    model = POPSRegression(minimal_error=minimal_error).fit(X, y)
+    model = POPSRegression(
+        minimum_relative_error=minimum_relative_error
+    ).fit(X, y)
     y_pred = model.predict(X)
     assert y_pred.shape == (X.shape[0],)
 
 
-def test_minimal_error_filters_points():
+def test_minimum_relative_error_filters_points():
     """Points with residuals below the threshold are excluded."""
     X, y, _ = _make_low_noise_data()
 
-    all_points = POPSRegression(minimal_error=0.0).fit(X, y)
+    all_points = POPSRegression(minimum_relative_error=0.0).fit(X, y)
     assert all_points._filtering_mask.all()
 
-    filtered = POPSRegression(minimal_error=1.0).fit(X, y)
+    filtered = POPSRegression(minimum_relative_error=0.5).fit(X, y)
     assert filtered._filtering_mask.sum() < X.shape[0]
 
 
-def test_minimal_error_falls_back_when_all_filtered():
+def test_minimum_relative_error_is_relative_to_rmse():
+    """The threshold is minimum_relative_error * RMSE of the mean fit."""
+    X, y, _ = _make_low_noise_data()
+    model = POPSRegression(minimum_relative_error=0.5).fit(X, y)
+
+    errors = y - X @ model.coef_
+    rmse = np.sqrt(np.mean(errors**2))
+    expected = np.abs(errors) >= 0.5 * rmse
+    assert np.array_equal(model._filtering_mask, expected)
+
+
+def test_minimum_relative_error_is_scale_invariant():
+    """Rescaling y leaves the selected points unchanged."""
+    X, y, _ = _make_low_noise_data()
+    model = POPSRegression(minimum_relative_error=0.5).fit(X, y)
+    scaled = POPSRegression(minimum_relative_error=0.5).fit(X, 1000.0 * y)
+    assert np.array_equal(model._filtering_mask, scaled._filtering_mask)
+
+
+def test_minimum_relative_error_falls_back_when_all_filtered():
     """If no point passes the threshold, all points are used."""
     X, y, _ = _make_low_noise_data()
-    model = POPSRegression(minimal_error=1e12).fit(X, y)
+    model = POPSRegression(minimum_relative_error=1e12).fit(X, y)
     assert model._filtering_mask.all()
 
 
@@ -284,7 +305,7 @@ def test_clone():
     model = POPSRegression(
         posterior="ensemble",
         resample_density=2.0,
-        minimal_error=1e-2,
+        minimum_relative_error=0.05,
     )
     cloned = clone(model)
     assert cloned.get_params() == model.get_params()
@@ -295,7 +316,7 @@ def test_get_set_params():
     params = model.get_params()
     assert "posterior" in params
     assert "resample_density" in params
-    assert "minimal_error" in params
+    assert "minimum_relative_error" in params
 
     model.set_params(posterior="ensemble", resample_density=5.0)
     assert model.posterior == "ensemble"

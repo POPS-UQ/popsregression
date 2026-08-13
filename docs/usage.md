@@ -1,9 +1,9 @@
 # Usage
 
 How to fit, predict and configure
-[`POPSRegression`][popsregression.POPSRegression]. For exact signatures see the
-[API reference](api.md); for the method behind it see the
-[POPS site](https://pops-uq.github.io/method/concepts/).
+[`POPSRegression`][popsregression.POPSRegression]. Exact signatures are in the
+[API reference](api.md); the method itself is documented at
+[pops-uq.github.io](https://pops-uq.github.io).
 
 ## Fitting
 
@@ -96,28 +96,38 @@ POPS-specific parameters are:
 | Parameter | Default | Notes |
 |---|---|---|
 | `posterior` | `'hypercube'` | `'hypercube'` fits a PCA-aligned box to the pointwise corrections and resamples it; `'ensemble'` uses the raw corrections as samples |
-| `minimal_error` | `1e-3` | Residual threshold for selecting training points (see below) |
+| `minimum_relative_error` | `0.01` | Relative residual threshold for selecting training points (see below) |
 | `resampling_method` | `'uniform'` | `'uniform'`, `'sobol'`, `'latin'` or `'halton'`; hypercube posterior only |
 | `resample_density` | `1.0` | Posterior samples per training point; the count is floored at 100 |
 | `percentile_clipping` | `0.0` | Percentile trimmed from each end of the hypercube bounds, in `[0, 50]` |
 | `mode_threshold` | `1e-8` | Relative eigenvalue cutoff setting the effective dimension of the hypercube |
 
-### `minimal_error`
+### `minimum_relative_error`
 
-Only training points whose absolute residual `|y - X @ coef_|` is at least
-`minimal_error` contribute to the POPS posterior. Points the model already
-reproduces carry no misspecification information, so discarding them speeds up
-the posterior construction without widening or narrowing it meaningfully.
+A training point contributes to the POPS posterior only if its residual is
+large relative to the typical residual of the mean fit:
 
-The threshold is an **absolute value in the units of `y`**, so it must be
-scaled to your target:
+```text
+|y - X @ coef_|  >=  minimum_relative_error * rmse
+```
+
+where `rmse` is the root-mean-square error of the fitted mean over the
+training set. Points the model already reproduces carry no misspecification
+information, so discarding them speeds up the posterior construction without
+widening or narrowing it meaningfully.
+
+Because the threshold is **relative**, it is invariant to the scale of `y` and
+needs no tuning when you change units or targets:
 
 ```python
-# Keep every training point
-model = POPSRegression(minimal_error=0.0)
+# Discard points fit a hundred times better than the typical point (default)
+model = POPSRegression(minimum_relative_error=0.01)
 
-# Energies in eV: ignore points already fit to better than 1 meV
-model = POPSRegression(minimal_error=1e-3)
+# Keep every training point
+model = POPSRegression(minimum_relative_error=0.0)
+
+# Aggressive: keep only points fit worse than half the RMSE
+model = POPSRegression(minimum_relative_error=0.5)
 ```
 
 If no point clears the threshold, all points are used, so an over-large value
@@ -127,8 +137,9 @@ degrades to the unfiltered fit rather than failing.
     Earlier releases selected training points by leverage score percentile.
     That parameter is deprecated since 0.5, is ignored, raises a
     `FutureWarning`, and will be removed in 0.7. Replace
-    `leverage_percentile=0.0` (use all points) with `minimal_error=0.0`, and
-    tune `minimal_error` to your target scale otherwise.
+    `leverage_percentile=0.0` (use all points) with
+    `minimum_relative_error=0.0`; otherwise the default
+    `minimum_relative_error=0.01` is a reasonable starting point.
 
 ### Sampling the hypercube posterior
 
@@ -199,7 +210,7 @@ when you need the uncertainty outputs.
 
 | Since | Removed in | Parameter | Replacement |
 |---|---|---|---|
-| 0.5 | 0.7 | `leverage_percentile` | `minimal_error` |
+| 0.5 | 0.7 | `leverage_percentile` | `minimum_relative_error` |
 
 Importing the top-level `POPSRegression` module (`import POPSRegression`) is
 also deprecated; use `from popsregression import POPSRegression`.

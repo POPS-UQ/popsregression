@@ -77,7 +77,7 @@ y_pred, y_std, y_max, y_min, y_epistemic_std = model.predict(
 | `posterior` | `'hypercube'` | Posterior form: `'hypercube'` (PCA-aligned box) or `'ensemble'` (raw corrections) |
 | `resampling_method` | `'uniform'` | Sampling method: `'uniform'`, `'sobol'`, `'latin'`, `'halton'` |
 | `resample_density` | `1.0` | Number of posterior samples per training point |
-| `minimal_error` | `1e-3` | Residual threshold: only points with \|y - Xw\| >= this contribute to the POPS posterior |
+| `minimum_relative_error` | `0.01` | Relative residual threshold: only points with \|y - Xw\| >= this times the fit RMSE contribute to the POPS posterior |
 | `mode_threshold` | `1e-8` | Eigenvalue threshold for hypercube dimensionality |
 | `percentile_clipping` | `0.0` | Percentile to clip from hypercube bounds (0–50) |
 
@@ -86,9 +86,10 @@ All `BayesianRidge` parameters (`max_iter`, `tol`, `alpha_1`, `alpha_2`,
 
 > [!WARNING]
 > `leverage_percentile` is deprecated since 0.5 and will be removed in 0.7.
-> Training points are now selected by residual magnitude: use `minimal_error`
-> instead (`leverage_percentile=0.0` becomes `minimal_error=0.0`). Passing it
-> raises a `FutureWarning` and has no effect.
+> Training points are now selected by relative residual magnitude: use
+> `minimum_relative_error` instead (`leverage_percentile=0.0` becomes
+> `minimum_relative_error=0.0`). Passing it raises a `FutureWarning` and has
+> no effect.
 
 ## Key attributes (after fitting)
 
