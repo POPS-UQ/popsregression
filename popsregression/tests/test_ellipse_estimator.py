@@ -433,6 +433,46 @@ def test_optimize_center_false_pac_bayes():
     assert 0.0 < model.gamma_ < n_dim * model.rank_
 
 
+def test_low_n_conservatism_recipe():
+    """Frozen center + PAC + evidence is the conservative low-N config.
+
+    At N/P ~ 2 the bare ellipse is the minimum covering support and
+    deliberately tight; freezing the center and adding the hyperposterior
+    spread restores conservatism (the PAC layer's main motivation),
+    covering the dense truth far better than the bare fit at a fraction
+    of the hypercube width.
+    """
+    X_train, y_train, X_dense, y_dense = _make_misspecified_data(10)
+    x_dense = X_dense[:, 1]
+    interp = np.abs(x_dense) <= 10.0
+
+    bare = POPSRegressionEllipse(random_state=0).fit(X_train, y_train)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", UserWarning)
+        recipe = POPSRegressionEllipse(
+            random_state=0,
+            optimize_center=False,
+            pac_bayes=True,
+            update_hyperprior=True,
+        ).fit(X_train, y_train)
+    hypercube = POPSRegression(leverage_percentile=0.0).fit(X_train, y_train)
+
+    def coverage_and_width(model):
+        _, y_max, y_min = model.predict(X_dense, return_bounds=True)
+        covered = np.mean(((y_dense >= y_min) & (y_dense <= y_max))[interp])
+        return covered, np.mean(0.5 * (y_max - y_min)[interp])
+
+    cov_bare, hw_bare = coverage_and_width(bare)
+    cov_recipe, hw_recipe = coverage_and_width(recipe)
+    cov_box, hw_box = coverage_and_width(hypercube)
+
+    assert cov_recipe >= 0.95
+    assert cov_recipe >= cov_box
+    assert cov_recipe > cov_bare + 0.1
+    assert hw_recipe > 1.2 * hw_bare  # conservatism costs width...
+    assert hw_recipe < hw_box  # ...but far less than the box support
+
+
 # --- Cloning ---
 
 

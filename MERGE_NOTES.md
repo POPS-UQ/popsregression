@@ -139,11 +139,15 @@ properties `ellipsoid_B_` (original/affine coordinates) and `baseline_B0_`
   optimization by less than `tol`.
 - At very small N the bare ellipse is deliberately tighter than the POPS
   hypercube min/max bounds (minimum covering support vs un-optimized box
-  support); the PAC-Bayes MAP shrinks widths further in aggregate even
-  though the Laplace spread rescues pointwise pinch points. If
-  hypercube-level conservatism at small N is wanted, use
-  `optimize_center=False` (most conservative ellipse variant measured) or
-  scale up the fixed baseline.
+  support), and with the jointly-optimized center the PAC-Bayes MAP
+  shrinks widths further in aggregate even though the Laplace spread
+  rescues pointwise pinch points. The conservative low-N configuration —
+  the PAC layer's main motivation — is `optimize_center=False,
+  pac_bayes=True, update_hyperprior=True`: on a 10-seed N=10 sweep of the
+  misspecified example it covers 0.99 (mean) / 0.92 (min) of the dense
+  truth at roughly half the hypercube width, vs 0.79 / 0.64 for the
+  hypercube. Locked in by `test_low_n_conservatism_recipe` and shown in
+  the notebook's final figure.
 
 ## Suggested squash points
 
