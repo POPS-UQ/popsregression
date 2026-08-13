@@ -105,17 +105,17 @@ its Laplace approximation:
   `sklearn.linear_model.BayesianRidge`.
 
 The hyperposterior enters prediction in two documented ways: `y_std`
-averages the pushforward over it, while `return_bound_std` returns the
-delta-method standard deviation of the max/min bound curves — the
-bounds themselves always remain the fitted ellipse's support, so
-`bounds ± 2·y_bound_std` is a conservative 2σ envelope that reverts to
-the bare bounds as $N$ grows.
+averages the pushforward over it, and `return_bounds` returns the
+max/min over the ensemble of ellipses within the 2σ range of the
+hyperposterior, `mean ± (sqrt(v) + 2·y_bound_std)` — strictly broader
+than the fitted ellipse's own support (recovered as
+`bounds ∓ 2·y_bound_std`), reverting to it at rate $N$.
 
 For conservative uncertainty in the scarce-data regime (N/P of order
 one), combine the frozen center with the PAC layer:
 `optimize_center=False, pac_bayes=True` keeps the mean at the POPS
-pre-fit and wraps the optimized widths in the 2σ hyperposterior
-envelope.
+pre-fit and takes the bounds over the 2σ hyperposterior ensemble of
+optimized-width ellipses.
 
 ## Quick start
 
@@ -130,13 +130,15 @@ model.fit(X_train, y_train)
 # Predictive std of the pushforward: sqrt(v / (P + 2))
 y_pred, y_std = model.predict(X_test, return_std=True)
 
-# Support bounds of the fitted ellipsoid pushforward: mean +/- sqrt(v)
+# Support bounds: mean +/- sqrt(v) for a bare fit; with pac_bayes=True
+# the max/min over the 2-sigma hyperposterior ensemble of ellipses,
+# mean +/- (sqrt(v) + 2 * y_bound_std) -- strictly broader than bare
 y_pred, y_std, y_max, y_min = model.predict(
     X_test, return_std=True, return_bounds=True
 )
 
-# With pac_bayes=True: hyperposterior std of the bound curves, so that
-# bounds +/- 2 * y_bound_std is a conservative 2-sigma envelope
+# Hyperposterior std of the bound curves (zero for a bare fit); the
+# fitted ellipse's own support is bounds -/+ 2 * y_bound_std
 y_pred, y_max, y_min, y_bound_std = model.predict(
     X_test, return_bounds=True, return_bound_std=True
 )

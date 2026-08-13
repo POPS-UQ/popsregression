@@ -800,24 +800,28 @@ class POPSRegressionEllipse(RegressorMixin, BaseEstimator):
         squared support half-width ``v = x^T B x + delta**2``. The
         returned standard deviation is the predictive standard deviation
         of that density, ``sqrt(v / (n_dim + 2))`` — note this is the
-        pushforward standard deviation, NOT the support half-width. The
-        bounds are always the support of the FITTED ellipsoid,
-        ``mean +/- sqrt(v)`` (the ellipse max/min).
+        pushforward standard deviation, NOT the support half-width. For a
+        model fitted without ``pac_bayes`` the bounds are the support of
+        the fitted ellipsoid, ``mean +/- sqrt(v)`` (the ellipse max/min).
 
         If the model was fitted with ``pac_bayes=True``, the analytic
-        (first-order delta-method) hyperposterior spread enters two ways,
-        with no sampling anywhere:
+        (first-order delta-method) hyperposterior spread enters, with no
+        sampling anywhere:
 
         - ``y_std`` averages over the hyperposterior: the mean variance
           gains ``z^2 @ Sigma_c`` and the expected squared width gains
           ``dv = sum_m z^2 @ Sigma_U[:, m]``, i.e.
           ``std = sqrt((v + dv) / (n_dim + 2) + z^2 @ Sigma_c)``.
         - ``y_bound_std`` is the hyperposterior standard deviation of the
-          bound curves themselves: ``Var[y_max] = Var[y_min] =
+          support-bound curves: ``Var[y_max] = Var[y_min] =
           z^2 @ Sigma_c + Var[v] / (4 v)`` with
-          ``Var[v] = 4 sum_m (z @ U_m)^2 (z^2 @ Sigma_U[:, m])``, so a
-          conservative envelope is ``bounds +/- 2 * y_bound_std``. For a
+          ``Var[v] = 4 sum_m (z @ U_m)^2 (z^2 @ Sigma_U[:, m])``. For a
           model fitted without ``pac_bayes`` it is identically zero.
+        - the returned ``bounds`` are the max/min over the ensemble of
+          ellipses within the 2-sigma range of the hyperposterior,
+          ``mean +/- (sqrt(v) + 2 * y_bound_std)`` — strictly broader
+          than the fitted ellipse's own support, which is recovered as
+          ``bounds -/+ 2 * y_bound_std``.
 
         Parameters
         ----------
@@ -829,8 +833,9 @@ class POPSRegressionEllipse(RegressorMixin, BaseEstimator):
             pushforward density.
 
         return_bounds : bool, default=False
-            If True, also return the max and min predictions (support of
-            the fitted ellipsoid pushforward).
+            If True, also return the max and min predictions: the support
+            of the fitted ellipsoid pushforward, widened to the 2-sigma
+            hyperposterior ensemble if fitted with ``pac_bayes=True``.
 
         return_bound_std : bool, default=False
             If True, also return the hyperposterior standard deviation of
@@ -879,7 +884,7 @@ class POPSRegressionEllipse(RegressorMixin, BaseEstimator):
         if return_std:
             result.append(np.sqrt(v_mixed / (self._ball_dim + 2.0) + mean_var))
         if return_bounds:
-            half_width = np.sqrt(v)
+            half_width = np.sqrt(v) + 2.0 * np.sqrt(bound_var)
             result.extend([y_mean + half_width, y_mean - half_width])
         if return_bound_std:
             result.append(np.sqrt(bound_var))

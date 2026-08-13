@@ -70,17 +70,18 @@ Three review-driven deviations, decided with Tom during the session:
   `bound_`; `'warm_start'` keeps the spec construction and is required
   for `update_hyperprior=True` (ill-posed at `'phase1'`, warned and
   ignored there).
-- **`predict` decomposes the hyperposterior spread** (refinement of spec
-  §1.6, decided with Tom): `return_bounds` always returns the fitted
-  ellipse's max/min support (identical to the bare fit under `'phase1'`
-  centering — the spread is never folded invisibly into the bounds),
-  `return_std` averages the pushforward over the hyperposterior
+- **PAC bounds are the 2σ hyperposterior ensemble** (refinement of spec
+  §1.6, decided with Tom): for a bare fit `return_bounds` is the fitted
+  ellipse's max/min support; for a `pac_bayes=True` fit it is the
+  max/min over the ensemble of ellipses within the 2σ range of the
+  hyperposterior, `mean ± (sqrt(v) + 2·y_bound_std)` — strictly broader
+  than the bare support by construction. `return_std` averages the
+  pushforward over the hyperposterior
   (`sqrt((v + dv)/(P+2) + z^2 Sigma_c)`), and the new
-  `return_bound_std` gives the first-order delta-method std of the
+  `return_bound_std` exposes the first-order delta-method std of the
   bound curves (`sqrt(z^2 Sigma_c + Var[v]/(4v))`,
-  `Var[v] = 4 sum_m (z U_m)^2 (z^2 Sigma_U_m)`), so
-  `bounds ± 2·y_bound_std` is the conservative 2σ envelope shown in the
-  notebook.
+  `Var[v] = 4 sum_m (z U_m)^2 (z^2 Sigma_U_m)`); the fitted ellipse's
+  own support is `bounds ∓ 2·y_bound_std`.
 
 - **`hyperprior_scale` is relative, not absolute** (deviation from spec
   §1.5(a)): the effective hyperprior variance is
@@ -171,10 +172,10 @@ properties `ellipsoid_B_` (original/affine coordinates) and `baseline_B0_`
   strictly broadens the predictive std and adds a strictly positive
   bound spread (never narrower). The conservative low-N configuration —
   the PAC layer's main motivation — is `optimize_center=False,
-  pac_bayes=True` with the `bounds ± 2·y_bound_std` envelope: on a
-  10-seed N=10 sweep of the misspecified example it covers 0.99 (mean)
-  / 0.92 (min) of the dense truth at ~70% of the hypercube width, vs
-  0.79 / 0.63 for the hypercube. Locked in by
+  pac_bayes=True`, whose bounds are the 2σ hyperposterior ensemble: on
+  a 10-seed N=10 sweep of the misspecified example they cover 0.99
+  (mean) / 0.92 (min) of the dense truth at ~70% of the hypercube
+  width, vs 0.79 / 0.63 for the hypercube. Locked in by
   `test_low_n_conservatism_recipe` and shown in the notebook's final
   figure.
 
