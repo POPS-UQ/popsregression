@@ -182,7 +182,7 @@ for ax, posterior in zip(axes, posteriors):
         posterior=posterior,
         resampling_method="uniform",
         resample_density=10.0,
-        minimal_error=0.0,
+        minimum_relative_error=0.0,
     )
     pops.fit(X_train, y_train)
     y_pred, y_std, y_max, y_min = pops.predict(

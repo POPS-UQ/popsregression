@@ -61,7 +61,7 @@ See [Usage](usage.md) for the full set of fitting and prediction options, and
   - `'hypercube'` and `'ensemble'` posteriors over pointwise optimal
     parameter sets
   - Residual-based selection of training points
-    (`minimal_error`) for efficient fitting
+    (`minimum_relative_error`) for efficient fitting
   - Predictive uncertainty: combined and epistemic-only standard deviations,
     plus min/max bounds over the posterior
   - Full scikit-learn compatibility: pipelines, hyperparameter search, cloning

@@ -53,7 +53,7 @@ through [`predict`](#predict).
 
 | Since | Removed in | Parameter | Replacement |
 |---|---|---|---|
-| 0.5 | 0.7 | `leverage_percentile` | `minimal_error` |
+| 0.5 | 0.7 | `leverage_percentile` | `minimum_relative_error` |
 
 Passing `leverage_percentile` raises a `FutureWarning` on `fit` and has no
 effect on the fitted model.

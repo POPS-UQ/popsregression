@@ -97,8 +97,8 @@ that remains.
 - `'ensemble'`: uses the raw pointwise corrections directly as posterior
   samples.
 
-`minimal_error=0.0` below keeps every training point in the posterior estimate
-rather than only those the model fits poorly.
+`minimum_relative_error=0.0` below keeps every training point in the posterior
+estimate rather than only those the model fits poorly.
 
 ```python
 for posterior in ["ensemble", "hypercube"]:
@@ -106,7 +106,7 @@ for posterior in ["ensemble", "hypercube"]:
         posterior=posterior,
         resampling_method="uniform",
         resample_density=10.0,
-        minimal_error=0.0,
+        minimum_relative_error=0.0,
     )
     pops.fit(X_train, y_train)
     y_pred, y_std, y_max, y_min = pops.predict(
