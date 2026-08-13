@@ -4,6 +4,8 @@
 #          Danny Perez <danny_perez@lanl.gov>
 # SPDX-License-Identifier: BSD-3-Clause
 
+import warnings
+
 import numpy as np
 import pytest
 from numpy.testing import assert_allclose, assert_array_less
@@ -212,15 +214,65 @@ def test_compute_score():
     assert len(model.scores_) > 0
 
 
-# --- Leverage percentile ---
+# --- Minimal error ---
 
 
-@pytest.mark.parametrize("leverage_percentile", [0.0, 25.0, 75.0])
-def test_leverage_percentile(leverage_percentile):
+@pytest.mark.parametrize("minimal_error", [0.0, 1e-3, 1.0])
+def test_minimal_error(minimal_error):
     X, y, _ = _make_low_noise_data()
-    model = POPSRegression(leverage_percentile=leverage_percentile).fit(X, y)
+    model = POPSRegression(minimal_error=minimal_error).fit(X, y)
     y_pred = model.predict(X)
     assert y_pred.shape == (X.shape[0],)
+
+
+def test_minimal_error_filters_points():
+    """Points with residuals below the threshold are excluded."""
+    X, y, _ = _make_low_noise_data()
+
+    all_points = POPSRegression(minimal_error=0.0).fit(X, y)
+    assert all_points._filtering_mask.all()
+
+    filtered = POPSRegression(minimal_error=1.0).fit(X, y)
+    assert filtered._filtering_mask.sum() < X.shape[0]
+
+
+def test_minimal_error_falls_back_when_all_filtered():
+    """If no point passes the threshold, all points are used."""
+    X, y, _ = _make_low_noise_data()
+    model = POPSRegression(minimal_error=1e12).fit(X, y)
+    assert model._filtering_mask.all()
+
+
+# --- Deprecation of leverage_percentile ---
+
+
+def test_leverage_percentile_deprecated():
+    X, y, _ = _make_low_noise_data()
+    model = POPSRegression(leverage_percentile=50.0)
+    with pytest.warns(FutureWarning, match="leverage_percentile"):
+        model.fit(X, y)
+
+
+def test_leverage_percentile_is_ignored():
+    """The deprecated parameter no longer affects the fit."""
+    X, y, _ = _make_low_noise_data()
+
+    reference = POPSRegression(posterior="ensemble").fit(X, y)
+    with pytest.warns(FutureWarning):
+        deprecated = POPSRegression(
+            posterior="ensemble", leverage_percentile=90.0
+        ).fit(X, y)
+
+    assert_allclose(
+        deprecated.misspecification_sigma_, reference.misspecification_sigma_
+    )
+
+
+def test_no_warning_without_leverage_percentile():
+    X, y, _ = _make_low_noise_data()
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", FutureWarning)
+        POPSRegression().fit(X, y)
 
 
 # --- Cloning and get_params/set_params ---
@@ -232,7 +284,7 @@ def test_clone():
     model = POPSRegression(
         posterior="ensemble",
         resample_density=2.0,
-        leverage_percentile=30.0,
+        minimal_error=1e-2,
     )
     cloned = clone(model)
     assert cloned.get_params() == model.get_params()
@@ -243,7 +295,7 @@ def test_get_set_params():
     params = model.get_params()
     assert "posterior" in params
     assert "resample_density" in params
-    assert "leverage_percentile" in params
+    assert "minimal_error" in params
 
     model.set_params(posterior="ensemble", resample_density=5.0)
     assert model.posterior == "ensemble"
