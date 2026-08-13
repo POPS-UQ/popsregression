@@ -235,6 +235,16 @@ class POPSRegressionEllipse(RegressorMixin, BaseEstimator):
         Non-negative per-datum weights ``w_i`` of the empirical
         generalization error ``G_hat = mean_i(w_i * ell_i)``.
 
+    optimize_center : bool, default=True
+        If True, the ellipsoid center is optimized jointly with the
+        widths; its stationarity condition is a heteroscedastic weighted
+        least squares under the fitted widths (weights ``1/(q_i v_i)``),
+        so ``coef_`` deliberately differs from an OLS/BayesianRidge mean.
+        If False, the center is frozen at the warm start (the POPS
+        pre-fit coefficients for ``baseline='pops'``) and only the
+        widths are optimized; with ``pac_bayes=True`` the hyperposterior
+        is then over the width parameters only.
+
     random_state : int, RandomState instance or None, default=None
         Seed of the small random initialization of ``U``. For
         reproducibility the default ``None`` behaves like 0, making fits
@@ -247,8 +257,13 @@ class POPSRegressionEllipse(RegressorMixin, BaseEstimator):
         leaves phase-1 results unchanged.
 
     hyperprior_scale : float, default=1.0
-        Variance ``tau2`` of the isotropic Gaussian hyperprior
-        ``N(psi_0, tau2 * I)`` centered on the POPS warm start.
+        Relative variance of the isotropic Gaussian hyperprior
+        ``N(psi_0, tau2 * I)`` centered on the POPS warm start. The
+        effective variance is scaled to the warm start,
+        ``tau2 = hyperprior_scale * max(||psi_0||^2 / d, 1e-12)`` with
+        ``d`` the parameter count, so the default is independent of the
+        units of ``y`` (an absolute ``tau2`` would over-shrink data with
+        large targets). The effective value is stored in ``tau2_``.
         ``np.inf`` is allowed and recovers the ``pac_bayes=False``
         optimum exactly (the prior ridge vanishes); in that improper
         limit ``kl_`` and ``bound_`` are infinite.
@@ -325,11 +340,14 @@ class POPSRegressionEllipse(RegressorMixin, BaseEstimator):
         ``pac_bayes=True`` and ``update_hyperprior=True``).
 
     tau2_ : float
-        Final hyperprior variance (only if ``pac_bayes=True``).
+        Final effective (absolute) hyperprior variance, i.e.
+        ``hyperprior_scale`` times the warm-start scale, after any
+        evidence updates (only if ``pac_bayes=True``).
 
     hyper_sigma_diag_ : ndarray of shape (n_dim * (1 + rank_),)
         Diagonal of the Laplace hyperposterior covariance ``Sigma_H``
-        (only if ``pac_bayes=True``).
+        (only if ``pac_bayes=True``). Zero on the center block when
+        ``optimize_center=False``.
 
     kl_ : float
         ``KL(pi_H || pi_0H)`` in closed form (only if ``pac_bayes=True``).
@@ -394,6 +412,7 @@ class POPSRegressionEllipse(RegressorMixin, BaseEstimator):
         "max_iter": [Interval(Integral, 1, None, closed="left")],
         "fit_intercept": ["boolean"],
         "weights": ["array-like", None],
+        "optimize_center": ["boolean"],
         "random_state": ["random_state"],
         "pac_bayes": ["boolean"],
         "hyperprior_scale": [
@@ -423,6 +442,7 @@ class POPSRegressionEllipse(RegressorMixin, BaseEstimator):
         max_iter=500,
         fit_intercept=False,
         weights=None,
+        optimize_center=True,
         random_state=None,
         pac_bayes=False,
         hyperprior_scale=1.0,
@@ -445,6 +465,7 @@ class POPSRegressionEllipse(RegressorMixin, BaseEstimator):
         self.max_iter = max_iter
         self.fit_intercept = fit_intercept
         self.weights = weights
+        self.optimize_center = optimize_center
         self.random_state = random_state
         self.pac_bayes = pac_bayes
         self.hyperprior_scale = hyperprior_scale
@@ -540,9 +561,22 @@ class POPSRegressionEllipse(RegressorMixin, BaseEstimator):
 
         psi0 = np.concatenate([c_init, np.zeros(n_dim * rank)])
         psi = np.concatenate([c_init, 1e-3 * rng.randn(n_dim * rank)])
+        # Coordinates the optimizer (and hyperposterior) act on: all of
+        # psi, or the width block only when the center is frozen.
+        free = slice(None) if self.optimize_center else slice(n_dim, None)
+
+        def objective(psi_free, *args):
+            psi_full = psi_free
+            if not self.optimize_center:
+                psi_full = np.concatenate([c_init, psi_free])
+            value, grad = _ellipse_nll(psi_full, *args)
+            return value, grad[free]
 
         # --- Continuation L-BFGS, optional evidence outer loop ---
-        tau2 = float(self.hyperprior_scale)
+        # The hyperprior variance is scaled to the warm start so that
+        # hyperprior_scale is independent of the units of y.
+        scale2 = max(float(psi0 @ psi0) / psi0.size, 1e-12)
+        tau2 = float(self.hyperprior_scale) * scale2
         update_mode = self.pac_bayes and self.update_hyperprior
         n_outer = self.n_outer if update_mode else 1
         self.n_iter_ = 0
@@ -551,22 +585,22 @@ class POPSRegressionEllipse(RegressorMixin, BaseEstimator):
             prec = 1.0 / tau2 if self.pac_bayes else 0.0
             for rho in rho_schedule:
                 res = minimize(
-                    _ellipse_nll,
-                    psi,
+                    objective,
+                    psi[free],
                     args=(Z, yc, b0, sample_weight, self.delta, rho, psi0, prec),
                     method="L-BFGS-B",
                     jac=True,
                     tol=self.tol,
                     options={"maxiter": self.max_iter},
                 )
-                psi = res.x
+                psi[free] = res.x
                 self.n_iter_ += int(res.nit)
             self.n_outer_iter_ += 1
             if not update_mode or outer == n_outer - 1:
                 break
             hd = self._clipped_hess_diag(
                 psi, Z, yc, b0, sample_weight, rho_schedule[-1], warn=False
-            )
+            )[free]
             gamma = float(np.sum(hd / (hd + 1.0 / tau2)))
             dpsi = psi - psi0
             tau2_new = (float(dpsi @ dpsi) + 2.0 * self.hh_lambda_2) / (
@@ -600,7 +634,7 @@ class POPSRegressionEllipse(RegressorMixin, BaseEstimator):
 
         if self.pac_bayes:
             self._finalize_pac_bayes(
-                psi, psi0, Z, yc, b0, sample_weight, rho_final, tau2, n_samples
+                psi, psi0, Z, yc, b0, sample_weight, rho_final, tau2, n_samples, free
             )
         self._pac_bayes_fitted = bool(self.pac_bayes)
         return self
@@ -656,18 +690,29 @@ class POPSRegressionEllipse(RegressorMixin, BaseEstimator):
         return np.maximum(hd, self.hess_floor)
 
     def _finalize_pac_bayes(
-        self, psi, psi0, Z, yc, b0, sample_weight, rho, tau2, n_samples
+        self, psi, psi0, Z, yc, b0, sample_weight, rho, tau2, n_samples, free
     ):
-        """Closed-form Laplace hyperposterior, KL and PAC bound components."""
+        """Closed-form Laplace hyperposterior, KL and PAC bound components.
+
+        The hyperposterior covers the optimized coordinates only: with
+        ``optimize_center=False`` the frozen center block gets zero
+        variance and is excluded from the KL and effective-dof sums.
+        """
         n_dim = Z.shape[1]
         hd = self._clipped_hess_diag(psi, Z, yc, b0, sample_weight, rho)
-        sigma = 1.0 / (hd + 1.0 / tau2)
+        sigma = np.zeros_like(hd)
+        sigma[free] = 1.0 / (hd[free] + 1.0 / tau2)
         dpsi = psi - psi0
         self.tau2_ = float(tau2)
         self.hyper_sigma_diag_ = sigma
-        self.gamma_ = float(np.sum(hd * sigma))
+        self.gamma_ = float(np.sum(hd[free] * sigma[free]))
         self.kl_ = 0.5 * float(
-            np.sum(sigma / tau2 + dpsi * dpsi / tau2 - 1.0 + np.log(tau2 / sigma))
+            np.sum(
+                sigma[free] / tau2
+                + dpsi[free] * dpsi[free] / tau2
+                - 1.0
+                + np.log(tau2 / sigma[free])
+            )
         )
         # Second-order (delta-method) hyperposterior average of G_hat.
         self.empirical_H_ = (

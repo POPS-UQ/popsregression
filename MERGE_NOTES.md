@@ -52,6 +52,26 @@ POPSRegression"), `bound_xi` and `subgamma_const` (spec §1.5(d) confidence /
 sub-gamma constants). `hyperprior_scale=np.inf` is accepted and reproduces
 `pac_bayes=False` bitwise (used by the tau2→inf test).
 
+Two review-driven deviations, decided with Tom during the session:
+
+- **`hyperprior_scale` is relative, not absolute** (deviation from spec
+  §1.5(a)): the effective hyperprior variance is
+  `tau2 = hyperprior_scale * max(||psi_0||^2/d, 1e-12)`. Rationale: psi
+  carries the units of `y`, so a fixed absolute default (`tau2 = 1.0`)
+  over-shrinks any data with large targets — on the quartic example it
+  collapsed extrapolation coverage to 0.05. `tau2_` stores the effective
+  absolute value (after any evidence updates, which operate on absolute
+  tau2 as before).
+- **`optimize_center` parameter** (default True = spec behavior): the
+  jointly-optimized center satisfies a heteroscedastic-WLS stationarity
+  condition (per-point precision `1/(q_i v_i)`) and deliberately differs
+  from an OLS/BayesianRidge mean. `optimize_center=False` freezes the
+  center at the warm start (`coef_` then equals the POPS pre-fit
+  coefficients exactly) and optimizes widths only; the PAC-Bayes
+  hyperposterior then covers the width block only (center block of
+  `hyper_sigma_diag_` is zero and excluded from `kl_`/`gamma_`). At small
+  N this variant is also the more conservative one.
+
 Fitted attributes: `coef_`, `intercept_`, `center_whitened_`, `U_`, `rank_`,
 `objective_`, `coverage_fraction_`, `n_iter_`, `n_outer_iter_`, lazy
 properties `ellipsoid_B_` (original/affine coordinates) and `baseline_B0_`
@@ -117,6 +137,13 @@ properties `ellipsoid_B_` (original/affine coordinates) and `baseline_B0_`
 - The evidence update's tau2 convergence shortcut compares successive tau2
   values against `tol`; the final reported `tau2_` may lag the last
   optimization by less than `tol`.
+- At very small N the bare ellipse is deliberately tighter than the POPS
+  hypercube min/max bounds (minimum covering support vs un-optimized box
+  support); the PAC-Bayes MAP shrinks widths further in aggregate even
+  though the Laplace spread rescues pointwise pinch points. If
+  hypercube-level conservatism at small N is wanted, use
+  `optimize_center=False` (most conservative ellipse variant measured) or
+  scale up the fixed baseline.
 
 ## Suggested squash points
 

@@ -64,6 +64,15 @@ $O(N P r)$; gradients are closed form (no autodiff, no sampling). When
 `fit_intercept=True` the intercept coordinate is appended **after**
 whitening and recovered by the corresponding affine correction.
 
+Because the center $\mu$ is optimized jointly with the widths, its
+stationarity condition is a heteroscedastic weighted least squares under
+the fitted widths (per-point precision $1/(q_i v_i)$): the mean is pinned
+where the ellipsoid pinches and relaxed where the misspecification width
+is large, so it deliberately differs from an OLS/`BayesianRidge` mean.
+Pass `optimize_center=False` to freeze the center at the POPS pre-fit
+coefficients and optimize the widths only — a more conservative choice at
+small $N$.
+
 ## PAC-Bayes layer
 
 With `pac_bayes=True` the Catoni/Gibbs hyperposterior
@@ -71,7 +80,9 @@ $\pi_H^*(\Psi) \propto \pi_{0H}(\Psi)\, e^{-N \hat G(\Psi)}$ is followed via
 its Laplace approximation:
 
 - the **hyperprior** is $\mathcal{N}(\psi_0, \tau^2 I)$ with $\psi_0$ the
-  POPS warm start (`hyperprior_scale` is $\tau^2$);
+  POPS warm start; `hyperprior_scale` sets $\tau^2$ *relative* to the
+  warm-start scale ($\tau^2 =$ `hyperprior_scale` $\cdot\,
+  \|\psi_0\|^2/d$), so the default is independent of the units of $y$;
 - the **MAP** adds a ridge $\|\psi-\psi_0\|^2 / (2N\tau^2)$ to the phase-1
   objective (two-line change; `hyperprior_scale=np.inf` recovers the
   unregularized fit exactly);

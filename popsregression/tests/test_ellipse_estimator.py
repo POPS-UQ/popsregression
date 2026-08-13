@@ -310,7 +310,9 @@ def test_pac_bayes_finite_components():
     assert np.isfinite(model.kl_) and model.kl_ >= 0.0
     assert np.isfinite(model.bound_)
     assert np.isfinite(model.empirical_H_)
-    assert model.tau2_ == pytest.approx(1.0)
+    # hyperprior_scale is relative: tau2_ = scale * ||psi0||^2 / d.
+    psi0 = model._psi0
+    assert model.tau2_ == pytest.approx(psi0 @ psi0 / psi0.size)
     d = model.center_whitened_.size * (1 + model.rank_)
     assert model.hyper_sigma_diag_.shape == (d,)
     assert np.all(model.hyper_sigma_diag_ > 0)
@@ -396,6 +398,39 @@ def test_pac_bayes_gamma_effective_dof():
     model = POPSRegressionEllipse(random_state=0, pac_bayes=True).fit(X, y)
     d = model.hyper_sigma_diag_.size
     assert 0.0 < model.gamma_ < d
+
+
+# --- Frozen center ---
+
+
+def test_optimize_center_false_keeps_pops_mean():
+    """Frozen center reproduces the POPS pre-fit mean exactly."""
+    X_train, y_train, X_dense, y_dense = _make_misspecified_data(50)
+    frozen = POPSRegressionEllipse(random_state=0, optimize_center=False).fit(
+        X_train, y_train
+    )
+    pops = POPSRegression(fit_intercept=False).fit(X_train, y_train)
+    assert_allclose(frozen.coef_, pops.coef_, rtol=1e-12, atol=1e-12)
+    assert frozen.coverage_fraction_ == 1.0
+
+    # Widths still adapt: the bounds cover the dense targets.
+    _, y_max, y_min = frozen.predict(X_dense, return_bounds=True)
+    assert np.mean((y_dense >= y_min) & (y_dense <= y_max)) >= 0.95
+
+
+def test_optimize_center_false_pac_bayes():
+    """With a frozen center the hyperposterior covers the widths only."""
+    X_train, y_train, _, _ = _make_misspecified_data(50)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", UserWarning)
+        model = POPSRegressionEllipse(
+            random_state=0, optimize_center=False, pac_bayes=True
+        ).fit(X_train, y_train)
+    n_dim = model.center_whitened_.size
+    assert_allclose(model.hyper_sigma_diag_[:n_dim], 0.0, atol=1e-15)
+    assert np.all(model.hyper_sigma_diag_[n_dim:] > 0)
+    assert np.isfinite(model.kl_) and np.isfinite(model.bound_)
+    assert 0.0 < model.gamma_ < n_dim * model.rank_
 
 
 # --- Cloning ---
