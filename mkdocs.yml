@@ -1,6 +1,7 @@
 site_name: popsregression
 site_description: >-
-  Misspecification-aware Bayesian regression for low-noise data (POPS algorithm).
+  API reference and usage documentation for popsregression, the Python
+  implementation of the POPS algorithm.
 site_url: https://POPS-UQ.github.io/popsregression
 repo_url: https://github.com/POPS-UQ/popsregression
 repo_name: POPS-UQ/popsregression
@@ -29,9 +30,11 @@ theme:
 
 nav:
   - Home: index.md
+  - Usage: usage.md
   - API reference: api.md
   - "Example: POPS vs BayesianRidge": example.md
   - "Ellipsoid posteriors: POPSRegressionEllipse": ellipse.md
+  - POPS method site: https://pops-uq.github.io/
 
 plugins:
   - search

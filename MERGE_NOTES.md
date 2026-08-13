@@ -177,9 +177,12 @@ properties `ellipsoid_B_` (original/affine coordinates) and `baseline_B0_`
   bound spread (never narrower). The conservative low-N configuration —
   the PAC layer's main motivation — is simply `pac_bayes=True` on the
   (frozen-center) defaults, whose bounds are the 2σ hyperposterior
-  ensemble: on a 10-seed N=10 sweep of the misspecified example they
-  cover 0.99 (mean) / 0.92 (min) of the dense truth at ~70% of the
-  hypercube width, vs 0.79 / 0.63 for the hypercube. Locked in by
+  ensemble: on a 10-seed N=10 sweep of the misspecified example
+  (after the `minimum_relative_error` point filtering landed on main,
+  which widens the POPS baseline and lifts the whole ellipse stack)
+  they cover 1.00 (mean) / 0.98 (min) of the dense truth at ~85% of
+  the hypercube width; the bare ellipse covers 0.97 / 0.90 at ~70%,
+  the hypercube itself 0.78 / 0.63. Locked in by
   `test_low_n_conservatism_recipe` and shown as the fourth row of the
   notebook's demo figure.
 

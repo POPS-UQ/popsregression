@@ -1,17 +1,10 @@
 # Example: POPS vs BayesianRidge
 
-This example demonstrates how [`POPSRegression`][popsregression.POPSRegression]
-provides better uncertainty estimates than
+A runnable comparison of [`POPSRegression`][popsregression.POPSRegression] and
 [`BayesianRidge`](https://scikit-learn.org/stable/modules/generated/sklearn.linear_model.BayesianRidge.html)
-when fitting a misspecified model to low-noise data.
-
-In computational science, surrogate models are often fit to near-deterministic
-data. When the model class cannot exactly reproduce the target function (model
-misspecification), standard Bayesian regression significantly underestimates
-predictive uncertainty, because it only captures epistemic uncertainty, which
-vanishes with more data. POPS regression corrects this by estimating
-*misspecification uncertainty* from pointwise optimal parameter sets, giving
-wider, more honest error bars that properly cover the true function.
+on a misspecified, low-noise fit. For why the two differ, see
+[Concepts](https://pops-uq.github.io/method/concepts/) on the POPS site; for
+the options used here, see [Usage](usage.md).
 
 The full script is available in the repository under
 [`examples/plot_pops_regression.py`](https://github.com/POPS-UQ/popsregression/blob/main/examples/plot_pops_regression.py).
@@ -91,10 +84,9 @@ produces the following comparison.
   yet the polynomial still cannot match the oscillatory target. POPS maintains
   honest uncertainty that reflects this structural limitation.
 
-This is the core insight: for low-noise misspecified models, adding more data
-does not reduce the true parameter uncertainty — it only reduces the *epistemic*
-component. POPS captures the remaining *misspecification* component that standard
-Bayesian regression ignores.
+For low-noise misspecified models, more data reduces only the *epistemic*
+component of the uncertainty; POPS captures the *misspecification* component
+that remains.
 
 ## Posterior types
 
@@ -105,13 +97,16 @@ Bayesian regression ignores.
 - `'ensemble'`: uses the raw pointwise corrections directly as posterior
   samples.
 
+`minimum_relative_error=0.0` below keeps every training point in the posterior
+estimate rather than only those the model fits poorly.
+
 ```python
 for posterior in ["ensemble", "hypercube"]:
     pops = POPSRegression(
         posterior=posterior,
         resampling_method="uniform",
         resample_density=10.0,
-        leverage_percentile=0.0,
+        minimum_relative_error=0.0,
     )
     pops.fit(X_train, y_train)
     y_pred, y_std, y_max, y_min = pops.predict(
