@@ -132,11 +132,27 @@ def test_well_specified_limit():
 
 
 @pytest.mark.parametrize("baseline", ["pops", "ridge", "zero"])
-def test_baselines_well_specified(baseline):
+@pytest.mark.parametrize("fit_intercept", [False, True])
+def test_baselines_well_specified(baseline, fit_intercept):
     X, y, _ = _make_well_specified_data()
-    model = POPSRegressionEllipse(random_state=0, baseline=baseline).fit(X, y)
+    model = POPSRegressionEllipse(
+        random_state=0, baseline=baseline, fit_intercept=fit_intercept
+    ).fit(X, y)
     assert model.coverage_fraction_ == 1.0
     assert model.score(X, y) > 0.99
+
+    # Exercise the width/bounds and dense-matrix paths of every baseline.
+    _, y_std, y_max, y_min = model.predict(X, return_std=True, return_bounds=True)
+    assert np.all(y_std >= 0) and np.all(y_max >= y_min)
+    n_dim = X.shape[1] + int(fit_intercept)
+    assert model.ellipsoid_B_.shape == (n_dim, n_dim)
+    assert model.baseline_B0_.shape == (n_dim, n_dim)
+    if baseline == "ridge":
+        assert_allclose(
+            model.baseline_B0_, model.baseline_ridge * np.eye(n_dim), rtol=1e-12
+        )
+    elif baseline == "zero":
+        assert_allclose(model.baseline_B0_, 0.0, atol=1e-15)
 
 
 # --- Misspecified limit: honest bounds that do not shrink (test 4) ---
@@ -236,6 +252,8 @@ def test_invalid_rho_schedule():
     X, y, _ = _make_well_specified_data()
     with pytest.raises(ValueError, match="rho_schedule"):
         POPSRegressionEllipse(rho_schedule=(0.1, -0.1)).fit(X, y)
+    with pytest.raises(ValueError, match="rho_schedule"):
+        POPSRegressionEllipse(rho_schedule=()).fit(X, y)
 
 
 def test_delta_zero_with_tiny_rho_warns():
