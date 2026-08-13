@@ -359,14 +359,54 @@ def test_pac_bayes_infinite_tau2_recovers_phase1():
     assert np.isinf(infinite.kl_)
 
 
+def test_pac_bayes_never_narrower_than_bare():
+    """With hyperprior_center='phase1' the PAC layer only broadens.
+
+    The hyperposterior is centered on the phase-1 optimum, so the MAP
+    coincides with the bare fit and the predictive bounds are strictly
+    broader at every point, with the relative broadening decaying with N
+    (rate-N concentration on the bare values).
+    """
+    rel_broadening = {}
+    for n_samples in [10, 500]:
+        X_train, y_train, X_dense, _ = _make_misspecified_data(n_samples)
+        bare = POPSRegressionEllipse(random_state=0).fit(X_train, y_train)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            pac = POPSRegressionEllipse(random_state=0, pac_bayes=True).fit(
+                X_train, y_train
+            )
+        assert np.array_equal(bare.coef_, pac.coef_)
+        assert np.array_equal(bare.U_, pac.U_)
+        _, b_max, b_min = bare.predict(X_dense, return_bounds=True)
+        _, p_max, p_min = pac.predict(X_dense, return_bounds=True)
+        assert np.all(p_max > b_max)
+        assert np.all(p_min < b_min)
+        rel_broadening[n_samples] = np.mean((p_max - p_min) / (b_max - b_min) - 1.0)
+    assert rel_broadening[500] < rel_broadening[10]
+
+
 def test_pac_bayes_update_hyperprior_converges():
     X_train, y_train, _, _ = _make_misspecified_data(50)
     model = POPSRegressionEllipse(
-        random_state=0, pac_bayes=True, update_hyperprior=True, n_outer=4
+        random_state=0,
+        pac_bayes=True,
+        hyperprior_center="warm_start",
+        update_hyperprior=True,
+        n_outer=4,
     ).fit(X_train, y_train)
     assert np.isfinite(model.tau2_) and model.tau2_ > 0
     assert 1 <= model.n_outer_iter_ <= 4
     assert np.isfinite(model.bound_)
+
+
+def test_update_hyperprior_ignored_with_phase1_centering():
+    X_train, y_train, _, _ = _make_misspecified_data(50)
+    with pytest.warns(UserWarning, match="ill-posed"):
+        model = POPSRegressionEllipse(
+            random_state=0, pac_bayes=True, update_hyperprior=True
+        ).fit(X_train, y_train)
+    assert model.n_outer_iter_ == 1
 
 
 def test_pac_bayes_low_data_regime():
@@ -378,9 +418,9 @@ def test_pac_bayes_low_data_regime():
             # The exact Hessian need not be PSD at a barrier-active
             # optimum; the floor warning is expected at tiny N.
             warnings.simplefilter("ignore", UserWarning)
-            pac = POPSRegressionEllipse(
-                random_state=0, pac_bayes=True, update_hyperprior=True
-            ).fit(X_train, y_train)
+            pac = POPSRegressionEllipse(random_state=0, pac_bayes=True).fit(
+                X_train, y_train
+            )
         assert pac.coverage_fraction_ == 1.0
         assert np.isfinite(pac.bound_) and np.isfinite(pac.kl_)
         assert 0.0 < pac.gamma_ < pac.hyper_sigma_diag_.size
@@ -450,10 +490,7 @@ def test_low_n_conservatism_recipe():
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", UserWarning)
         recipe = POPSRegressionEllipse(
-            random_state=0,
-            optimize_center=False,
-            pac_bayes=True,
-            update_hyperprior=True,
+            random_state=0, optimize_center=False, pac_bayes=True
         ).fit(X_train, y_train)
     hypercube = POPSRegression(leverage_percentile=0.0).fit(X_train, y_train)
 

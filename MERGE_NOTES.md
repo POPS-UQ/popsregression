@@ -36,8 +36,9 @@ POPSRegressionEllipse(
     rank=32, delta=1e-3, baseline='pops', baseline_ridge=1e-6,
     whiten_ridge=1e-8, mode_threshold=1e-8,
     rho_schedule=(1e-1, 1e-2, 1e-3, 1e-4), tol=1e-8, max_iter=500,
-    fit_intercept=False, weights=None, random_state=None,
-    pac_bayes=False, hyperprior_scale=1.0, update_hyperprior=False,
+    fit_intercept=False, weights=None, optimize_center=True,
+    random_state=None, pac_bayes=False, hyperprior_center='phase1',
+    hyperprior_scale=1.0, update_hyperprior=False,
     hh_lambda_1=1e-6, hh_lambda_2=1e-6, n_outer=5, hess_floor=1e-12,
     bound_xi=0.05, subgamma_const=0.0,
 )
@@ -52,7 +53,23 @@ POPSRegression"), `bound_xi` and `subgamma_const` (spec §1.5(d) confidence /
 sub-gamma constants). `hyperprior_scale=np.inf` is accepted and reproduces
 `pac_bayes=False` bitwise (used by the tau2→inf test).
 
-Two review-driven deviations, decided with Tom during the session:
+Three review-driven deviations, decided with Tom during the session:
+
+- **`hyperprior_center='phase1'` is the default** (deviation from spec
+  §1.5(a), which centers the hyperprior on the POPS warm start with zero
+  low-rank block — available as `hyperprior_center='warm_start'`).
+  Rationale: with the warm-start center the MAP is ridge-shrunk toward
+  the baseline ellipsoid and can be *narrower* than the bare fit at
+  small N — the opposite of the PAC layer's purpose. Centering on the
+  phase-1 optimum makes the MAP coincide with the bare fit exactly
+  (`pac_bayes=True` never changes `coef_`/`U_`), and the predictive
+  bounds are strictly broader pointwise, concentrating on the bare
+  values at rate N (locked in by `test_pac_bayes_never_narrower_than_
+  bare`). Caveat, documented: the phase-1 center is chosen after seeing
+  the data (empirical Bayes), which weakens the formal reading of
+  `bound_`; `'warm_start'` keeps the spec construction and is required
+  for `update_hyperprior=True` (ill-posed at `'phase1'`, warned and
+  ignored there).
 
 - **`hyperprior_scale` is relative, not absolute** (deviation from spec
   §1.5(a)): the effective hyperprior variance is
@@ -139,13 +156,12 @@ properties `ellipsoid_B_` (original/affine coordinates) and `baseline_B0_`
   optimization by less than `tol`.
 - At very small N the bare ellipse is deliberately tighter than the POPS
   hypercube min/max bounds (minimum covering support vs un-optimized box
-  support), and with the jointly-optimized center the PAC-Bayes MAP
-  shrinks widths further in aggregate even though the Laplace spread
-  rescues pointwise pinch points. The conservative low-N configuration —
-  the PAC layer's main motivation — is `optimize_center=False,
-  pac_bayes=True, update_hyperprior=True`: on a 10-seed N=10 sweep of the
-  misspecified example it covers 0.99 (mean) / 0.92 (min) of the dense
-  truth at roughly half the hypercube width, vs 0.79 / 0.64 for the
+  support). With the default `hyperprior_center='phase1'` the PAC layer
+  strictly broadens it (never narrower). The conservative low-N
+  configuration — the PAC layer's main motivation — is
+  `optimize_center=False, pac_bayes=True`: on a 10-seed N=10 sweep of
+  the misspecified example it covers 0.99 (mean) / 0.91 (min) of the
+  dense truth at ~60% of the hypercube width, vs 0.78 / 0.64 for the
   hypercube. Locked in by `test_low_n_conservatism_recipe` and shown in
   the notebook's final figure.
 

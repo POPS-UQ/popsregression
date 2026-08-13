@@ -251,10 +251,29 @@ class POPSRegressionEllipse(RegressorMixin, BaseEstimator):
         deterministic.
 
     pac_bayes : bool, default=False
-        Enable the closed-form PAC-Bayes layer: ridge-regularized MAP,
-        diagonal Laplace hyperposterior covariance, KL and bound
-        components. ``pac_bayes=False`` is the ``tau2 -> inf`` limit and
-        leaves phase-1 results unchanged.
+        Enable the closed-form PAC-Bayes layer: diagonal Laplace
+        hyperposterior covariance, KL and bound components, and analytic
+        hyperposterior spread in prediction. ``pac_bayes=False`` is the
+        ``tau2 -> inf`` limit and leaves phase-1 results unchanged.
+
+    hyperprior_center : {'phase1', 'warm_start'}, default='phase1'
+        Center ``psi_0`` of the Gaussian hyperprior.
+
+        - ``'phase1'``: the phase-1 optimum itself (empirical-Bayes
+          centering). The MAP then coincides with the unregularized fit
+          — ``pac_bayes=True`` never changes ``coef_``/``U_`` — and the
+          hyperposterior spread strictly broadens the predictive
+          uncertainty, concentrating on the phase-1 values at rate N:
+          strictly broader at low N, never narrower than the bare fit.
+          Note the prior center is chosen after seeing the data, which
+          weakens the formal reading of ``bound_``.
+        - ``'warm_start'``: the POPS warm start with a zero low-rank
+          block (the handoff construction). The MAP is then ridge-shrunk
+          toward the baseline ellipsoid, which can make the fit
+          *narrower* than the bare optimum at small N; required for
+          ``update_hyperprior=True`` (the evidence update is ill-posed
+          at ``'phase1'`` centering and is ignored there with a
+          warning).
 
     hyperprior_scale : float, default=1.0
         Relative variance of the isotropic Gaussian hyperprior
@@ -415,6 +434,7 @@ class POPSRegressionEllipse(RegressorMixin, BaseEstimator):
         "optimize_center": ["boolean"],
         "random_state": ["random_state"],
         "pac_bayes": ["boolean"],
+        "hyperprior_center": [StrOptions({"phase1", "warm_start"})],
         "hyperprior_scale": [
             Interval(Real, 0, None, closed="neither"),
             Options(Real, {np.inf}),
@@ -445,6 +465,7 @@ class POPSRegressionEllipse(RegressorMixin, BaseEstimator):
         optimize_center=True,
         random_state=None,
         pac_bayes=False,
+        hyperprior_center="phase1",
         hyperprior_scale=1.0,
         update_hyperprior=False,
         hh_lambda_1=1e-6,
@@ -468,6 +489,7 @@ class POPSRegressionEllipse(RegressorMixin, BaseEstimator):
         self.optimize_center = optimize_center
         self.random_state = random_state
         self.pac_bayes = pac_bayes
+        self.hyperprior_center = hyperprior_center
         self.hyperprior_scale = hyperprior_scale
         self.update_hyperprior = update_hyperprior
         self.hh_lambda_1 = hh_lambda_1
@@ -573,16 +595,33 @@ class POPSRegressionEllipse(RegressorMixin, BaseEstimator):
             return value, grad[free]
 
         # --- Continuation L-BFGS, optional evidence outer loop ---
-        # The hyperprior variance is scaled to the warm start so that
-        # hyperprior_scale is independent of the units of y.
+        # The hyperprior variance is scaled to the hyperprior center so
+        # that hyperprior_scale is independent of the units of y. With
+        # 'phase1' centering the hyperprior is centered at the phase-1
+        # optimum itself: the MAP coincides with the unregularized fit
+        # (no prior ridge is applied), so pac_bayes=True never narrows
+        # the fitted ellipsoid, and the Laplace spread only broadens the
+        # predictive, concentrating on the phase-1 values at rate N.
+        center_on_phase1 = self.hyperprior_center == "phase1"
+        if center_on_phase1 and self.pac_bayes and self.update_hyperprior:
+            warnings.warn(
+                (
+                    "update_hyperprior is ill-posed with "
+                    "hyperprior_center='phase1' (the prior center coincides "
+                    "with the mode, so the evidence update collapses tau2); "
+                    "ignoring it. Use hyperprior_center='warm_start' for "
+                    "evidence updates."
+                ),
+                UserWarning,
+            )
         scale2 = max(float(psi0 @ psi0) / psi0.size, 1e-12)
         tau2 = float(self.hyperprior_scale) * scale2
-        update_mode = self.pac_bayes and self.update_hyperprior
+        update_mode = self.pac_bayes and self.update_hyperprior and not center_on_phase1
         n_outer = self.n_outer if update_mode else 1
         self.n_iter_ = 0
         self.n_outer_iter_ = 0
         for outer in range(n_outer):
-            prec = 1.0 / tau2 if self.pac_bayes else 0.0
+            prec = 1.0 / tau2 if self.pac_bayes and not center_on_phase1 else 0.0
             for rho in rho_schedule:
                 res = minimize(
                     objective,
@@ -610,6 +649,11 @@ class POPSRegressionEllipse(RegressorMixin, BaseEstimator):
             tau2 = tau2_new
             if rel_change < self.tol:
                 break
+
+        if center_on_phase1 and self.pac_bayes:
+            psi0 = psi.copy()
+            scale2 = max(float(psi0 @ psi0) / psi0.size, 1e-12)
+            tau2 = float(self.hyperprior_scale) * scale2
 
         # --- Recover fitted attributes ---
         c_t, U = _unpack(psi, n_dim)

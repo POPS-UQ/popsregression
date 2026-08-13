@@ -79,13 +79,19 @@ With `pac_bayes=True` the Catoni/Gibbs hyperposterior
 $\pi_H^*(\Psi) \propto \pi_{0H}(\Psi)\, e^{-N \hat G(\Psi)}$ is followed via
 its Laplace approximation:
 
-- the **hyperprior** is $\mathcal{N}(\psi_0, \tau^2 I)$ with $\psi_0$ the
-  POPS warm start; `hyperprior_scale` sets $\tau^2$ *relative* to the
-  warm-start scale ($\tau^2 =$ `hyperprior_scale` $\cdot\,
-  \|\psi_0\|^2/d$), so the default is independent of the units of $y$;
-- the **MAP** adds a ridge $\|\psi-\psi_0\|^2 / (2N\tau^2)$ to the phase-1
-  objective (two-line change; `hyperprior_scale=np.inf` recovers the
-  unregularized fit exactly);
+- the **hyperprior** is $\mathcal{N}(\psi_0, \tau^2 I)$;
+  `hyperprior_scale` sets $\tau^2$ *relative* to the center scale
+  ($\tau^2 =$ `hyperprior_scale` $\cdot\, \|\psi_0\|^2/d$), so the
+  default is independent of the units of $y$. With the default
+  `hyperprior_center='phase1'`, $\psi_0$ is the phase-1 optimum itself:
+  the MAP coincides with the bare fit, and the hyperposterior spread
+  **strictly broadens** the predictive bounds, concentrating on the bare
+  values at rate $N$ — never narrower than the bare ellipse;
+- with `hyperprior_center='warm_start'` (the POPS warm start with zero
+  low-rank block), the **MAP** adds a ridge
+  $\|\psi-\psi_0\|^2 / (2N\tau^2)$ to the phase-1 objective and is
+  shrunk toward the baseline ellipsoid (`hyperprior_scale=np.inf`
+  recovers the unregularized fit exactly);
 - the **covariance** is the diagonal
   $\Sigma_H^{-1} = N\,\mathrm{Hess}[\hat G](\psi^*) + I/\tau^2$, using the
   exact per-datum Hessian diagonal;
@@ -93,9 +99,15 @@ its Laplace approximation:
   `empirical_H_`, `bound_`) are closed form. The bound holds for *all*
   hyperposteriors simultaneously, so evaluating it at the Laplace Gaussian
   is rigorous — the Laplace step costs tightness, never validity;
-- optionally (`update_hyperprior=True`) $\tau^2$ is updated by a
+- optionally (`update_hyperprior=True`, requires
+  `hyperprior_center='warm_start'`) $\tau^2$ is updated by a
   Tipping/MacKay evidence iteration following the conventions of
   `sklearn.linear_model.BayesianRidge`.
+
+For conservative uncertainty in the scarce-data regime (N/P of order
+one), combine the frozen center with the PAC layer:
+`optimize_center=False, pac_bayes=True` keeps the mean at the POPS
+pre-fit and adds the hyperposterior spread to the optimized widths.
 
 ## Quick start
 
