@@ -367,6 +367,29 @@ def test_pac_bayes_update_hyperprior_converges():
     assert np.isfinite(model.bound_)
 
 
+def test_pac_bayes_low_data_regime():
+    """The PAC-Bayes layer is operative at N/P ~ 2 and tightens with N."""
+    bounds = {}
+    for n_samples in [10, 500]:
+        X_train, y_train, X_dense, _ = _make_misspecified_data(n_samples)
+        with warnings.catch_warnings():
+            # The exact Hessian need not be PSD at a barrier-active
+            # optimum; the floor warning is expected at tiny N.
+            warnings.simplefilter("ignore", UserWarning)
+            pac = POPSRegressionEllipse(
+                random_state=0, pac_bayes=True, update_hyperprior=True
+            ).fit(X_train, y_train)
+        assert pac.coverage_fraction_ == 1.0
+        assert np.isfinite(pac.bound_) and np.isfinite(pac.kl_)
+        assert 0.0 < pac.gamma_ < pac.hyper_sigma_diag_.size
+        _, y_std = pac.predict(X_dense, return_std=True)
+        assert np.all(np.isfinite(y_std)) and np.all(y_std > 0)
+        bounds[n_samples] = pac.bound_
+    # The hyperposterior concentrates at rate N: the PAC bound is loose
+    # in the scarce-data regime and tightens as data accumulates.
+    assert bounds[500] < bounds[10]
+
+
 def test_pac_bayes_gamma_effective_dof():
     """0 < gamma < d on well-specified data (test 8e)."""
     X, y, _ = _make_well_specified_data()
