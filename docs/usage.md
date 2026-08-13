@@ -1,9 +1,9 @@
 # Usage
 
 How to fit, predict and configure
-[`POPSRegression`][popsregression.POPSRegression]. For exact signatures see the
-[API reference](api.md); for the method behind it see the
-[POPS site](https://pops-uq.github.io/method/concepts/).
+[`POPSRegression`][popsregression.POPSRegression]. Exact signatures are in the
+[API reference](api.md); the method itself is documented at
+[pops-uq.github.io](https://pops-uq.github.io).
 
 ## Fitting
 
