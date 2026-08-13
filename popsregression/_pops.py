@@ -8,6 +8,7 @@ Bayesian regression for low-noise data accounting for model misspecification.
 #          Danny Perez <danny_perez@lanl.gov>
 # SPDX-License-Identifier: BSD-3-Clause
 
+import warnings
 import numpy as np
 from numbers import Real
 
@@ -22,7 +23,7 @@ from sklearn.utils.validation import (
     check_is_fitted,
     validate_data,
 )
-from sklearn.utils._param_validation import Interval, StrOptions
+from sklearn.utils._param_validation import Hidden, Interval, StrOptions
 
 
 class POPSRegression(BayesianRidge):
@@ -105,16 +106,30 @@ class POPSRegression(BayesianRidge):
         The hypercube spans the ``[percentile_clipping,
         100 - percentile_clipping]`` range. Should be between 0 and 50.
 
-    leverage_percentile : float, default=50.0
-        Only training points with leverage scores above this percentile
-        are used for POPS posterior estimation. Higher values accelerate
-        fitting by focusing on high-leverage points.
+    minimal_error : float, default=1e-3
+        Absolute residual threshold for training point selection. Only
+        training points whose residual ``|y - X @ coef_|`` is at least
+        ``minimal_error`` contribute to the POPS posterior. Larger values
+        accelerate fitting by focusing on the points the model fits worst,
+        which are the ones that carry misspecification information. The
+        threshold is in the units of ``y``, so it should be scaled to the
+        target. If no point passes the threshold, all points are used.
 
     posterior : {'hypercube', 'ensemble'}, default='hypercube'
         Form of the POPS parameter posterior:
 
         - ``'hypercube'``: fit an axis-aligned box in PCA space (default).
         - ``'ensemble'``: use raw pointwise corrections directly.
+
+    leverage_percentile : float, default='deprecated'
+        Deprecated. Training points used to be selected by leverage score
+        percentile; they are now selected by residual magnitude through
+        ``minimal_error``. Passing this parameter raises a
+        :class:`FutureWarning` and has no effect.
+
+        .. deprecated:: 0.5
+            ``leverage_percentile`` is deprecated and will be removed in
+            0.7. Use ``minimal_error`` instead.
 
     Attributes
     ----------
@@ -189,8 +204,12 @@ class POPSRegression(BayesianRidge):
         "resample_density": [Interval(Real, 0, None, closed="neither")],
         "resampling_method": [StrOptions({"uniform", "sobol", "latin", "halton"})],
         "percentile_clipping": [Interval(Real, 0, 50.0, closed="both")],
-        "leverage_percentile": [Interval(Real, 0.0, 100.0, closed="left")],
+        "minimal_error": [Interval(Real, 0.0, None, closed="left")],
         "posterior": [StrOptions({"hypercube", "ensemble"})],
+        "leverage_percentile": [
+            Interval(Real, 0.0, 100.0, closed="left"),
+            Hidden(StrOptions({"deprecated"})),
+        ],
     }
 
     def __init__(
@@ -212,8 +231,9 @@ class POPSRegression(BayesianRidge):
         resample_density=1.0,
         resampling_method="uniform",
         percentile_clipping=0.0,
-        leverage_percentile=50.0,
+        minimal_error=1.0e-3,
         posterior="hypercube",
+        leverage_percentile="deprecated",
     ):
         super().__init__(
             max_iter=max_iter,
@@ -233,8 +253,9 @@ class POPSRegression(BayesianRidge):
         self.resample_density = resample_density
         self.resampling_method = resampling_method
         self.percentile_clipping = percentile_clipping
-        self.leverage_percentile = leverage_percentile
+        self.minimal_error = minimal_error
         self.posterior = posterior
+        self.leverage_percentile = leverage_percentile
 
     @_fit_context(prefer_skip_nested_validation=True)
     def fit(self, X, y, sample_weight=None):
@@ -256,6 +277,15 @@ class POPSRegression(BayesianRidge):
         self : object
             Returns the instance itself.
         """
+        if not isinstance(self.leverage_percentile, str):
+            warnings.warn(
+                "'leverage_percentile' was deprecated in 0.5 and will be "
+                "removed in 0.7. Training points are now selected by residual "
+                "magnitude: use 'minimal_error' instead. The value passed to "
+                "'leverage_percentile' is ignored.",
+                FutureWarning,
+            )
+
         pops_fit_intercept = self.fit_intercept
         if self.fit_intercept:
             X = np.asarray(X)
@@ -289,28 +319,23 @@ class POPSRegression(BayesianRidge):
 
             errors = y_pp - X_pp @ self.coef_
             pointwise_correction = np.dot(X_pp, scaled_sigma_)
-            leverage_scores = np.sum(pointwise_correction * X_pp, axis=1)
 
-            safe_leverage = np.where(
-                leverage_scores > 0, leverage_scores, np.inf
-            )
+            leverage_scores = np.sum(pointwise_correction * X_pp, axis=1)
+            safe_leverage = np.where(leverage_scores > 1e-6, leverage_scores, 1e-6)
             pointwise_correction *= (errors / safe_leverage)[:, None]
 
-            leverage_mask = leverage_scores >= np.percentile(
-                leverage_scores, self.leverage_percentile
-            )
-            if not np.any(leverage_mask):
-                leverage_mask = np.ones(n_samples, dtype=bool)
+            filtering_mask = np.abs(errors) >= self.minimal_error
+            if not np.any(filtering_mask):
+                filtering_mask = np.ones(n_samples, dtype=bool)
 
             self._pointwise_correction = pointwise_correction
-            self._leverage_scores = leverage_scores
-            self._leverage_mask = leverage_mask
+            self._filtering_mask = filtering_mask
 
             self.posterior_samples_, self.misspecification_sigma_ = (
                 self._build_posterior()
             )
-
             self._fitted_with_intercept = pops_fit_intercept
+
         finally:
             self.fit_intercept = pops_fit_intercept
 
@@ -327,7 +352,7 @@ class POPSRegression(BayesianRidge):
         sigma : ndarray of shape (n_features, n_features)
             Misspecification covariance matrix.
         """
-        pc = self._pointwise_correction[self._leverage_mask]
+        pc = self._pointwise_correction[self._filtering_mask]
 
         if self.posterior == "ensemble":
             sigma = pc.T @ pc / pc.shape[0]
@@ -345,7 +370,7 @@ class POPSRegression(BayesianRidge):
         Parameters
         ----------
         pointwise_correction : ndarray of shape (n_samples, n_features)
-            Pointwise corrections from high-leverage training points.
+            Pointwise corrections from the selected training points.
 
         Returns
         -------
@@ -400,7 +425,7 @@ class POPSRegression(BayesianRidge):
 
         if size is None:
             n_resample = int(
-                self.resample_density * self._leverage_scores.size
+                self.resample_density * len(self._pointwise_correction)
             )
         else:
             n_resample = size

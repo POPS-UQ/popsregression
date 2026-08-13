@@ -1,38 +1,32 @@
 # popsregression
 
-A Python library of probabilistic surrogate models adapted to misspecified
-functional forms in the small observation noise regime.
-
-The package takes its name from the POPS regression algorithm
-([Perez & Swinburne, 2025](https://doi.org/10.1088/2632-2153/ad9fce)).
-[`POPSRegression`][popsregression.POPSRegression] is a
+`popsregression` is the **Python implementation** of the POPS (Pointwise
+Optimal Parameter Sets) algorithm. It provides
+[`POPSRegression`][popsregression.POPSRegression], a
 [scikit-learn](https://scikit-learn.org) compatible estimator that extends
 [`BayesianRidge`](https://scikit-learn.org/stable/modules/generated/sklearn.linear_model.BayesianRidge.html)
-to estimate weight uncertainties accounting for model misspecification. A Julia
-implementation following the [StatsAPI.jl](https://github.com/JuliaStats/StatsAPI.jl)
-conventions is also available in
-[POPSRegression.jl](https://github.com/POPS-UQ/POPSRegression.jl).
+with model misspecification uncertainty.
 
-!!! note "Why misspecification uncertainty?"
-    Standard Bayesian regression (e.g. `BayesianRidge`) estimates epistemic and
-    aleatoric uncertainties, but provably ignores model misspecification — the
-    error arising from a limited model form. In the low-noise
-    (near-deterministic) limit, weight uncertainties are significantly
-    underestimated, since they only capture epistemic uncertainty, which decays
-    with increasing data. `POPSRegression` efficiently estimates model
-    misspecification uncertainty via the Pointwise Optimal Parameter Sets (POPS)
-    algorithm, yielding wider, more honest uncertainty estimates that properly
-    cover the true function even when the model class cannot represent the
-    target exactly.
+!!! info "This site is the package reference"
+    These pages document the Python package only: installation, the estimator
+    API, and how to use it. The method itself — what misspecification
+    uncertainty is, why it matters in the low-noise regime, and how POPS
+    estimates it — is documented on the main POPS site:
 
-## Implemented features
+    - [Concepts](https://pops-uq.github.io/method/concepts/) — the three
+      uncertainty types and what POPS does and does not claim
+    - [Algorithm](https://pops-uq.github.io/method/algorithm/) — the
+      pointwise optimal parameter set construction
+    - [Tutorials](https://pops-uq.github.io/tutorials/) — worked material
+      shared across implementations
+    - [POPSRegression.jl](https://pops-uq.github.io/implementations/julia/) —
+      the Julia implementation
 
-  - Misspecification-aware Bayesian regression for linear models via the POPS algorithm
-  - Hypercube and ensemble posteriors over pointwise optimal parameter sets
-  - Leverage-based filtering of training points for efficient fitting
-  - Predictive uncertainty quantification: min–max bounds, combined and epistemic-only standard deviations
-  - Full scikit-learn compatibility: pipelines, hyperparameter search, and the standard estimator API
-  - Unit testing, including the standard scikit-learn estimator checks
+    In one sentence: standard Bayesian regression estimates epistemic and
+    aleatoric uncertainty but provably ignores model misspecification, which
+    dominates when the noise is small and the model form is limited.
+    `POPSRegression` estimates that missing component for one extra linear
+    solve.
 
 ## Installation
 
@@ -40,23 +34,8 @@ conventions is also available in
 pip install popsregression
 ```
 
-Dependencies: `scikit-learn>=1.6.1`, `scipy>=1.6.0`, `numpy>=1.20.0`.
-
-## Running tests
-
-From the package root directory:
-
-```bash
-pytest -vsl popsregression
-```
-
-If you have [pixi](https://pixi.sh/) installed, the pre-configured tasks are:
-
-```bash
-pixi run test       # run tests
-pixi run lint       # check code style
-pixi run build-doc  # build documentation
-```
+Requires Python >= 3.9. Dependencies: `scikit-learn>=1.6.1`, `scipy>=1.6.0`,
+`numpy>=1.20.0`.
 
 ## Quick start
 
@@ -65,41 +44,48 @@ from popsregression import POPSRegression
 
 X_train, X_test, y_train, y_test = ...
 
-# Fit POPSRegression (fit_intercept=False by default)
+# fit_intercept=False by default
 model = POPSRegression()
 model.fit(X_train, y_train)
 
-# Prediction with combined misspecification + epistemic uncertainty
+# Combined misspecification + epistemic standard deviation
 y_pred, y_std = model.predict(X_test, return_std=True)
-
-# Also return min/max bounds over the posterior
-y_pred, y_std, y_max, y_min = model.predict(
-    X_test, return_std=True, return_bounds=True
-)
-
-# Also return epistemic-only uncertainty separately
-y_pred, y_std, y_max, y_min, y_epistemic_std = model.predict(
-    X_test,
-    return_std=True,
-    return_bounds=True,
-    return_epistemic_std=True,
-)
 ```
 
-`POPSRegression` is fully compatible with scikit-learn pipelines and
-hyperparameter search:
+See [Usage](usage.md) for the full set of fitting and prediction options, and
+[API reference](api.md) for exact signatures.
 
-```python
-from sklearn.pipeline import make_pipeline
-from sklearn.preprocessing import PolynomialFeatures
+## Package scope
 
-pipe = make_pipeline(
-    PolynomialFeatures(degree=4),
-    POPSRegression(resampling_method="sobol"),
-)
-pipe.fit(X_train, y_train)
-y_pred = pipe.predict(X_test)
+  - Misspecification-aware Bayesian regression for linear models via POPS
+  - `'hypercube'` and `'ensemble'` posteriors over pointwise optimal
+    parameter sets
+  - Residual-based selection of training points
+    (`minimal_error`) for efficient fitting
+  - Predictive uncertainty: combined and epistemic-only standard deviations,
+    plus min/max bounds over the posterior
+  - Full scikit-learn compatibility: pipelines, hyperparameter search, cloning
+    and the standard estimator API, validated by the scikit-learn estimator
+    checks
+
+## Development
+
+Run the test suite from the package root:
+
+```bash
+pytest -vsl popsregression
 ```
+
+With [pixi](https://pixi.sh/) the pre-configured tasks are:
+
+```bash
+pixi run test       # run tests
+pixi run lint       # check code style
+pixi run build-doc  # build this documentation
+```
+
+Source and issue tracker:
+[github.com/POPS-UQ/popsregression](https://github.com/POPS-UQ/popsregression).
 
 ## Citation
 
@@ -120,5 +106,6 @@ y_pred = pipe.predict(X_test)
 
 ## Contents
 
-  - [API reference](api.md)
-  - [Example: POPS vs BayesianRidge](example.md)
+  - [Usage](usage.md) — fitting, prediction, parameter choice
+  - [API reference](api.md) — signatures, parameters, attributes
+  - [Example: POPS vs BayesianRidge](example.md) — runnable comparison
