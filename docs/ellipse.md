@@ -64,14 +64,16 @@ $O(N P r)$; gradients are closed form (no autodiff, no sampling). When
 `fit_intercept=True` the intercept coordinate is appended **after**
 whitening and recovered by the corresponding affine correction.
 
-Because the center $\mu$ is optimized jointly with the widths, its
-stationarity condition is a heteroscedastic weighted least squares under
-the fitted widths (per-point precision $1/(q_i v_i)$): the mean is pinned
-where the ellipsoid pinches and relaxed where the misspecification width
-is large, so it deliberately differs from an OLS/`BayesianRidge` mean.
-Pass `optimize_center=False` to freeze the center at the POPS pre-fit
-coefficients and optimize the widths only — a more conservative choice at
-small $N$.
+By default (`optimize_center=False`) the center $\mu$ is frozen at the
+POPS pre-fit coefficients — `coef_` is the familiar
+`BayesianRidge`-style mean — and only the widths are optimized. With
+`optimize_center=True` the center is optimized jointly with the widths;
+its stationarity condition is then a heteroscedastic weighted least
+squares under the fitted widths (per-point precision $1/(q_i v_i)$):
+the mean is pinned where the ellipsoid pinches and relaxed where the
+misspecification width is large, so it deliberately differs from an
+OLS/`BayesianRidge` mean and the fit is tighter but less conservative
+at small $N$.
 
 ## PAC-Bayes layer
 
@@ -112,10 +114,10 @@ than the fitted ellipse's own support (recovered as
 `bounds ∓ 2·y_bound_std`), reverting to it at rate $N$.
 
 For conservative uncertainty in the scarce-data regime (N/P of order
-one), combine the frozen center with the PAC layer:
-`optimize_center=False, pac_bayes=True` keeps the mean at the POPS
-pre-fit and takes the bounds over the 2σ hyperposterior ensemble of
-optimized-width ellipses.
+one), simply enable the PAC layer on the default (frozen-center)
+configuration: `POPSRegressionEllipse(pac_bayes=True)` keeps the mean
+at the POPS pre-fit and takes the bounds over the 2σ hyperposterior
+ensemble of optimized-width ellipses.
 
 ## Quick start
 
@@ -124,7 +126,8 @@ from popsregression import POPSRegressionEllipse
 
 X_train, X_test, y_train, y_test = ...
 
-model = POPSRegressionEllipse()  # baseline='pops', fit_intercept=False
+# Defaults: baseline='pops', optimize_center=False (mean = POPS pre-fit)
+model = POPSRegressionEllipse()
 model.fit(X_train, y_train)
 
 # Predictive std of the pushforward: sqrt(v / (P + 2))

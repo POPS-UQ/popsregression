@@ -235,15 +235,17 @@ class POPSRegressionEllipse(RegressorMixin, BaseEstimator):
         Non-negative per-datum weights ``w_i`` of the empirical
         generalization error ``G_hat = mean_i(w_i * ell_i)``.
 
-    optimize_center : bool, default=True
-        If True, the ellipsoid center is optimized jointly with the
-        widths; its stationarity condition is a heteroscedastic weighted
-        least squares under the fitted widths (weights ``1/(q_i v_i)``),
-        so ``coef_`` deliberately differs from an OLS/BayesianRidge mean.
-        If False, the center is frozen at the warm start (the POPS
-        pre-fit coefficients for ``baseline='pops'``) and only the
-        widths are optimized; with ``pac_bayes=True`` the hyperposterior
-        is then over the width parameters only.
+    optimize_center : bool, default=False
+        If False (default), the ellipsoid center is frozen at the warm
+        start (the POPS pre-fit coefficients for ``baseline='pops'``, so
+        ``coef_`` matches the familiar BayesianRidge-style mean) and
+        only the widths are optimized; with ``pac_bayes=True`` the
+        hyperposterior is then over the width parameters only. If True,
+        the center is optimized jointly with the widths; its
+        stationarity condition is a heteroscedastic weighted least
+        squares under the fitted widths (weights ``1/(q_i v_i)``), so
+        ``coef_`` then deliberately differs from an OLS/BayesianRidge
+        mean and the fit is tighter but less conservative at small N.
 
     random_state : int, RandomState instance or None, default=None
         Seed of the small random initialization of ``U``. For
@@ -462,7 +464,7 @@ class POPSRegressionEllipse(RegressorMixin, BaseEstimator):
         max_iter=500,
         fit_intercept=False,
         weights=None,
-        optimize_center=True,
+        optimize_center=False,
         random_state=None,
         pac_bayes=False,
         hyperprior_center="phase1",

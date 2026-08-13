@@ -15,7 +15,7 @@ instead — content and structure are as specified). Merges cleanly onto
 | `popsregression/tests/test_ellipse_statistics.py` | 1e6-sample MC pushforward vs closed-form density (KS vs Beta((P+1)/2,(P+1)/2), P∈{2,5,9}), `Var = s/(P+2)` to 1%, normalization to P=200, `L_rho` continuity/limits |
 | `popsregression/tests/test_ellipse_estimator.py` | Behavioral, sklearn-compliance, PAC-Bayes and scaling tests (details below) |
 | `docs/ellipse.md` | Math summary + API reference page (mkdocstrings) |
-| `examples/EllipseExample.ipynb` | 3x3 figure: BayesianRidge / POPS Hypercube / POPS Ellipse at N=10/50/500 + PAC-Bayes demo cell |
+| `examples/EllipseExample.ipynb` | 4x3 demo: BayesianRidge / POPS Hypercube / POPS Ellipse / POPS Ellipse + PAC at N=10/50/500, + PAC-Bayes sweep cell |
 
 ## Files touched (small, required)
 
@@ -36,7 +36,7 @@ POPSRegressionEllipse(
     rank=32, delta=1e-3, baseline='pops', baseline_ridge=1e-6,
     whiten_ridge=1e-8, mode_threshold=1e-8,
     rho_schedule=(1e-1, 1e-2, 1e-3, 1e-4), tol=1e-8, max_iter=500,
-    fit_intercept=False, weights=None, optimize_center=True,
+    fit_intercept=False, weights=None, optimize_center=False,
     random_state=None, pac_bayes=False, hyperprior_center='phase1',
     hyperprior_scale=1.0, update_hyperprior=False,
     hh_lambda_1=1e-6, hh_lambda_2=1e-6, n_outer=5, hess_floor=1e-12,
@@ -91,15 +91,19 @@ Three review-driven deviations, decided with Tom during the session:
   collapsed extrapolation coverage to 0.05. `tau2_` stores the effective
   absolute value (after any evidence updates, which operate on absolute
   tau2 as before).
-- **`optimize_center` parameter** (default True = spec behavior): the
+- **`optimize_center` parameter, default False** (deviation from spec
+  §1.3/1.4, which jointly optimizes `(c_t, U)`): by default the center
+  is frozen at the warm start (`coef_` equals the POPS pre-fit
+  coefficients exactly, i.e. the familiar BayesianRidge-style mean) and
+  only the widths are optimized; the PAC-Bayes hyperposterior then
+  covers the width block only (center block of `hyper_sigma_diag_` is
+  zero and excluded from `kl_`/`gamma_`). Rationale: the
   jointly-optimized center satisfies a heteroscedastic-WLS stationarity
-  condition (per-point precision `1/(q_i v_i)`) and deliberately differs
-  from an OLS/BayesianRidge mean. `optimize_center=False` freezes the
-  center at the warm start (`coef_` then equals the POPS pre-fit
-  coefficients exactly) and optimizes widths only; the PAC-Bayes
-  hyperposterior then covers the width block only (center block of
-  `hyper_sigma_diag_` is zero and excluded from `kl_`/`gamma_`). At small
-  N this variant is also the more conservative one.
+  condition (per-point precision `1/(q_i v_i)`) and deliberately
+  differs from an OLS/BayesianRidge mean, which surprised review and is
+  less conservative at small N; it remains available as
+  `optimize_center=True` and its well-specified-limit math stays under
+  test.
 
 Fitted attributes: `coef_`, `intercept_`, `center_whitened_`, `U_`, `rank_`,
 `objective_`, `coverage_fraction_`, `n_iter_`, `n_outer_iter_`, lazy
@@ -171,13 +175,13 @@ properties `ellipsoid_B_` (original/affine coordinates) and `baseline_B0_`
   support). With the default `hyperprior_center='phase1'` the PAC layer
   strictly broadens the predictive std and adds a strictly positive
   bound spread (never narrower). The conservative low-N configuration —
-  the PAC layer's main motivation — is `optimize_center=False,
-  pac_bayes=True`, whose bounds are the 2σ hyperposterior ensemble: on
-  a 10-seed N=10 sweep of the misspecified example they cover 0.99
-  (mean) / 0.92 (min) of the dense truth at ~70% of the hypercube
-  width, vs 0.79 / 0.63 for the hypercube. Locked in by
-  `test_low_n_conservatism_recipe` and shown in the notebook's final
-  figure.
+  the PAC layer's main motivation — is simply `pac_bayes=True` on the
+  (frozen-center) defaults, whose bounds are the 2σ hyperposterior
+  ensemble: on a 10-seed N=10 sweep of the misspecified example they
+  cover 0.99 (mean) / 0.92 (min) of the dense truth at ~70% of the
+  hypercube width, vs 0.79 / 0.63 for the hypercube. Locked in by
+  `test_low_n_conservatism_recipe` and shown as the fourth row of the
+  notebook's demo figure.
 
 ## Suggested squash points
 

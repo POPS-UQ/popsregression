@@ -104,10 +104,13 @@ KL and bound components via a Laplace hyperposterior — no sampling anywhere.
 ```python
 from popsregression import POPSRegressionEllipse
 
-model = POPSRegressionEllipse()  # baseline='pops': POPS warm start + baseline
+# Defaults: baseline='pops', optimize_center=False (mean = POPS pre-fit)
+model = POPSRegressionEllipse()
 model.fit(X_train, y_train)
 
-# std = pushforward std sqrt(v/(P+2)); bounds = support mean +/- sqrt(v)
+# std = pushforward std sqrt(v/(P+2)); bounds = ellipse support
+# mean +/- sqrt(v) (with pac_bayes=True: the max/min over the 2-sigma
+# hyperposterior ensemble of ellipses, strictly broader)
 y_pred, y_std, y_max, y_min = model.predict(
     X_test, return_std=True, return_bounds=True
 )
@@ -118,8 +121,9 @@ y_pred, y_std, y_max, y_min = model.predict(
 | `rank` | `32` | Rank of the low-rank ellipsoid update `B = B0 + U U^T` |
 | `delta` | `1e-3` | Aleatoric width floor added (squared) to predictive widths |
 | `baseline` | `'pops'` | Fixed baseline `B0`: `'pops'`, `'ridge'`, or `'zero'` |
+| `optimize_center` | `False` | Freeze the mean at the POPS pre-fit; `True` optimizes it jointly |
 | `rho_schedule` | `(1e-1, ..., 1e-4)` | Continuation schedule of the log-barrier |
-| `pac_bayes` | `False` | Closed-form PAC-Bayes layer (`kl_`, `bound_`, ...) |
+| `pac_bayes` | `False` | Closed-form PAC-Bayes layer (`kl_`, `bound_`, 2σ-ensemble bounds) |
 
 See the [documentation](https://POPS-UQ.github.io/popsregression) and
 [examples/EllipseExample.ipynb](examples/EllipseExample.ipynb) for details.

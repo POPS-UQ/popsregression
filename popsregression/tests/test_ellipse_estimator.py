@@ -116,9 +116,12 @@ def test_ellipsoid_B_consistent_with_predict():
 # --- Well-specified limit: ellipsoid collapses (test 3) ---
 
 
-def test_well_specified_limit():
+@pytest.mark.parametrize("optimize_center", [False, True])
+def test_well_specified_limit(optimize_center):
     X, y, theta = _make_well_specified_data()
-    model = POPSRegressionEllipse(random_state=0, tol=1e-12).fit(X, y)
+    model = POPSRegressionEllipse(
+        random_state=0, tol=1e-12, optimize_center=optimize_center
+    ).fit(X, y)
 
     ols = np.linalg.lstsq(X, y, rcond=None)[0]
     assert_allclose(model.coef_, ols, atol=1e-6)
@@ -313,9 +316,13 @@ def test_pac_bayes_finite_components():
     # hyperprior_scale is relative: tau2_ = scale * ||psi0||^2 / d.
     psi0 = model._psi0
     assert model.tau2_ == pytest.approx(psi0 @ psi0 / psi0.size)
-    d = model.center_whitened_.size * (1 + model.rank_)
+    n_dim = model.center_whitened_.size
+    d = n_dim * (1 + model.rank_)
     assert model.hyper_sigma_diag_.shape == (d,)
-    assert np.all(model.hyper_sigma_diag_ > 0)
+    # Default optimize_center=False: the frozen center block has zero
+    # hyperposterior variance; the width block is strictly positive.
+    assert np.all(model.hyper_sigma_diag_[:n_dim] == 0.0)
+    assert np.all(model.hyper_sigma_diag_[n_dim:] > 0)
     # The bound dominates the hyperposterior-averaged empirical error.
     assert model.bound_ > model.empirical_H_
 
