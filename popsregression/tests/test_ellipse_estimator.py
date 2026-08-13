@@ -324,25 +324,37 @@ def test_pac_bayes_predictive_spread_added():
     """predict follows the documented delta-method formulas exactly."""
     X_train, y_train, X_dense, _ = _make_misspecified_data(50)
     pac = POPSRegressionEllipse(random_state=0, pac_bayes=True).fit(X_train, y_train)
-    _, std_pac, max_pac, min_pac = pac.predict(
-        X_dense, return_std=True, return_bounds=True
+    _, std_pac, max_pac, min_pac, bstd = pac.predict(
+        X_dense, return_std=True, return_bounds=True, return_bound_std=True
     )
 
-    # Reconstruct from fitted attributes: v = x^T B x + delta^2 + dv with
-    # dv = sum_m z^2 @ Sigma_U[:, m], std = sqrt(v/(P+2) + z^2 @ Sigma_c).
+    # Bounds are the support of the FITTED ellipsoid: mean +/- sqrt(v)
+    # with v = x^T B x + delta^2 (no hyperposterior folding).
     v_point = (
         np.einsum("ij,jk,ik->i", X_dense, pac.ellipsoid_B_, X_dense) + pac.delta**2
     )
+    assert_allclose(0.5 * (max_pac - min_pac), np.sqrt(v_point), rtol=1e-8)
+
+    # std averages over the hyperposterior: sqrt((v+dv)/(P+2) + z^2 Sc);
+    # bound_std is the delta-method std of the bound curves:
+    # sqrt(z^2 Sc + Var[v]/(4v)), Var[v] = 4 sum_m (zU_m)^2 (z^2 SU_m).
     _, Z = pac._whitened_design(X_dense)
     n_dim = X_dense.shape[1]
-    d_v = np.sum((Z * Z) @ pac.hyper_sigma_diag_[n_dim:].reshape(n_dim, -1), axis=1)
+    sigma_u = pac.hyper_sigma_diag_[n_dim:].reshape(n_dim, -1)
+    sigma_u_proj = (Z * Z) @ sigma_u
+    d_v = np.sum(sigma_u_proj, axis=1)
     mean_var = (Z * Z) @ pac.hyper_sigma_diag_[:n_dim]
-    assert_allclose(0.5 * (max_pac - min_pac), np.sqrt(v_point + d_v), rtol=1e-8)
+    var_v = 4.0 * np.sum((Z @ pac.U_) ** 2 * sigma_u_proj, axis=1)
     assert_allclose(
         std_pac, np.sqrt((v_point + d_v) / (n_dim + 2.0) + mean_var), rtol=1e-8
     )
-    # The hyperposterior spread strictly widens the support bounds.
-    assert np.all(d_v > 0)
+    assert_allclose(bstd, np.sqrt(mean_var + var_v / (4.0 * v_point)), rtol=1e-8)
+    assert np.all(d_v > 0) and np.all(bstd > 0)
+
+    # A model fitted without pac_bayes has zero bound spread.
+    bare = POPSRegressionEllipse(random_state=0).fit(X_train, y_train)
+    _, bstd_bare = bare.predict(X_dense, return_bound_std=True)
+    assert_allclose(bstd_bare, 0.0, atol=1e-15)
 
 
 def test_pac_bayes_infinite_tau2_recovers_phase1():
@@ -363,8 +375,9 @@ def test_pac_bayes_never_narrower_than_bare():
     """With hyperprior_center='phase1' the PAC layer only broadens.
 
     The hyperposterior is centered on the phase-1 optimum, so the MAP
-    coincides with the bare fit and the predictive bounds are strictly
-    broader at every point, with the relative broadening decaying with N
+    (and hence the ellipse max/min bounds) coincides with the bare fit
+    exactly; the hyperposterior enters as a strictly positive predictive
+    std inflation and bound spread, whose relative size decays with N
     (rate-N concentration on the bare values).
     """
     rel_broadening = {}
@@ -378,12 +391,22 @@ def test_pac_bayes_never_narrower_than_bare():
             )
         assert np.array_equal(bare.coef_, pac.coef_)
         assert np.array_equal(bare.U_, pac.U_)
-        _, b_max, b_min = bare.predict(X_dense, return_bounds=True)
-        _, p_max, p_min = pac.predict(X_dense, return_bounds=True)
-        assert np.all(p_max > b_max)
-        assert np.all(p_min < b_min)
-        rel_broadening[n_samples] = np.mean((p_max - p_min) / (b_max - b_min) - 1.0)
-    assert rel_broadening[500] < rel_broadening[10]
+
+        # Identical fitted ellipsoid -> identical support bounds...
+        _, b_std, b_max, b_min = bare.predict(
+            X_dense, return_std=True, return_bounds=True
+        )
+        _, p_std, p_max, p_min, p_bstd = pac.predict(
+            X_dense, return_std=True, return_bounds=True, return_bound_std=True
+        )
+        assert_allclose(p_max, b_max, rtol=1e-12)
+        assert_allclose(p_min, b_min, rtol=1e-12)
+        # ...while std and the 2-sigma bound envelope strictly broaden.
+        assert np.all(p_std > b_std)
+        assert np.all(p_bstd > 0)
+        envelope = (p_max + 2 * p_bstd) - (p_min - 2 * p_bstd)
+        rel_broadening[n_samples] = np.mean(envelope / (b_max - b_min) - 1.0)
+    assert 0.0 < rel_broadening[500] < rel_broadening[10]
 
 
 def test_pac_bayes_update_hyperprior_converges():
@@ -474,13 +497,14 @@ def test_optimize_center_false_pac_bayes():
 
 
 def test_low_n_conservatism_recipe():
-    """Frozen center + PAC + evidence is the conservative low-N config.
+    """Frozen center + PAC is the conservative low-N configuration.
 
     At N/P ~ 2 the bare ellipse is the minimum covering support and
-    deliberately tight; freezing the center and adding the hyperposterior
-    spread restores conservatism (the PAC layer's main motivation),
-    covering the dense truth far better than the bare fit at a fraction
-    of the hypercube width.
+    deliberately tight; freezing the center and adding the 2-sigma
+    hyperposterior envelope around the ellipse bounds restores
+    conservatism (the PAC layer's main motivation), covering the dense
+    truth far better than the bare fit at a fraction of the hypercube
+    width.
     """
     X_train, y_train, X_dense, y_dense = _make_misspecified_data(10)
     x_dense = X_dense[:, 1]
@@ -494,14 +518,21 @@ def test_low_n_conservatism_recipe():
         ).fit(X_train, y_train)
     hypercube = POPSRegression(leverage_percentile=0.0).fit(X_train, y_train)
 
-    def coverage_and_width(model):
-        _, y_max, y_min = model.predict(X_dense, return_bounds=True)
+    def coverage_and_width(y_max, y_min):
         covered = np.mean(((y_dense >= y_min) & (y_dense <= y_max))[interp])
         return covered, np.mean(0.5 * (y_max - y_min)[interp])
 
-    cov_bare, hw_bare = coverage_and_width(bare)
-    cov_recipe, hw_recipe = coverage_and_width(recipe)
-    cov_box, hw_box = coverage_and_width(hypercube)
+    _, b_max, b_min = bare.predict(X_dense, return_bounds=True)
+    cov_bare, hw_bare = coverage_and_width(b_max, b_min)
+
+    # Conservative envelope: ellipse max/min +/- 2 sigma hyperposterior.
+    _, r_max, r_min, r_bstd = recipe.predict(
+        X_dense, return_bounds=True, return_bound_std=True
+    )
+    cov_recipe, hw_recipe = coverage_and_width(r_max + 2 * r_bstd, r_min - 2 * r_bstd)
+
+    _, h_max, h_min = hypercube.predict(X_dense, return_bounds=True)
+    cov_box, hw_box = coverage_and_width(h_max, h_min)
 
     assert cov_recipe >= 0.95
     assert cov_recipe >= cov_box

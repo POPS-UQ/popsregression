@@ -43,7 +43,7 @@ POPSRegressionEllipse(
     bound_xi=0.05, subgamma_const=0.0,
 )
 model.fit(X, y)
-model.predict(X, return_std=..., return_bounds=...)
+model.predict(X, return_std=..., return_bounds=..., return_bound_std=...)
 model.sample(n_samples, random_state=None)
 ```
 
@@ -70,6 +70,17 @@ Three review-driven deviations, decided with Tom during the session:
   `bound_`; `'warm_start'` keeps the spec construction and is required
   for `update_hyperprior=True` (ill-posed at `'phase1'`, warned and
   ignored there).
+- **`predict` decomposes the hyperposterior spread** (refinement of spec
+  §1.6, decided with Tom): `return_bounds` always returns the fitted
+  ellipse's max/min support (identical to the bare fit under `'phase1'`
+  centering — the spread is never folded invisibly into the bounds),
+  `return_std` averages the pushforward over the hyperposterior
+  (`sqrt((v + dv)/(P+2) + z^2 Sigma_c)`), and the new
+  `return_bound_std` gives the first-order delta-method std of the
+  bound curves (`sqrt(z^2 Sigma_c + Var[v]/(4v))`,
+  `Var[v] = 4 sum_m (z U_m)^2 (z^2 Sigma_U_m)`), so
+  `bounds ± 2·y_bound_std` is the conservative 2σ envelope shown in the
+  notebook.
 
 - **`hyperprior_scale` is relative, not absolute** (deviation from spec
   §1.5(a)): the effective hyperprior variance is
@@ -157,13 +168,15 @@ properties `ellipsoid_B_` (original/affine coordinates) and `baseline_B0_`
 - At very small N the bare ellipse is deliberately tighter than the POPS
   hypercube min/max bounds (minimum covering support vs un-optimized box
   support). With the default `hyperprior_center='phase1'` the PAC layer
-  strictly broadens it (never narrower). The conservative low-N
-  configuration — the PAC layer's main motivation — is
-  `optimize_center=False, pac_bayes=True`: on a 10-seed N=10 sweep of
-  the misspecified example it covers 0.99 (mean) / 0.91 (min) of the
-  dense truth at ~60% of the hypercube width, vs 0.78 / 0.64 for the
-  hypercube. Locked in by `test_low_n_conservatism_recipe` and shown in
-  the notebook's final figure.
+  strictly broadens the predictive std and adds a strictly positive
+  bound spread (never narrower). The conservative low-N configuration —
+  the PAC layer's main motivation — is `optimize_center=False,
+  pac_bayes=True` with the `bounds ± 2·y_bound_std` envelope: on a
+  10-seed N=10 sweep of the misspecified example it covers 0.99 (mean)
+  / 0.92 (min) of the dense truth at ~70% of the hypercube width, vs
+  0.79 / 0.63 for the hypercube. Locked in by
+  `test_low_n_conservatism_recipe` and shown in the notebook's final
+  figure.
 
 ## Suggested squash points
 

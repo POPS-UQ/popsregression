@@ -104,10 +104,18 @@ its Laplace approximation:
   Tipping/MacKay evidence iteration following the conventions of
   `sklearn.linear_model.BayesianRidge`.
 
+The hyperposterior enters prediction in two documented ways: `y_std`
+averages the pushforward over it, while `return_bound_std` returns the
+delta-method standard deviation of the max/min bound curves — the
+bounds themselves always remain the fitted ellipse's support, so
+`bounds ± 2·y_bound_std` is a conservative 2σ envelope that reverts to
+the bare bounds as $N$ grows.
+
 For conservative uncertainty in the scarce-data regime (N/P of order
 one), combine the frozen center with the PAC layer:
 `optimize_center=False, pac_bayes=True` keeps the mean at the POPS
-pre-fit and adds the hyperposterior spread to the optimized widths.
+pre-fit and wraps the optimized widths in the 2σ hyperposterior
+envelope.
 
 ## Quick start
 
@@ -122,9 +130,15 @@ model.fit(X_train, y_train)
 # Predictive std of the pushforward: sqrt(v / (P + 2))
 y_pred, y_std = model.predict(X_test, return_std=True)
 
-# Support bounds of the pushforward: mean +/- sqrt(v)
+# Support bounds of the fitted ellipsoid pushforward: mean +/- sqrt(v)
 y_pred, y_std, y_max, y_min = model.predict(
     X_test, return_std=True, return_bounds=True
+)
+
+# With pac_bayes=True: hyperposterior std of the bound curves, so that
+# bounds +/- 2 * y_bound_std is a conservative 2-sigma envelope
+y_pred, y_max, y_min, y_bound_std = model.predict(
+    X_test, return_bounds=True, return_bound_std=True
 )
 
 # Posterior parameter draws (affine map of uniform ball samples)

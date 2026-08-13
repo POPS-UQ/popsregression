@@ -792,7 +792,7 @@ class POPSRegressionEllipse(RegressorMixin, BaseEstimator):
             s = s + self.baseline_ridge * np.einsum("ij,ij->i", Z, Z)
         return s
 
-    def predict(self, X, return_std=False, return_bounds=False):
+    def predict(self, X, return_std=False, return_bounds=False, return_bound_std=False):
         """Predict using the ellipsoid pushforward.
 
         The pushforward of the ellipsoid posterior at ``x`` is a
@@ -800,16 +800,24 @@ class POPSRegressionEllipse(RegressorMixin, BaseEstimator):
         squared support half-width ``v = x^T B x + delta**2``. The
         returned standard deviation is the predictive standard deviation
         of that density, ``sqrt(v / (n_dim + 2))`` — note this is the
-        pushforward standard deviation, NOT the support half-width; the
-        bounds are the support, ``mean +/- sqrt(v)``.
+        pushforward standard deviation, NOT the support half-width. The
+        bounds are always the support of the FITTED ellipsoid,
+        ``mean +/- sqrt(v)`` (the ellipse max/min).
 
         If the model was fitted with ``pac_bayes=True``, the analytic
-        (delta-method) hyperposterior spread is added: the mean variance
-        gains ``z^T diag(Sigma_c) z`` and the expected squared width gains
-        ``sum_m z^2 @ Sigma_U[:, m]``, i.e.
-        ``std = sqrt((v + dv) / (n_dim + 2) + z^2 @ Sigma_c)`` and
-        ``bounds = mean +/- sqrt(v + dv)`` with
-        ``dv = sum_m z^2 @ Sigma_U[:, m]``. No sampling is used.
+        (first-order delta-method) hyperposterior spread enters two ways,
+        with no sampling anywhere:
+
+        - ``y_std`` averages over the hyperposterior: the mean variance
+          gains ``z^2 @ Sigma_c`` and the expected squared width gains
+          ``dv = sum_m z^2 @ Sigma_U[:, m]``, i.e.
+          ``std = sqrt((v + dv) / (n_dim + 2) + z^2 @ Sigma_c)``.
+        - ``y_bound_std`` is the hyperposterior standard deviation of the
+          bound curves themselves: ``Var[y_max] = Var[y_min] =
+          z^2 @ Sigma_c + Var[v] / (4 v)`` with
+          ``Var[v] = 4 sum_m (z @ U_m)^2 (z^2 @ Sigma_U[:, m])``, so a
+          conservative envelope is ``bounds +/- 2 * y_bound_std``. For a
+          model fitted without ``pac_bayes`` it is identically zero.
 
         Parameters
         ----------
@@ -822,7 +830,12 @@ class POPSRegressionEllipse(RegressorMixin, BaseEstimator):
 
         return_bounds : bool, default=False
             If True, also return the max and min predictions (support of
-            the pushforward density).
+            the fitted ellipsoid pushforward).
+
+        return_bound_std : bool, default=False
+            If True, also return the hyperposterior standard deviation of
+            the support bounds (zero unless fitted with
+            ``pac_bayes=True``).
 
         Returns
         -------
@@ -838,27 +851,38 @@ class POPSRegressionEllipse(RegressorMixin, BaseEstimator):
 
         y_min : ndarray of shape (n_samples,)
             Lower support bound. Only returned if ``return_bounds=True``.
+
+        y_bound_std : ndarray of shape (n_samples,)
+            Hyperposterior standard deviation of the support bounds. Only
+            returned if ``return_bound_std=True``.
         """
         check_is_fitted(self)
         X = validate_data(self, X, dtype=[np.float64, np.float32], reset=False)
         Xc, Z = self._whitened_design(np.asarray(X, dtype=np.float64))
         y_mean = Z @ self.center_whitened_ + self._y_offset
-        if not (return_std or return_bounds):
+        if not (return_std or return_bounds or return_bound_std):
             return y_mean
 
         v = self._squared_widths(Xc, Z) + self.delta**2
+        v_mixed = v
         mean_var = 0.0
+        bound_var = np.zeros(Z.shape[0])
         if self._pac_bayes_fitted:
             Z2 = Z * Z
-            v = v + np.sum(Z2 @ self._sigma_U, axis=1)
+            sigma_u_proj = Z2 @ self._sigma_U
+            v_mixed = v + np.sum(sigma_u_proj, axis=1)
             mean_var = Z2 @ self._sigma_c
+            var_v = 4.0 * np.sum((Z @ self.U_) ** 2 * sigma_u_proj, axis=1)
+            bound_var = mean_var + var_v / (4.0 * v)
 
         result = [y_mean]
         if return_std:
-            result.append(np.sqrt(v / (self._ball_dim + 2.0) + mean_var))
+            result.append(np.sqrt(v_mixed / (self._ball_dim + 2.0) + mean_var))
         if return_bounds:
             half_width = np.sqrt(v)
             result.extend([y_mean + half_width, y_mean - half_width])
+        if return_bound_std:
+            result.append(np.sqrt(bound_var))
         return tuple(result)
 
     @property
