@@ -150,10 +150,9 @@ def main(argv=None):
             random_state=args.seed, delta=delta, pac_bayes=True,
         )
         pac.fit(X_tr, y_tr)
-        m, s, hi, lo, s_bnd = pac.predict(
-            X_plot, return_std=True, return_bounds=True,
-            return_bound_std=True,
-        )
+        # positional flags: sigma, support bounds, and the hyperposterior
+        # spread of the bounds
+        m, s, hi, lo, s_bnd = pac.predict(X_plot, True, True, True)
         half_env = np.sqrt(X_tr.shape[1] + 2.0) * s + 2.0 * s_bnd
         panels.append((m, m - 2.0 * s, m + 2.0 * s,
                        m - half_env, m + half_env))

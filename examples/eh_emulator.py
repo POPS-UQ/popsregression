@@ -598,7 +598,12 @@ def main(argv=None):
     # ---- 4. replicate fits over the N grid ------------------------------
     print("== replicate fits ==")
     results = {}
-    panel_models = None
+    # keep rep-0 models at the two slice-panel N (smallest, largest) and
+    # at the appendix N
+    n_appendix = 1024 if 1024 in n_grid else n_grid[-1]
+    panel_ns = (min(n_grid), max(n_grid))
+    keep_ns = set(panel_ns) | {n_appendix}
+    stored_cells = {}
     for n in n_grid:
         rows = []
         for rep in range(n_reps):
@@ -610,7 +615,7 @@ def main(argv=None):
             mu, sd = F_tr_raw.mean(0), F_tr_raw.std(0)
             F_tr = (F_tr_raw - mu) / sd
             F_te = (F_pool[idx_test] - mu) / sd
-            want_models = n == 1024 and rep == 0
+            want_models = rep == 0 and n in keep_ns
             out = fit_cell(
                 F_tr, y_tr, F_te, y_test, P,
                 seed_ell=_seed_int(master, 3, n, rep),
@@ -620,7 +625,7 @@ def main(argv=None):
             )
             if want_models:
                 row, models = out
-                panel_models = (idx_tr, mu, sd, models)
+                stored_cells[n] = (idx_tr, mu, sd, models)
             else:
                 row = out
             row["N"], row["rep"] = n, rep
@@ -632,9 +637,9 @@ def main(argv=None):
               f"bound = {_agg(rows, 'bound')[0]:+.3f}, "
               f"G_test = {_agg(rows, 'G_test')[0]:+.3f}", flush=True)
 
-    n_panel = 1024 if 1024 in n_grid else n_grid[-1]
-    if panel_models is None:  # quick grids without N = 1024
-        raise RuntimeError("panel replicate (N = 1024, rep = 0) missing")
+    n_panel = n_appendix
+    if n_panel not in stored_cells:
+        raise RuntimeError(f"appendix replicate (N = {n_panel}) missing")
 
     # ---- 5. acceptance checks on the aggregated results ------------------
     all_rows = [r for n in n_grid for r in results[n]]
@@ -671,8 +676,8 @@ def main(argv=None):
         f"reference = {ref_nats:+.3f} nats; non-vacuous at N in {nonvac}",
     )
 
-    # determinism: refit the panel replicate and compare bitwise
-    idx_tr, mu, sd, (br0, pops0, ell0, pac0) = panel_models
+    # determinism: refit the appendix replicate and compare bitwise
+    idx_tr, mu, sd, (br0, pops0, ell0, pac0) = stored_cells[n_panel]
     F_tr = (F_pool[idx_tr] - mu) / sd
     ell_re = POPSRegressionEllipse(
         rank=RANK, max_iter=MAX_ITER, fit_intercept=True,
@@ -687,16 +692,26 @@ def main(argv=None):
         f"bitwise-identical refit at N = {n_panel}, rep = 0",
     )
 
-    # ---- 6. panel (a) slice ----------------------------------------------
+    # ---- 6. panel (a) slices at the smallest and largest N ---------------
     wc = np.linspace(BOX_LOW[0], BOX_HIGH[0], 400)
     center = 0.5 * (BOX_LOW + BOX_HIGH)
     th_slice = np.tile(center, (wc.size, 1))
     th_slice[:, 0] = wc
     y_slice = np.array([ln_power_qoi(t)[0] for t in th_slice])
-    F_slice = (poly.transform(scale_to_box(th_slice)) - mu) / sd
-    m_sl, e_hi, e_lo = ell0.predict(F_slice, return_bounds=True)
-    _, p_hi, p_lo = pac0.predict(F_slice, return_bounds=True)
-    slice_data = (wc, y_slice, m_sl, e_lo, e_hi, p_lo, p_hi)
+    F_slice_raw = poly.transform(scale_to_box(th_slice))
+    slice_cells = []
+    for n_sl in panel_ns:
+        _, mu_sl, sd_sl, (br_sl, _, ell_sl, pac_sl) = stored_cells[n_sl]
+        F_sl = (F_slice_raw - mu_sl) / sd_sl
+        m_sl, e_hi, e_lo = ell_sl.predict(F_sl, return_bounds=True)
+        _, p_hi, p_lo = pac_sl.predict(F_sl, return_bounds=True)
+        m_br = br_sl.predict(F_sl)
+        s_br = np.sqrt(np.sum((F_sl @ br_sl.sigma_) * F_sl, axis=1))
+        slice_cells.append((n_sl, dict(
+            mean=m_sl, e_lo=e_lo, e_hi=e_hi, p_lo=p_lo, p_hi=p_hi,
+            b_lo=m_br - 4.0 * s_br, b_hi=m_br + 4.0 * s_br,
+        )))
+    slice_data = (wc, y_slice, slice_cells)
 
     # ---- 7. appendix variants at N = n_panel, single replicate -----------
     print("== appendix: estimator variants ==")
