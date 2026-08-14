@@ -42,20 +42,15 @@ import sys
 import time
 from pathlib import Path
 
-import matplotlib
-
-matplotlib.use("Agg")
-
-import matplotlib.pyplot as plt
-import matplotlib.transforms as mtransforms
 import numpy as np
-from matplotlib.ticker import NullFormatter
 from scipy.integrate import quad
 from sklearn.linear_model import BayesianRidge
 from sklearn.preprocessing import PolynomialFeatures
 
 from popsregression import POPSRegression, POPSRegressionEllipse
 from popsregression._projected_ball import projected_ball_logpdf
+
+from eh_emulator_figure import make_figure
 
 # --------------------------------------------------------------------------
 # Protocol constants (one global calibration, frozen; nothing is tuned
@@ -504,103 +499,6 @@ def _agg(rows, key):
     return v.mean(), v.std(), v.min(), v.max()
 
 
-# --------------------------------------------------------------------------
-# Figure
-# --------------------------------------------------------------------------
-
-
-def make_figure(out_stem, slice_data, results, n_grid, ref_nats):
-    """3-panel paper figure, figsize=(9.0, 3.2), quartic-example palette."""
-    plt.rcParams.update({"font.size": 8, "axes.titlesize": 8})
-    fig, axes = plt.subplots(1, 3, figsize=(9.0, 3.2))
-
-    # ---- (a) the misspecification, physically --------------------------
-    ax = axes[0]
-    wc, y_sl, mean_sl, e_lo, e_hi, p_lo, p_hi, n_panel = slice_data
-    ax.fill_between(wc, p_lo, p_hi, color="0.5", alpha=0.30, lw=0,
-                    label="ellipse+PAC ensemble")
-    ax.fill_between(wc, e_lo, e_hi, color="C1", alpha=0.45, lw=0,
-                    label="ellipse support")
-    ax.plot(wc, mean_sl, "C1-", lw=1.8, label="polynomial mean")
-    ax.plot(wc, y_sl, "k-", lw=1.0, label="EH98 engine")
-    ax.set_xlabel(r"$\omega_c = \Omega_c h^2$")
-    ax.set_ylabel(r"$y = \ln P(k_*)$,  $k_* = 0.15\,h\,$Mpc$^{-1}$")
-    ax.set_title(f"sound-horizon slice, $N = {n_panel}$")
-    ax.set_xlim(wc[0], wc[-1])
-    ax.legend(loc="lower left", fontsize=6, frameon=False)
-
-    # ---- (b) coverage & width vs N -------------------------------------
-    ax = axes[1]
-    styles = [
-        ("cov_br", "C2", "s", r"BayesianRidge $\pm4\sigma$"),
-        ("cov_hc", "C0", "D", "POPS hypercube max/min"),
-        ("cov_e", "C1", "o", "ellipse support"),
-        ("cov_pac", "0.35", "^", "ellipse+PAC ensemble"),
-    ]
-    for key, color, marker, label in styles:
-        m = np.array([_agg(results[n], key)[0] for n in n_grid])
-        s = np.array([_agg(results[n], key)[1] for n in n_grid])
-        ax.errorbar(n_grid, m, yerr=s, color=color, marker=marker, ms=3.5,
-                    lw=1.2, capsize=2, label=label)
-    ax.set_xscale("log")
-    ax.set_xticks(n_grid, [str(n) for n in n_grid])
-    ax.xaxis.set_minor_formatter(NullFormatter())
-    ax.set_xlabel("N")
-    ax.set_ylabel("test coverage")
-    ax.set_ylim(0.0, 1.09)
-    ax.set_title("coverage and width vs $N$")
-
-    axr = ax.twinx()
-    for key, color, marker, label in [
-        ("ratio_e_hc", "C1", "o", "ellipse / hypercube width"),
-        ("ratio_pac_hc", "0.35", "^", "+PAC / hypercube width"),
-    ]:
-        m = np.array([100.0 * _agg(results[n], key)[0] for n in n_grid])
-        s = np.array([100.0 * _agg(results[n], key)[1] for n in n_grid])
-        axr.errorbar(n_grid, m, yerr=s, color=color, marker=marker, ms=3.5,
-                     lw=1.0, ls="--", capsize=2, mfc="none", label=label)
-    axr.set_ylabel("band width / hypercube (%)")
-    axr.set_ylim(0, None)
-    h1, l1 = ax.get_legend_handles_labels()
-    h2, l2 = axr.get_legend_handles_labels()
-    ax.legend(h1 + h2, l1 + [lab + " (right)" for lab in l2],
-              loc="lower left", fontsize=5.4, frameon=False)
-
-    # ---- (c) certificate vs truth --------------------------------------
-    ax = axes[2]
-    for key, color, marker, ls, mfc, label in [
-        ("bound", "0.35", "^", "-", "0.35", r"PAC bound $\mathcal{B}$"),
-        ("G_test", "C1", "o", "-", "C1", r"$\hat{G}_{\rm test}$"),
-        ("objective", "C1", "o", "--", "none", r"$\hat{G}_{\rm train}$ (objective)"),
-    ]:
-        m = np.array([_agg(results[n], key)[0] for n in n_grid])
-        s = np.array([_agg(results[n], key)[1] for n in n_grid])
-        ax.errorbar(n_grid, m, yerr=s, color=color, marker=marker, ms=3.5,
-                    lw=1.2, ls=ls, mfc=mfc, capsize=2, label=label)
-    ax.axhline(ref_nats, color="k", ls=":", lw=0.9)
-    blend = mtransforms.blended_transform_factory(ax.transAxes, ax.transData)
-    ax.annotate("ln-uniform reference", (0.97, ref_nats), xycoords=blend,
-                textcoords="offset points", xytext=(0, -3), fontsize=6,
-                ha="right", va="top")
-    ymin, _ = ax.get_ylim()
-    ax.set_ylim(ymin, ref_nats + 0.10 * (ref_nats - ymin))
-    ax.set_xscale("log")
-    ax.set_xticks(n_grid, [str(n) for n in n_grid])
-    ax.xaxis.set_minor_formatter(NullFormatter())
-    ax.set_xlabel("N")
-    ax.set_ylabel("nats")
-    ax.set_title("certificate vs truth")
-    ax.legend(loc="center right", fontsize=6, frameon=False)
-
-    for ax, lab in zip(axes, "abc"):
-        ax.text(0.02, 0.97, f"({lab})", transform=ax.transAxes,
-                fontsize=9, fontweight="bold", va="top")
-
-    fig.tight_layout(pad=0.4)
-    fig.savefig(f"{out_stem}.png", dpi=300)
-    fig.savefig(f"{out_stem}.pdf")
-    plt.close(fig)
-
 
 # --------------------------------------------------------------------------
 # Main experiment
@@ -798,7 +696,7 @@ def main(argv=None):
     F_slice = (poly.transform(scale_to_box(th_slice)) - mu) / sd
     m_sl, e_hi, e_lo = ell0.predict(F_slice, return_bounds=True)
     _, p_hi, p_lo = pac0.predict(F_slice, return_bounds=True)
-    slice_data = (wc, y_slice, m_sl, e_lo, e_hi, p_lo, p_hi, n_panel)
+    slice_data = (wc, y_slice, m_sl, e_lo, e_hi, p_lo, p_hi)
 
     # ---- 7. appendix variants at N = n_panel, single replicate -----------
     print("== appendix: estimator variants ==")
@@ -916,7 +814,27 @@ def main(argv=None):
     # ---- 10. figure ------------------------------------------------------
     args.outdir.mkdir(parents=True, exist_ok=True)
     out_stem = args.outdir / "eh_emulator"
-    make_figure(out_stem, slice_data, results, n_grid, ref_nats)
+    coverage = {
+        short: (
+            np.array([_agg(results[n], key)[0] for n in n_grid]),
+            np.array([_agg(results[n], key)[1] for n in n_grid]),
+        )
+        for short, key in (
+            ("br", "cov_br"), ("hc", "cov_hc"),
+            ("e", "cov_e"), ("pac", "cov_pac"),
+        )
+    }
+    broadening = (
+        np.array([_agg(results[n], "broaden_pct")[0] for n in n_grid]),
+        np.array([_agg(results[n], "broaden_pct")[1] for n in n_grid]),
+    )
+    rel_width = (
+        np.array([_agg(results[n], "width_e")[0] for n in n_grid])
+        / y_test.std(),
+        np.array([_agg(results[n], "width_e")[1] for n in n_grid])
+        / y_test.std(),
+    )
+    make_figure(out_stem, slice_data, n_grid, coverage, broadening, rel_width)
     print(f"figure -> {out_stem}.png / .pdf")
 
     # ---- 11. summary -----------------------------------------------------

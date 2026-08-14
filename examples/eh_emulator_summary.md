@@ -1,6 +1,6 @@
 # Eisenstein-Hu emulator example: summary statistics
 
-Master seed 0; total runtime 9.0 min. Deterministic end-to-end (timing section excepted).
+Master seed 0; total runtime 9.8 min. Deterministic end-to-end (timing section excepted).
 
 QoI: y = ln P(k*) at k* = 0.15 h/Mpc, sigma8-normalized EH98 linear matter power spectrum, z = 0, flat universe, T_CMB = 2.7255 K, no noise anywhere (eps = 0). Pool M = 40000 uniform draws over the box; test = last 8000; validation = 4096; std(y) = 0.1807, test range = 0.7548.
 
@@ -86,8 +86,8 @@ BayesianRidge val RMSE 9.15% of std(y2). Coverage BR/HC/ellipse/+PAC = 0.346 / 0
 
 ## Timing
 
-- degree 4 (P = 125), rank 32, N = 16384, pac_bayes=True: 32.8 s, n_iter_ = 837 (converged)
-- degree 9 (P = 2001), rank 32, N = 16384, pac_bayes=True: 197.1 s, n_iter_ = 965 (converged)
+- degree 4 (P = 125), rank 32, N = 16384, pac_bayes=True: 33.4 s, n_iter_ = 837 (converged)
+- degree 9 (P = 2001), rank 32, N = 16384, pac_bayes=True: 212.3 s, n_iter_ = 965 (converged)
 
 ## Acceptance checks
 
