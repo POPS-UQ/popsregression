@@ -1,6 +1,6 @@
 # Eisenstein-Hu emulator example: summary statistics
 
-Master seed 0; total runtime 8.7 min. Deterministic end-to-end (timing section excepted).
+Master seed 0; total runtime 11.6 min. Deterministic end-to-end (timing section excepted).
 
 QoI: y = ln P(k*) at k* = 0.15 h/Mpc, sigma8-normalized EH98 linear matter power spectrum, z = 0, flat universe, T_CMB = 2.7255 K, no noise anywhere (eps = 0). Pool M = 40000 uniform draws over the box; test = last 8000; validation = 4096; std(y) = 0.1807, test range = 0.7548.
 
@@ -22,12 +22,14 @@ The closed-form sound horizon is checked against direct quadrature of s = int c_
 | 3 | 55 | 0.00648 | 3.58% |
 | 4 | 125 | 0.00407 | 2.25% |
 
-Frozen choice: degree 2, P = 20 (BayesianRidge on 16384 train rows, validated on the 4096-sample split; window [4%, 12%]). Higher degrees are too well-specified (below the window floor), lower too coarse. All quoted fits are safely underparametrized: N/P = 12.8, 51.2, 204.8, 819.2 for N = 256, 1024, 4096, 16384. Support/std ratio sqrt(P + 2) = 4.7. Note rank = 32 >= n_dim = 21: the low-rank update is full-rank here (rank_ = n_dim), so rank truncation is not a binding approximation in this example.
+Frozen choice: degree 2, P = 20 (BayesianRidge on 16384 train rows, validated on the 4096-sample split; window [4%, 12%]). Higher degrees are too well-specified (below the window floor), lower too coarse. All quoted fits are safely underparametrized: N/P = 4.0, 6.4, 12.8, 51.2, 204.8, 819.2 for N = 80, 128, 256, 1024, 4096, 16384. Support/std ratio sqrt(P + 2) = 4.7. Note rank = 32 >= n_dim = 21: the low-rank update is full-rank here (rank_ = n_dim), so rank truncation is not a binding approximation in this example.
 
 ## Test coverage per N (mean +/- std [min] over 10 replicates)
 
 | N | BayesianRidge +/-4sigma | POPS hypercube max/min* | ellipse support | ellipse+PAC ensemble |
 |---|---|---|---|---|
+| 80 | 0.940 +/- 0.019 [0.916] | 0.871 +/- 0.016 [0.847] | 0.986 +/- 0.009 [0.962] | 0.999 +/- 0.001 [0.996] |
+| 128 | 0.866 +/- 0.032 [0.817] | 0.933 +/- 0.022 [0.891] | 0.991 +/- 0.008 [0.978] | 0.999 +/- 0.002 [0.993] |
 | 256 | 0.709 +/- 0.018 [0.676] | 0.982 +/- 0.009 [0.966] | 0.999 +/- 0.001 [0.997] | 1.000 +/- 0.000 [1.000] |
 | 1024 | 0.358 +/- 0.010 [0.345] | 0.999 +/- 0.001 [0.998] | 1.000 +/- 0.000 [1.000] | 1.000 +/- 0.000 [1.000] |
 | 4096 | 0.159 +/- 0.004 [0.151] | 1.000 +/- 0.000 [0.999] | 1.000 +/- 0.000 [1.000] | 1.000 +/- 0.000 [1.000] |
@@ -35,12 +37,14 @@ Frozen choice: degree 2, P = 20 (BayesianRidge on 16384 train rows, validated on
 
 *Sampled with >= 150000 posterior draws per fit. The sampled hypercube max/min under-covers its own analytic pushforward by pure concentration of measure in moderate-to-high P; at this P the effect is mild but present, which is a genuine advantage of the ellipse's analytic pushforward (see appendix discussion).
 
-Uncovered test points for the bare ellipse (excluded from G_test, never clipped): N = 256: mean 9.6, max 24 of 8000; N = 1024: mean 0.0, max 0 of 8000; N = 4096: mean 0.0, max 0 of 8000; N = 16384: mean 0.0, max 0 of 8000.
+Uncovered test points for the bare ellipse (excluded from G_test, never clipped): N = 80: mean 115.9, max 301 of 8000; N = 128: mean 75.4, max 175 of 8000; N = 256: mean 9.6, max 24 of 8000; N = 1024: mean 0.0, max 0 of 8000; N = 4096: mean 0.0, max 0 of 8000; N = 16384: mean 0.0, max 0 of 8000.
 
 ## Band widths
 
 | N | ellipse / hypercube | +PAC / hypercube | ellipse full width / std(y_test) |
 |---|---|---|---|
+| 80 | 257.2 +/- 18.8% | 381.3 +/- 52.2% | 0.90 +/- 0.11 |
+| 128 | 215.8 +/- 13.3% | 314.6 +/- 27.7% | 0.79 +/- 0.06 |
 | 256 | 199.0 +/- 6.0% | 276.5 +/- 10.6% | 0.84 +/- 0.05 |
 | 1024 | 176.6 +/- 5.7% | 230.2 +/- 7.1% | 0.86 +/- 0.01 |
 | 4096 | 164.7 +/- 1.4% | 195.5 +/- 2.7% | 0.87 +/- 0.01 |
@@ -52,23 +56,27 @@ Width ratios are means over the test set of pointwise band-width ratios; the las
 
 | N | mean broadening (+%) |
 |---|---|
+| 80 | +58.5 +/- 14.4% |
+| 128 | +54.0 +/- 7.6% |
 | 256 | +46.0 +/- 3.0% |
 | 1024 | +36.4 +/- 3.2% |
 | 4096 | +22.4 +/- 1.4% |
 | 16384 | +11.3 +/- 0.3% |
 
-Decay +46% -> +36% -> +22% -> +11% over N: the hyperposterior concentrates on the phase-1 optimum at rate N.
+Decay +59% -> +54% -> +46% -> +36% -> +22% -> +11% over N: the hyperposterior concentrates on the phase-1 optimum at rate N.
 
 ## Certificate vs truth (nats; mean +/- std over replicates)
 
 | N | bound_ | G_test | objective_ (train) | gap bound_ - G_test | KL | gamma_ |
 |---|---|---|---|---|---|---|
+| 80 | 2.361 +/- 1.712 | -2.102 +/- 0.150 | -3.170 +/- 0.157 | 4.463 +/- 1.673 | 260.4 +/- 116.6 | 358.1 +/- 64.9 |
+| 128 | 0.552 +/- 0.691 | -2.345 +/- 0.143 | -3.113 +/- 0.091 | 2.897 +/- 0.667 | 276.6 +/- 82.3 | 379.2 +/- 27.9 |
 | 256 | -1.061 +/- 0.144 | -2.614 +/- 0.071 | -2.927 +/- 0.073 | 1.553 +/- 0.154 | 281.7 +/- 35.2 | 386.4 +/- 10.9 |
 | 1024 | -2.286 +/- 0.037 | -2.784 +/- 0.014 | -2.835 +/- 0.020 | 0.497 +/- 0.037 | 356.5 +/- 38.4 | 404.0 +/- 7.7 |
 | 4096 | -2.631 +/- 0.022 | -2.805 +/- 0.011 | -2.816 +/- 0.022 | 0.174 +/- 0.014 | 542.1 +/- 23.9 | 425.8 +/- 1.7 |
 | 16384 | -2.749 +/- 0.003 | -2.807 +/- 0.003 | -2.813 +/- 0.003 | 0.058 +/- 0.002 | 829.6 +/- 5.2 | 437.0 +/- 0.1 |
 
-ln-uniform reference (uniform density over the test data range): -0.281 nats. The certificate is non-vacuous (bound_ below the reference) at N in {256, 1024, 4096, 16384} - every quoted N.
+ln-uniform reference (uniform density over the test data range): -0.281 nats. The certificate is non-vacuous (bound_ below the reference) at N in {256, 1024, 4096, 16384}.
 
 ## Appendix: estimator variants (N = 1024, single replicate)
 
@@ -86,8 +94,8 @@ BayesianRidge val RMSE 9.15% of std(y2). Coverage BR/HC/ellipse/+PAC = 0.346 / 0
 
 ## Timing
 
-- degree 4 (P = 125), rank 32, N = 16384, pac_bayes=True: 33.3 s, n_iter_ = 837 (converged)
-- degree 9 (P = 2001), rank 32, N = 16384, pac_bayes=True: 193.4 s, n_iter_ = 965 (converged)
+- degree 4 (P = 125), rank 32, N = 16384, pac_bayes=True: 39.0 s, n_iter_ = 837 (converged)
+- degree 9 (P = 2001), rank 32, N = 16384, pac_bayes=True: 212.5 s, n_iter_ = 965 (converged)
 
 ## Acceptance checks
 
@@ -102,6 +110,26 @@ BayesianRidge val RMSE 9.15% of std(y2). Coverage BR/HC/ellipse/+PAC = 0.346 / 0
 - [PASS] EH98 T(k->0) -> 1 (box center): T(1e-6/Mpc) = 1.000000
 - [PASS] EH98 wiggle/no-wiggle oscillates about 1 (box center): 9 sign changes, max |ratio-1| = 3.33%
 - [PASS] degree scan lands in the misspecification window: window = [4%, 12%], deg 1: 12.8%, deg 2: 10.5%, deg 3: 3.6%, deg 4: 2.2%
+- [PASS] fit converged & covering (N=80, rep=0): coverage_fraction_ = (1.0000, 1.0000), n_iter_ = (176, 176) of cap 20000
+- [PASS] fit converged & covering (N=80, rep=1): coverage_fraction_ = (1.0000, 1.0000), n_iter_ = (320, 320) of cap 20000
+- [PASS] fit converged & covering (N=80, rep=2): coverage_fraction_ = (1.0000, 1.0000), n_iter_ = (131, 131) of cap 20000
+- [PASS] fit converged & covering (N=80, rep=3): coverage_fraction_ = (1.0000, 1.0000), n_iter_ = (336, 336) of cap 20000
+- [PASS] fit converged & covering (N=80, rep=4): coverage_fraction_ = (1.0000, 1.0000), n_iter_ = (368, 368) of cap 20000
+- [PASS] fit converged & covering (N=80, rep=5): coverage_fraction_ = (1.0000, 1.0000), n_iter_ = (114, 114) of cap 20000
+- [PASS] fit converged & covering (N=80, rep=6): coverage_fraction_ = (1.0000, 1.0000), n_iter_ = (260, 260) of cap 20000
+- [PASS] fit converged & covering (N=80, rep=7): coverage_fraction_ = (1.0000, 1.0000), n_iter_ = (184, 184) of cap 20000
+- [PASS] fit converged & covering (N=80, rep=8): coverage_fraction_ = (1.0000, 1.0000), n_iter_ = (187, 187) of cap 20000
+- [PASS] fit converged & covering (N=80, rep=9): coverage_fraction_ = (1.0000, 1.0000), n_iter_ = (239, 239) of cap 20000
+- [PASS] fit converged & covering (N=128, rep=0): coverage_fraction_ = (1.0000, 1.0000), n_iter_ = (129, 129) of cap 20000
+- [PASS] fit converged & covering (N=128, rep=1): coverage_fraction_ = (1.0000, 1.0000), n_iter_ = (210, 210) of cap 20000
+- [PASS] fit converged & covering (N=128, rep=2): coverage_fraction_ = (1.0000, 1.0000), n_iter_ = (122, 122) of cap 20000
+- [PASS] fit converged & covering (N=128, rep=3): coverage_fraction_ = (1.0000, 1.0000), n_iter_ = (131, 131) of cap 20000
+- [PASS] fit converged & covering (N=128, rep=4): coverage_fraction_ = (1.0000, 1.0000), n_iter_ = (126, 126) of cap 20000
+- [PASS] fit converged & covering (N=128, rep=5): coverage_fraction_ = (1.0000, 1.0000), n_iter_ = (147, 147) of cap 20000
+- [PASS] fit converged & covering (N=128, rep=6): coverage_fraction_ = (1.0000, 1.0000), n_iter_ = (92, 92) of cap 20000
+- [PASS] fit converged & covering (N=128, rep=7): coverage_fraction_ = (1.0000, 1.0000), n_iter_ = (143, 143) of cap 20000
+- [PASS] fit converged & covering (N=128, rep=8): coverage_fraction_ = (1.0000, 1.0000), n_iter_ = (158, 158) of cap 20000
+- [PASS] fit converged & covering (N=128, rep=9): coverage_fraction_ = (1.0000, 1.0000), n_iter_ = (170, 170) of cap 20000
 - [PASS] fit converged & covering (N=256, rep=0): coverage_fraction_ = (1.0000, 1.0000), n_iter_ = (141, 141) of cap 20000
 - [PASS] fit converged & covering (N=256, rep=1): coverage_fraction_ = (1.0000, 1.0000), n_iter_ = (100, 100) of cap 20000
 - [PASS] fit converged & covering (N=256, rep=2): coverage_fraction_ = (1.0000, 1.0000), n_iter_ = (95, 95) of cap 20000
@@ -142,9 +170,9 @@ BayesianRidge val RMSE 9.15% of std(y2). Coverage BR/HC/ellipse/+PAC = 0.346 / 0
 - [PASS] fit converged & covering (N=16384, rep=7): coverage_fraction_ = (1.0000, 1.0000), n_iter_ = (85, 85) of cap 20000
 - [PASS] fit converged & covering (N=16384, rep=8): coverage_fraction_ = (1.0000, 1.0000), n_iter_ = (91, 91) of cap 20000
 - [PASS] fit converged & covering (N=16384, rep=9): coverage_fraction_ = (1.0000, 1.0000), n_iter_ = (93, 93) of cap 20000
-- [PASS] PAC bounds strictly contain bare bounds at every test point: 40/40 fits
+- [PASS] PAC bounds strictly contain bare bounds at every test point: 60/60 fits
 - [PASS] PAC (phase1) MAP identical to bare optimum: coef_ and U_ allclose in every fit
-- [PASS] bound_ finite and monotone non-increasing for N >= 1024: mean bound_ = -1.061 -> -2.286 -> -2.631 -> -2.749
+- [PASS] bound_ finite and monotone non-increasing for N >= 1024: mean bound_ = +2.361 -> +0.552 -> -1.061 -> -2.286 -> -2.631 -> -2.749
 - [PASS] bound_ >= G_test for every fit: no violations
 - [PASS] certificate non-vacuous (bound_ < ln-uniform reference): reference = -0.281 nats; non-vacuous at N in [256, 1024, 4096, 16384]
 - [PASS] deterministic across reruns: bitwise-identical refit at N = 1024, rep = 0
