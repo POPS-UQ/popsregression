@@ -76,7 +76,7 @@ LN_K_GRID = np.log(K_GRID)
 M_POOL = 40_000
 N_TEST = 8_000
 N_VAL = 4_096
-N_GRID = (256, 1024, 4096, 16384)
+N_GRID = (80, 128, 256, 1024, 4096, 16384)
 N_REPS = 10
 SCAN_DEGREES = (1, 2, 3, 4)
 SCAN_N_TRAIN = 16_384
@@ -519,7 +519,7 @@ def main(argv=None):
     master = args.seed
     if args.quick:
         m_pool, n_test, n_val = 12_000, 3_000, 2_048
-        n_grid, n_reps = (256, 1024), 3
+        n_grid, n_reps = (80, 1024), 3
         scan_n_train, hc_min = 6_000, 20_000
         do_timing = False
     else:
@@ -839,17 +839,7 @@ def main(argv=None):
             ("e", "cov_e"), ("pac", "cov_pac"),
         )
     }
-    broadening = (
-        np.array([_agg(results[n], "broaden_pct")[0] for n in n_grid]),
-        np.array([_agg(results[n], "broaden_pct")[1] for n in n_grid]),
-    )
-    rel_width = (
-        np.array([_agg(results[n], "width_e")[0] for n in n_grid])
-        / y_test.std(),
-        np.array([_agg(results[n], "width_e")[1] for n in n_grid])
-        / y_test.std(),
-    )
-    make_figure(out_stem, slice_data, n_grid, coverage, broadening, rel_width)
+    make_figure(out_stem, slice_data, n_grid, coverage)
     print(f"figure -> {out_stem}.png / .pdf")
 
     # ---- 11. summary -----------------------------------------------------
