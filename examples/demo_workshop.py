@@ -49,7 +49,7 @@ METHODS = ("Bayesian Ridge", "POPS Hypercube", "POPS Ellipse",
 
 def target_function(x):
     """Oscillatory engine of the package's quartic example."""
-    return (x**3 + 0.01 * x**4) * 0.1 + np.sin(x) * x * 10.0
+    return ((x)**3)*0.05 * np.exp(10.*x)/(1.0+np.exp(10.*x)) + 5.*np.cos(x) * x
 
 
 def main(argv=None):
@@ -64,7 +64,7 @@ def main(argv=None):
         "legend.fontsize": 11,
     })
 
-    x_plot = np.linspace(-11.0, 11.0, 400)
+    x_plot = np.linspace(-10.0, 10.0, 400)
     y_plot = target_function(x_plot)
     poly = PolynomialFeatures(degree=4, include_bias=True)
     X_plot = poly.fit_transform(x_plot[:, None])
@@ -81,9 +81,12 @@ def main(argv=None):
         x_tr = np.sort(
             np.append(rng.uniform(-1, 1, n - 2), np.linspace(-1, 1, 2))
         ) * 10.0
+
+
         y_tr = target_function(x_tr)
         X_tr = poly.transform(x_tr[:, None])
-        delta = 1e-3 * float(y_tr.std())
+        print(X_tr[0])
+        delta = 1.0e-3 * float(y_tr.std())
 
         # Bayesian Ridge: epistemic-only sigma; outer band +-4 sigma
         br = BayesianRidge(fit_intercept=False)
@@ -114,7 +117,7 @@ def main(argv=None):
 
         # POPS ellipse + PAC: 2 sigma hyperposterior ensemble outer band
         pac = POPSRegressionEllipse(
-            rank=32, max_iter=5000, fit_intercept=False,
+            max_iter=5000, fit_intercept=False,
             random_state=args.seed, delta=delta, pac_bayes=True,
         )
         pac.fit(X_tr, y_tr)
@@ -137,8 +140,8 @@ def main(argv=None):
                 ax.set_xlabel("x")
         axes[row, 0].set_ylabel(f"N = {n}")
 
-    axes[0, 0].set_xlim(-11, 11)
-    axes[0, 0].set_ylim(-250, 250)
+    axes[0, 0].set_xlim(-10, 10)
+    axes[0, 0].set_ylim(-50, 50)
 
     handles = [
         Line2D([], [], color="k", lw=1.1, label="engine"),
