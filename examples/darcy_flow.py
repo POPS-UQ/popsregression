@@ -196,20 +196,22 @@ def generate_pool(m_pool):
 
     The surrogate inputs are the exact KL coordinates used to
     synthesize each field (leading D_KL modes of the sorted product
-    spectrum) — no re-projection.
+    spectrum) — no re-projection. Single-threaded BLAS keeps the pool
+    bit-reproducible.
     """
-    V, lam, order = kl_basis()
-    rng = np.random.default_rng(MASTER_SEED)
-    Z = np.empty((m_pool, D_KL))
-    y_flux = np.empty(m_pool)
-    y_sensor = np.empty(m_pool)
-    for m in range(m_pool):
-        xi = rng.standard_normal((N_NODES, N_NODES))
-        Z[m] = xi.ravel()[order[:D_KL]]
-        a = np.exp(sample_field(xi, V, lam))
-        u = darcy_solve(a)
-        y_flux[m] = flux_qoi(a, u)
-        y_sensor[m] = sensor_qoi(u)
+    with threadpool_limits(limits=1):
+        V, lam, order = kl_basis()
+        rng = np.random.default_rng(MASTER_SEED)
+        Z = np.empty((m_pool, D_KL))
+        y_flux = np.empty(m_pool)
+        y_sensor = np.empty(m_pool)
+        for m in range(m_pool):
+            xi = rng.standard_normal((N_NODES, N_NODES))
+            Z[m] = xi.ravel()[order[:D_KL]]
+            a = np.exp(sample_field(xi, V, lam))
+            u = darcy_solve(a)
+            y_flux[m] = flux_qoi(a, u)
+            y_sensor[m] = sensor_qoi(u)
     return Z, y_flux, y_sensor
 
 
@@ -248,15 +250,16 @@ def tune_sigma_rff(Z_pool, y_pool, omega0, b):
     tr = slice(0, min(2048, n_pool // 2))
     va = slice(max(n_pool - 2000, n_pool // 2), n_pool)
     results = []
-    for sigma in RFF_SIGMA_GRID:
-        F_tr, F_va = standardize(
-            rff_features(Z_pool[tr], omega0, b, sigma),
-            rff_features(Z_pool[va], omega0, b, sigma),
-        )
-        br = BayesianRidge()
-        br.fit(F_tr, y_pool[tr])
-        rmse = float(np.sqrt(np.mean((br.predict(F_va) - y_pool[va]) ** 2)))
-        results.append((sigma, rmse))
+    with threadpool_limits(limits=1):
+        for sigma in RFF_SIGMA_GRID:
+            F_tr, F_va = standardize(
+                rff_features(Z_pool[tr], omega0, b, sigma),
+                rff_features(Z_pool[va], omega0, b, sigma),
+            )
+            br = BayesianRidge()
+            br.fit(F_tr, y_pool[tr])
+            rmse = float(np.sqrt(np.mean((br.predict(F_va) - y_pool[va]) ** 2)))
+            results.append((sigma, rmse))
     sigma_best = min(results, key=lambda r: r[1])[0]
     return sigma_best, results
 
@@ -398,25 +401,30 @@ def run_protocol(
     """Full data protocol: all N, all replicates, fixed feature draw.
 
     Replicates are embarrassingly parallel; every replicate is seeded
-    independently, so the results are identical for any ``n_jobs``.
+    independently and runs with single-threaded BLAS, so the results
+    are bit-identical for any ``n_jobs`` (multi-threaded BLAS changes
+    reduction order, which perturbs the L-BFGS iterate stream at the
+    last digit).
     """
-    F_test_raw = rff_features(Z_test, omega0, b, sigma_rff)
+    with threadpool_limits(limits=1):
+        F_test_raw = rff_features(Z_test, omega0, b, sigma_rff)
     results = {}
     panel_a = {}
     for n_train in train_sizes:
 
         def one_rep(rep):
-            rng = np.random.default_rng([rep, n_train, MASTER_SEED])
-            idx = rng.choice(Z_pool.shape[0], size=n_train, replace=False)
-            F_train_raw = rff_features(Z_pool[idx], omega0, b, sigma_rff)
-            return fit_replicate(
-                F_train_raw,
-                y_pool[idx],
-                F_test_raw,
-                y_test,
-                rep,
-                pops_seed=12345 + 1000 * rep + n_train,
-            )
+            with threadpool_limits(limits=1):
+                rng = np.random.default_rng([rep, n_train, MASTER_SEED])
+                idx = rng.choice(Z_pool.shape[0], size=n_train, replace=False)
+                F_train_raw = rff_features(Z_pool[idx], omega0, b, sigma_rff)
+                return fit_replicate(
+                    F_train_raw,
+                    y_pool[idx],
+                    F_test_raw,
+                    y_test,
+                    rep,
+                    pops_seed=12345 + 1000 * rep + n_train,
+                )
 
         reps = Parallel(n_jobs=n_jobs)(
             delayed(one_rep)(rep) for rep in range(n_replicates)
@@ -491,38 +499,39 @@ def appendix_runs(Z_pool, y_pool, Z_test, y_test, omega0, b, sigma_rff, n_train=
     """
     rng = np.random.default_rng([0, n_train, MASTER_SEED])
     idx = rng.choice(Z_pool.shape[0], size=n_train, replace=False)
-    F_tr, F_te = standardize(
-        rff_features(Z_pool[idx], omega0, b, sigma_rff),
-        rff_features(Z_test, omega0, b, sigma_rff),
-    )
-    y_train = y_pool[idx]
-    delta = DELTA_REL * float(y_train.std())
     out = {}
-    for tag, kwargs in [
-        ("phase1_center_frozen", {}),
-        ("optimize_center", {"optimize_center": True}),
-        ("warm_start_center", {"hyperprior_center": "warm_start"}),
-    ]:
-        model = POPSRegressionEllipse(
-            rank=RANK,
-            delta=delta,
-            random_state=0,
-            fit_intercept=True,
-            pac_bayes=True,
-            **kwargs,
+    with threadpool_limits(limits=1):
+        F_tr, F_te = standardize(
+            rff_features(Z_pool[idx], omega0, b, sigma_rff),
+            rff_features(Z_test, omega0, b, sigma_rff),
         )
-        model.fit(F_tr, y_train)
-        _, p_max, p_min, _ = model.predict(
-            F_te, return_bounds=True, return_bound_std=True
-        )
-        out[tag] = {
-            "bound": float(model.bound_),
-            "kl": float(model.kl_),
-            "objective": float(model.objective_),
-            "coverage_fraction": float(model.coverage_fraction_),
-            "test_coverage": float(np.mean((y_test >= p_min) & (y_test <= p_max))),
-            "mean_width": float(np.mean(p_max - p_min)),
-        }
+        y_train = y_pool[idx]
+        delta = DELTA_REL * float(y_train.std())
+        for tag, kwargs in [
+            ("phase1_center_frozen", {}),
+            ("optimize_center", {"optimize_center": True}),
+            ("warm_start_center", {"hyperprior_center": "warm_start"}),
+        ]:
+            model = POPSRegressionEllipse(
+                rank=RANK,
+                delta=delta,
+                random_state=0,
+                fit_intercept=True,
+                pac_bayes=True,
+                **kwargs,
+            )
+            model.fit(F_tr, y_train)
+            _, p_max, p_min, _ = model.predict(
+                F_te, return_bounds=True, return_bound_std=True
+            )
+            out[tag] = {
+                "bound": float(model.bound_),
+                "kl": float(model.kl_),
+                "objective": float(model.objective_),
+                "coverage_fraction": float(model.coverage_fraction_),
+                "test_coverage": float(np.mean((y_test >= p_min) & (y_test <= p_max))),
+                "mean_width": float(np.mean(p_max - p_min)),
+            }
     return out
 
 
