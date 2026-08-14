@@ -10,3 +10,10 @@ Runnable example scripts for `popsregression`.
   bounds tracking the sampled POPS hypercube bounds, plus the closed-form
   PAC-Bayes layer. See [Ellipsoid
   posteriors](https://POPS-UQ.github.io/popsregression/ellipse/) in the docs.
+- `eh_emulator.py` — the Sim2Science paper's Eisenstein–Hu emulator
+  demonstration: a polynomial surrogate for ln P(k*) of the EH98 linear
+  matter power spectrum (implemented directly, no CAMB/CLASS), certified by
+  `POPSRegressionEllipse` with the PAC-Bayes layer. Deterministic from a
+  master seed; writes the paper figure (`eh_emulator.png`/`.pdf`) and the
+  quoted summary statistics (`eh_emulator_summary.md`). Run with `--quick`
+  for a smoke test.
