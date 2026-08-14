@@ -1,0 +1,77 @@
+Darcy flow example — summary statistics
+============================================================
+solver validation (a == 1) rel. L2 error: 1.994e-04
+sigma_RFF = 32.0  (BayesianRidge validation scan: 1: 5.585e-02, 2: 5.473e-02, 4: 2.360e-02, 8: 1.334e-02, 16: 1.183e-02, 32: 1.175e-02, 64: 1.186e-02, 128: 1.189e-02)
+
+Test coverage (mean +/- std over replicates)
+     N    BayesianRidge        hypercube          ellipse      ellipse+PAC
+    64  0.998 +/- 0.002  0.052 +/- 0.018  1.000 +/- 0.000  1.000 +/- 0.000
+   256  0.980 +/- 0.007  0.006 +/- 0.002  1.000 +/- 0.000  1.000 +/- 0.000
+  1024  0.912 +/- 0.008  0.346 +/- 0.023  1.000 +/- 0.000  1.000 +/- 0.000
+  4096  0.802 +/- 0.006  0.448 +/- 0.014  1.000 +/- 0.000  1.000 +/- 0.000
+
+Mean bound width relative to hypercube (mean +/- std)
+     N          ellipse      ellipse+PAC
+    64  52672.794 +/- 15969.228  74616.076 +/- 22643.069
+   256  105776.814 +/- 22919.521  168765.996 +/- 48294.818
+  1024  62.688 +/- 3.174  75.267 +/- 4.858
+  4096  32.250 +/- 1.010  35.725 +/- 1.107
+
+PAC broadening over bare ellipse: mean(PAC width / bare width - 1)
+     N         64        256       1024       4096
+    +%     +42.2%     +59.1%     +20.8%     +11.5%
+
+PAC certificate vs truth (mean +/- std; nats)
+     N           bound_           G_test              gap   train objective_  uncovered
+    64  +2.184 +/- 10.732  +2.060 +/- 0.021  +0.124 +/- 10.726  -5.065 +/- 0.482       0.0
+   256  +10.759 +/- 7.150  +0.638 +/- 0.031  +10.121 +/- 7.169  -3.928 +/- 0.068       0.0
+  1024  +6.539 +/- 1.993  -2.879 +/- 0.011  +9.418 +/- 1.990  -3.841 +/- 0.044       0.0
+  4096  +1.371 +/- 0.325  -3.073 +/- 0.020  +4.444 +/- 0.320  -3.770 +/- 0.015       0.0
+
+PAC diagnostics (mean over replicates)
+     N        kl_     gamma_    covfrac    n_iter_
+    64     101.81      718.3     1.0000        393
+   256    1242.69     5028.4     1.0000        917
+  1024    4986.67    11280.0     1.0000       1035
+  4096   13538.50    15037.8     1.0000       2000
+
+Timing: single-threaded PAC ellipse fit at P=2048, rank=32, N=4096 (incl. POPS pre-fit): 149.3 s (2000 L-BFGS iterations)
+
+Appendix variants at N = 256 (single replicate)
+               variant     bound_   test cov   mean width   covfrac
+  phase1_center_frozen     +1.436      1.000      56.0125    1.0000
+       optimize_center    +81.966      1.000      37.6909    1.0000
+     warm_start_center    +20.604      1.000       5.1922    1.0000
+  (phase1 bound_ carries the empirical-Bayes caveat of a data-dependent prior center; warm_start does not.)
+
+Notes for the paper text (observed regimes)
+------------------------------------------------------------
+* N < P (interpolation regime, N = 64 and 256 with P = 512): the
+  noise-free engine lets the BayesianRidge mean interpolate, so
+  its epistemic band covers via null-space variance (coverage
+  near 1), the POPS pointwise corrections nearly vanish (sampled
+  hypercube collapses), and the ellipse support at test points
+  is inflated by whitening-clipped extrapolation directions.
+  The section-6 expectations hold in the N >= P regime.
+* The sampled hypercube max/min under-covers at every N here: in
+  P = 513 dimensions the projections of uniformly sampled box
+  points concentrate far inside the true box support (a purely
+  high-dimensional effect, absent in the P = 5 quartic example).
+  The optimized ellipse pushforward needs no sampling and does
+  not suffer from this.
+* The support half-width is sqrt(P + 2) ~ 23x the pushforward
+  std in P = 513 dimensions, so support bands are intrinsically
+  several times the data spread even at N/P = 8.
+* bound_ exceeds G_hat_test only once N >= P (certificate valid
+  from N = 1024 on, gap tightening ~1/N); at smaller N the
+  empirical-Bayes ('phase1') centering and the subgamma_const=0
+  idealization leave the certificate heuristic, as flagged in
+  App. C.
+
+
+Acceptance checks (handoff section 8):
+  [PASS] solver validation rel err < 1e-3
+  [PASS] all fits coverage_fraction_ == 1.0  (min = 1.000000)
+  [PASS] PAC bounds contain bare bounds at every test point  (asserted per replicate)
+  [FAIL] mean bound_ monotone decreasing in N  (sequence: +2.18, +10.76, +6.54, +1.37)
+  *** One or more acceptance checks FAILED — see notes in the summary before quoting numbers. ***
