@@ -36,18 +36,21 @@ def epistemic_std(model, X):
     return np.sqrt(np.sum((X @ model.sigma_) * X, axis=1))
 
 
-def draw_common(ax, x, truth, x_train, y_train, mean):
-    ax.plot(x, truth, "k-", lw=1.6, label="Truth")
-    ax.plot(x, mean, "C1-", lw=2.8, label="Mean")
-    ax.plot(x_train, y_train, "b.", ms=4, label="Train")
+def draw_common(ax, x, truth, x_train, y_train, mean,
+                truth_label="_nolegend_", mean_label="_nolegend_"):
+    ax.plot(x, truth, "k-", lw=1.6, label=truth_label)
+    ax.plot(x, mean, "C1-", lw=2.8, label=mean_label)
+    ax.plot(x_train, y_train, "b.", ms=4, label="_nolegend_")
 
 
 def main():
     rng = np.random.RandomState(42)
     train_sizes = (10, 500)
-    titles = ["Bayesian Ridge", "POPS Hypercube", "POPS Ellipse", "POPS Ellipse + PAC"]
+    titles = [
+        "Bayesian Ridge", "POPS Hypercube", "POPS Ellipse",
+        "POPS Ellipse + PAC"
+    ]
 
-    # Match the compact Burgers presentation: two rows, four method columns.
     fig, axes = plt.subplots(
         len(train_sizes), 4, figsize=(8, 4), sharex=True, sharey=True
     )
@@ -79,7 +82,7 @@ def main():
             mean + 4 * std,
             alpha=0.20,
             facecolor="0.5",
-            label=r"$99.997\%$ ($\pm4\sigma$)",
+            label="max/min ($\\pm4\\sigma$)",
         )
         ax.fill_between(
             x_dense,
@@ -87,9 +90,12 @@ def main():
             mean + 2 * std,
             alpha=0.50,
             facecolor="C1",
-            label=r"$95.45\%$ ($\pm2\sigma$)",
+            label=r"95.45% ($\pm2\sigma$)",
         )
-        draw_common(ax, x_dense, y_dense, x_train, y_train, mean)
+        draw_common(
+            ax, x_dense, y_dense, x_train, y_train, mean,
+            mean_label="mean"
+        )
 
         # POPS variants: full max/min outer band and +/-2 predictive std inner.
         for col, model in ((1, hyc), (2, ell), (3, pac)):
@@ -111,9 +117,12 @@ def main():
                 mean + 2 * std,
                 alpha=0.50,
                 facecolor="C1",
-                label=r"$95.45\%$ ($\pm2\sigma$)",
+                label="95.45%",
             )
-            draw_common(ax, x_dense, y_dense, x_train, y_train, mean)
+            draw_common(
+                ax, x_dense, y_dense, x_train, y_train, mean,
+                truth_label="Truth"
+            )
 
         axes[row, 0].set_ylabel(f"N = {n_samples}", fontsize=11)
 
@@ -125,8 +134,25 @@ def main():
     for ax in axes[-1]:
         ax.set_xlabel("x")
 
-    # Keep one unobtrusive legend, as in the pasted workshop figure.
-    axes[1, 0].legend(fontsize=7, loc="lower right")
+    # Exactly two legends for readability.  BayesianRidge explains the
+    # Gaussian bands; a single POPS panel explains truth and POPS bands.
+    bay_ax = axes[0, 0]
+    handles, labels = bay_ax.get_legend_handles_labels()
+    order = [labels.index("mean"), labels.index("95.45% ($\\pm2\\sigma$)"),
+             labels.index("max/min ($\\pm4\\sigma$)")]
+    bay_ax.legend(
+        [handles[i] for i in order], [labels[i] for i in order],
+        fontsize=7, loc="lower right"
+    )
+
+    pops_ax = axes[0, 2]
+    handles, labels = pops_ax.get_legend_handles_labels()
+    order = [labels.index("Truth"), labels.index("95.45%"),
+             labels.index("max/min")]
+    pops_ax.legend(
+        [handles[i] for i in order], [labels[i] for i in order],
+        fontsize=7, loc="lower right"
+    )
 
     fig.tight_layout(pad=0.7, w_pad=0.4, h_pad=0.3)
     fig.savefig("demo_workshop_burgers_layout.png", dpi=180, bbox_inches="tight")
