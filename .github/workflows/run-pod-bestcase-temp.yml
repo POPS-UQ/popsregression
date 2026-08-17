@@ -1,0 +1,27 @@
+name: temp-run-pod-bestcase
+on:
+  push:
+    paths:
+      - '.github/workflows/run-pod-bestcase-temp.yml'
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install
+        run: python -m pip install -e . matplotlib
+      - name: Run example
+        env:
+          MPLBACKEND: Agg
+        run: |
+          python examples/example_burgers_pod.py | tee pod_bestcase_output.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pod-bestcase-output
+          path: |
+            pod_bestcase_output.txt
+            example_burgers_pod_randomx_r2_m4.png
+            example_burgers_pod_randomx_r2_m4.pdf
