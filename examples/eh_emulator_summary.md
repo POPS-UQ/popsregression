@@ -1,6 +1,6 @@
 # Eisenstein-Hu emulator example: summary statistics
 
-Master seed 0; total runtime 88.7 min (single-pass run authorized: the handoff's 30-min ceiling is exceeded by the P = 146 fits; nothing trimmed). Deterministic end-to-end (timing section excepted).
+Master seed 0; total runtime 88.9 min (single-pass run authorized: the handoff's 30-min ceiling is exceeded by the P = 146 fits; nothing trimmed). Deterministic end-to-end (timing section excepted).
 
 QoI: joint (theta, k) BAO wiggle ratio y = ln[P(k|theta) / P_nw(k|theta)] at the same primordial amplitude, i.e. y = 2 ln[T(kh)/T_nw(kh)] - the k^n_s factor and sigma8 normalization cancel exactly (n_s and sigma8 are inert inputs). EH98 wiggle vs no-wiggle transfer functions, z = 0, flat universe, T_CMB = 2.7255 K, no noise anywhere (eps = 0). Inputs: the 5-parameter box plus k in [0.05, 0.35] h/Mpc, all min-max scaled by their boxes. Pool M = 40000 joint uniform draws; test = last 8000; validation = 4096; train subsets from the first 27904 rows (the exact complement of test+validation; the handoff's 'first 28,000' rounded up). std(y) = 0.02952, max |y| = 0.1373 (engine sanity window (0.005, 0.15); the handoff's 0.10 ceiling is exceeded by genuine physics - box corners reach baryon fraction 0.245 - and was relaxed to 0.15, recorded here). delta = 1e-3 * std(y_train) per fit; the continuation does NOT stall at this floor, so the handoff's fallback loosening to 1e-2 was not needed.
 
@@ -102,8 +102,8 @@ Held-out theta from pool row 32000 (the first test row): (omega_c, omega_b, h, n
 
 ## Timing
 
-- production tensor (k_d = 6, P = 146), rank 32, N = 25600, pac_bayes=True: 30.5 s, n_iter_ = 638 (converged)
-- theta-deg-4 x k-deg-15 tensor (P = 2015), rank 32, N = 25600, pac_bayes=True: 1932.9 s, n_iter_ = 8492 (converged)
+- production tensor (k_d = 6, P = 146), rank 32, N = 25600, pac_bayes=True: 28.8 s, n_iter_ = 638 (converged)
+- theta-deg-4 x k-deg-15 tensor (P = 2015), rank 32, N = 25600, pac_bayes=True: 1927.8 s, n_iter_ = 8492 (converged)
 
 ## Archive
 
