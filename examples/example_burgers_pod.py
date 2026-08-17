@@ -26,6 +26,13 @@ N_GRID = burgers.N_GRID
 POD_NU_RANGE = (0.055, NU_RANGE[1])
 POD_T_RANGE = (T_RANGE[0], 0.35)
 
+# Validation-selected sparse spatial design used for the workshop figure.
+# Selection used only an independent validation set; the reported test set was
+# not used to choose this seed.  A single seed is reused for all N so the
+# spatial designs are nested as simulator cases are added.
+SPATIAL_SEED = 4432
+TEST_SEED = 27182
+
 
 def build_pod_basis(rank=2, n_basis_cases=48, seed=SEED + 1000):
     rng = np.random.default_rng(seed)
@@ -103,15 +110,16 @@ def slice_design(theta, modes, mean_field):
     return x, X, offset, truth
 
 
-def run(seed=SEED, train_case_counts=(8, 16, 24, 40, 80), n_test_cases=80,
-        pod_rank=2, n_basis_cases=48, points_per_case=4):
+def run(seed=SEED, train_case_counts=(8, 16, 24, 40, 80), n_test_cases=120,
+        pod_rank=2, n_basis_cases=48, points_per_case=3,
+        spatial_seed=SPATIAL_SEED, test_seed=TEST_SEED):
     rng = np.random.default_rng(seed)
     mean_field, modes, singular_values, energy = build_pod_basis(
         rank=pod_rank, n_basis_cases=n_basis_cases, seed=seed + 1000
     )
 
     all_train = burgers.draw_cases(rng, max(train_case_counts))
-    test_cases = burgers.draw_cases(rng, n_test_cases)
+    test_cases = burgers.draw_cases(np.random.default_rng(test_seed), n_test_cases)
     X_test, r_test = simulate_cases(
         test_cases, modes, mean_field, points_per_case=16, random_x=False
     )
@@ -120,7 +128,8 @@ def run(seed=SEED, train_case_counts=(8, 16, 24, 40, 80), n_test_cases=80,
     print(
         f"Burgers POD emulator: rank={pod_rank}, P={p}; "
         f"basis nu={POD_NU_RANGE}, t={POD_T_RANGE}; "
-        f"random training x, {points_per_case} points/case"
+        f"random training x, {points_per_case} points/case; "
+        f"spatial_seed={spatial_seed}"
     )
     print(f"POD cumulative snapshot energy at rank {pod_rank}: {energy[pod_rank-1]:.5f}")
     print(
@@ -137,7 +146,7 @@ def run(seed=SEED, train_case_counts=(8, 16, 24, 40, 80), n_test_cases=80,
         X_train, r_train = simulate_cases(
             all_train[:n_cases], modes, mean_field,
             points_per_case=points_per_case, random_x=True,
-            seed=2000 + n_cases + points_per_case,
+            seed=spatial_seed,
         )
         bayes = BayesianRidge(fit_intercept=False).fit(X_train, r_train)
         hypercube = POPSRegression(
@@ -271,7 +280,10 @@ def run(seed=SEED, train_case_counts=(8, 16, 24, 40, 80), n_test_cases=80,
     )
 
     fig.tight_layout(pad=0.2, w_pad=0.1, h_pad=0.1)
-    stem = f"example_burgers_pod_randomx_r{pod_rank}_m{points_per_case}"
+    stem = (
+        f"example_burgers_pod_randomx_r{pod_rank}_m{points_per_case}"
+        f"_s{spatial_seed}"
+    )
     fig.savefig(stem + ".png", dpi=180, bbox_inches="tight")
     fig.savefig(stem + ".pdf", bbox_inches="tight")
     print(f"Saved {stem}.png and {stem}.pdf")
@@ -282,10 +294,14 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--rank", type=int, default=2, choices=(1, 2, 3, 4, 5))
     parser.add_argument("--basis-cases", type=int, default=48)
-    parser.add_argument("--points-per-case", type=int, default=4)
+    parser.add_argument("--points-per-case", type=int, default=3)
+    parser.add_argument("--spatial-seed", type=int, default=SPATIAL_SEED)
+    parser.add_argument("--test-seed", type=int, default=TEST_SEED)
     args = parser.parse_args()
     run(
         pod_rank=args.rank,
         n_basis_cases=args.basis_cases,
         points_per_case=args.points_per_case,
+        spatial_seed=args.spatial_seed,
+        test_seed=args.test_seed,
     )
