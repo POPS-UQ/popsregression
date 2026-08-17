@@ -1,0 +1,58 @@
+name: temp-pod-geometry-eval
+on:
+  push:
+    paths:
+      - '.github/workflows/temp-pod-geometry-eval.yml'
+jobs:
+  eval:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install
+        run: python -m pip install -e . matplotlib
+      - name: Evaluate
+        env:
+          MPLBACKEND: Agg
+        run: |
+          python - <<'PY'
+          import sys
+          sys.path.insert(0,'examples')
+          import numpy as np
+          from sklearn.linear_model import BayesianRidge
+          from popsregression import POPSRegression, POPSRegressionEllipse
+          import example_burgers as burgers
+          import example_burgers_pod as ep
+
+          spatial_seed=6918; m=4
+          mean_field,modes,_,energy=ep.build_pod_basis(rank=2,n_basis_cases=48,seed=1001)
+          rng=np.random.default_rng(1)
+          train=burgers.draw_cases(rng,80)
+          test=burgers.draw_cases(np.random.default_rng(27182),100)
+          Xt,rt=ep.simulate_cases(test,modes,mean_field,points_per_case=16,random_x=False)
+          theta=(0.014,1.15,0.78)
+          x,Xs,off,truth=ep.slice_design(theta,modes,mean_field); target=truth-off
+          def cov(y,lo,hi): return float(np.mean((y>=lo)&(y<=hi)))
+          for n in (8,80):
+              X,r=ep.simulate_cases(train[:n],modes,mean_field,points_per_case=m,
+                                    random_x=True,seed=spatial_seed)
+              br=BayesianRidge(fit_intercept=False).fit(X,r)
+              hy=POPSRegression(minimum_relative_error=0.0,posterior='hypercube').fit(X,r)
+              el=POPSRegressionEllipse(random_state=1).fit(X,r)
+              pa=POPSRegressionEllipse(random_state=1,pac_bayes=True).fit(X,r)
+              bm=br.predict(Xt); bs=burgers.epistemic_bayes_std(br,Xt)
+              _,_,hhi,hlo=hy.predict(Xt,return_std=True,return_bounds=True)
+              _,ehi,elo=el.predict(Xt,return_bounds=True)
+              _,phi,plo,pbsd=pa.predict(Xt,return_bounds=True,return_bound_std=True)
+              _,_,shhi,shlo=hy.predict(Xs,return_std=True,return_bounds=True)
+              _,sehi,selo=el.predict(Xs,return_bounds=True)
+              _,sphi,splo=pa.predict(Xs,return_bounds=True)
+              bw=(phi-plo)-4*pbsd; ok=bw>1e-12
+              plus=float(np.mean((phi[ok]-plo[ok])/bw[ok]-1))
+              print(f'N={n} rows={len(r)} BR4={cov(rt,bm-4*bs,bm+4*bs):.3f} '
+                    f'test H/E/P={cov(rt,hlo,hhi):.3f}/{cov(rt,elo,ehi):.3f}/{cov(rt,plo,phi):.3f} '
+                    f'slice H/E/P={cov(target,shlo,shhi):.3f}/{cov(target,selo,sehi):.3f}/{cov(target,splo,sphi):.3f} '
+                    f'PAC+={100*plus:.1f}%')
+          PY
