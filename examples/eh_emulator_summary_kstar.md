@@ -1,4 +1,4 @@
-# Eisenstein-Hu emulator example: summary statistics
+# ARCHIVED: scalar-QoI (ln P(k*)) protocol results, superseded by the joint (theta, k) wiggle-ratio protocol
 
 Master seed 0; total runtime 10.5 min. Deterministic end-to-end (timing section excepted).
 

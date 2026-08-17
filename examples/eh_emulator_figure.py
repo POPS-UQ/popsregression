@@ -3,20 +3,22 @@ Paper figure for the Eisenstein-Hu emulator example.
 
 Imported by ``eh_emulator.py``; kept in its own module so the
 figure-generation source contains only the statistics shown in the
-figure. Layout: panel (a) as two shared-y sub-panels plus a wide panel
-(b), figsize (9.0, 3.2), dpi 200.
+figure. Layout: panel (a) as two shared-y sub-panels plus panels (b)
+and (c), figsize (9.0, 3.2), dpi 200.
 
-(a) 1D slice along omega_c through the box center at the smallest and
-    largest N (two shared-y sub-panels): engine, fitted degree-2 mean,
-    Bayesian Ridge +-4 sigma band, ellipse support band and PAC
-    ensemble band. The Bayesian Ridge band visibly fails to cover the
-    engine at small N and vanishes at large N, while the certified
-    bands stay misspecification-limited.
+(a) k-slice of the BAO wiggle ratio at one fixed held-out theta, at the
+    smallest and largest N (two shared-y sub-panels): engine y(k),
+    joint-fit mean (smooth envelope, structurally unable to oscillate
+    at the BAO frequency), ellipse support band and PAC ensemble band.
+    The band is the predictive band of a single joint fit evaluated
+    along the slice - one posterior, no pointwise-vs-joint caveat.
 (b) Test coverage vs N for the four methods, mean +- std over
-    replicates, dotted reference at 1. The inset zooms into the
-    near-one region where the bare ellipse under-covers at the
-    smallest N and the PAC ensemble stays pinned at 1 - the advantage
-    of the hierarchical layer.
+    replicates, dotted reference at 1.
+(c) Predictive-std decomposition vs N/P (log-log): the posterior
+    (within-ellipse pushforward) component is misspecification-limited
+    and flat, while the hyperposterior (ensemble spread of the ellipse
+    parameters) decays with N/P - the parameter uncertainty the
+    hierarchical layer adds at small N/P.
 """
 
 # Authors: Thomas D Swinburne <tswin@umich.edu>
@@ -38,7 +40,8 @@ METHOD_STYLES = [
 ]
 
 
-def make_figure(out_stem, slice_data, n_grid, coverage):
+def make_figure(out_stem, slice_data, n_grid, coverage, n_over_p,
+                decomposition):
     """Render and save the figure.
 
     Parameters
@@ -48,11 +51,11 @@ def make_figure(out_stem, slice_data, n_grid, coverage):
         written.
 
     slice_data : tuple
-        ``(wc, y_engine, cells)`` along the omega_c slice, where
-        ``cells`` is a list of two ``(n, curves)`` pairs (smallest and
-        largest N) and ``curves`` maps ``mean``, ``e_lo``/``e_hi``
-        (ellipse support), ``p_lo``/``p_hi`` (PAC ensemble) and
-        ``b_lo``/``b_hi`` (Bayesian Ridge +-4 sigma) to arrays.
+        ``(kg, y_engine, cells)`` along the k-slice at the held-out
+        theta, where ``cells`` is a list of two ``(n, curves)`` pairs
+        (smallest and largest N) and ``curves`` maps ``mean``,
+        ``e_lo``/``e_hi`` (ellipse support) and ``p_lo``/``p_hi``
+        (PAC ensemble) to arrays over the k grid.
 
     n_grid : sequence of int
         Training sizes N (log x-axis of panel b).
@@ -60,6 +63,14 @@ def make_figure(out_stem, slice_data, n_grid, coverage):
     coverage : dict
         Keys ``'br', 'hc', 'e', 'pac'`` mapping to ``(mean, std)``
         arrays of test coverage over replicates, one entry per N.
+
+    n_over_p : array
+        ``N / P`` for each grid value (x-axis of panel c).
+
+    decomposition : dict
+        Keys ``'post'`` and ``'hyper'`` mapping to ``(mean, std)``
+        arrays of the predictive-std components in units of
+        std(y_test), one entry per N.
     """
     plt.rcParams.update({
         "font.size": 14, "axes.titlesize": 14, "axes.labelsize": 14,
@@ -67,30 +78,29 @@ def make_figure(out_stem, slice_data, n_grid, coverage):
         "legend.fontsize": 11,
     })
     fig = plt.figure(figsize=(9.0, 3.2), constrained_layout=True)
-    gs = fig.add_gridspec(1, 3, width_ratios=[1.0, 1.0, 2.2])
+    gs = fig.add_gridspec(1, 4, width_ratios=[1.0, 1.0, 1.5, 1.5])
     ax_a1 = fig.add_subplot(gs[0])
     ax_a2 = fig.add_subplot(gs[1], sharey=ax_a1)
     ax_b = fig.add_subplot(gs[2])
+    ax_c = fig.add_subplot(gs[3])
 
-    # ---- (a) the misspecification, physically, at small and large N ----
-    wc, y_engine, cells = slice_data
+    # ---- (a) the misspecification, physically: the BAO wiggle ----------
+    kg, y_engine, cells = slice_data
     for ax, (n_sl, c) in zip((ax_a1, ax_a2), cells):
-        ax.fill_between(wc, c["p_lo"], c["p_hi"], color="0.75", alpha=0.6,
+        ax.fill_between(kg, c["p_lo"], c["p_hi"], color="0.75", alpha=0.6,
                         lw=0)
-        ax.fill_between(wc, c["e_lo"], c["e_hi"], color="tab:orange",
+        ax.fill_between(kg, c["e_lo"], c["e_hi"], color="tab:orange",
                         alpha=0.45, lw=0)
-        ax.fill_between(wc, c["b_lo"], c["b_hi"], color="tab:green",
-                        alpha=0.75, lw=0)
-        ax.plot(wc, c["mean"], color="tab:orange", lw=1.4)
-        ax.plot(wc, y_engine, "k-", lw=1.2)
-        ax.set_xlim(wc[0], wc[-1])
-        ax.set_xticks([0.08, 0.12, 0.16])
-        ax.set_xlabel(r"$\omega_c$")
+        ax.plot(kg, c["mean"], color="tab:orange", lw=1.4)
+        ax.plot(kg, y_engine, "k-", lw=1.2)
+        ax.set_xlim(kg[0], kg[-1])
+        ax.set_xticks([0.05, 0.2, 0.35])
+        ax.set_xlabel(r"$k$ [$h$/Mpc]")
         ax.set_title(f"N = {n_sl}", fontsize=12)
-    ax_a1.set_ylabel(r"$\ln P(k_*)$")
+    ax_a1.set_ylabel(r"$\ln[P / P_{\rm nw}]$")
     ax_a2.tick_params(labelleft=False)
 
-    # ---- (b) coverage vs N, with a zoom on the near-one region ---------
+    # ---- (b) coverage vs N ---------------------------------------------
     for key, color, marker, label in METHOD_STYLES:
         m, s = coverage[key]
         ax_b.errorbar(n_grid, m, yerr=s, color=color, marker=marker,
@@ -106,26 +116,26 @@ def make_figure(out_stem, slice_data, n_grid, coverage):
                 framealpha=0.9, edgecolor="none", handlelength=1.6,
                 labelspacing=0.35)
 
-    # zoom on the near-one region: the bare ellipse under-covers at the
-    # smallest N while the PAC ensemble stays pinned at 1; the hypercube
-    # curve exits below (its dip is visible on the main axis)
-    axins = ax_b.inset_axes([0.50, 0.42, 0.47, 0.42])
-    zoom_lo = 1.0
-    for key, color, marker, _ in METHOD_STYLES[1:]:
-        m, s = coverage[key]
-        axins.errorbar(n_grid, m, yerr=s, color=color, marker=marker,
-                       ms=3.5, lw=1.1, capsize=1.5)
-        if key in ("e", "pac"):
-            zoom_lo = min(zoom_lo, float((m - s).min()))
-    axins.axhline(1.0, color="k", ls=":", lw=0.8)
-    axins.set_xscale("log")
-    tick_ns = sorted({n_grid[0], 1024, n_grid[-1]})
-    axins.set_xticks(tick_ns, [str(n) for n in tick_ns], fontsize=8)
-    axins.xaxis.set_minor_formatter(NullFormatter())
-    axins.set_ylim(max(0.9, zoom_lo - 0.004), 1.003)
-    axins.tick_params(axis="y", labelsize=8)
+    # ---- (c) predictive-std decomposition vs N/P -----------------------
+    for key, color, marker, mfc, label in [
+        ("post", "tab:orange", "o", "tab:orange",
+         "posterior (within-ellipse)"),
+        ("hyper", "0.35", "^", "0.35", "hyperposterior (ensemble)"),
+    ]:
+        m, s = decomposition[key]
+        ax_c.errorbar(n_over_p, m, yerr=s, color=color, marker=marker,
+                      ms=4.5, lw=1.4, mfc=mfc, capsize=2, label=label)
+    ax_c.set_xscale("log")
+    ax_c.set_yscale("log")
+    ax_c.set_xticks(n_over_p, [f"{v:.0f}" for v in n_over_p])
+    ax_c.xaxis.set_minor_formatter(NullFormatter())
+    ax_c.set_xlabel("N / P")
+    ax_c.set_ylabel(r"predictive std / std$(y)$")
+    ax_c.legend(loc="lower left", fontsize=9, frameon=True,
+                framealpha=0.9, edgecolor="none", handlelength=1.6,
+                labelspacing=0.35)
 
-    for ax, lab in zip((ax_a1, ax_b), "ab"):
+    for ax, lab in zip((ax_a1, ax_b, ax_c), "abc"):
         ax.text(0.03, 0.96, f"({lab})", transform=ax.transAxes,
                 fontsize=14, fontweight="bold", va="top")
 
