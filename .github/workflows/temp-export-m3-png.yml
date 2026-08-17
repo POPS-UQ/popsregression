@@ -1,0 +1,22 @@
+name: temp-export-m3-png
+on:
+  push:
+    paths:
+      - '.github/workflows/temp-export-m3-png.yml'
+permissions:
+  contents: write
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Encode image
+        run: |
+          base64 -w 76 examples/generated/example_burgers_pod_randomx_r2_m3_s4432.png > examples/generated/example_burgers_pod_randomx_r2_m3_s4432.png.b64
+      - name: Commit encoding
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add examples/generated/example_burgers_pod_randomx_r2_m3_s4432.png.b64
+          git commit -m 'temp: encode m3 figure for retrieval' || exit 0
+          git push
