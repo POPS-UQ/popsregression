@@ -9,9 +9,12 @@ and (c), figsize (9.0, 3.2), dpi 200.
 (a) k-slice of the BAO wiggle ratio at one fixed held-out theta, at the
     smallest and largest N (two shared-y sub-panels): engine y(k),
     joint-fit mean (smooth envelope, structurally unable to oscillate
-    at the BAO frequency), ellipse support band and PAC ensemble band.
-    The band is the predictive band of a single joint fit evaluated
-    along the slice - one posterior, no pointwise-vs-joint caveat.
+    at the BAO frequency), the 95.45% (+-2 sigma mass) predictive band
+    of the ellipse pushforward (dark orange; exact equal-tail
+    projected-ball quantile, analytic from the support width), the full
+    ellipse support (light orange) and the PAC ensemble band (grey).
+    All bands are from a single joint fit evaluated along the slice -
+    one posterior, no pointwise-vs-joint caveat.
 (b) Test coverage vs N for the four methods, mean +- std over
     replicates, dotted reference at 1.
 (c) Predictive-std decomposition vs N/P (log-log): the posterior
@@ -30,7 +33,9 @@ import matplotlib
 matplotlib.use("Agg")
 
 import matplotlib.pyplot as plt
+import numpy as np
 from matplotlib.ticker import NullFormatter
+from scipy.special import betaincinv
 
 METHOD_STYLES = [
     ("br", "tab:green", "s", r"Bayesian Ridge $\pm 4\sigma$"),
@@ -86,11 +91,22 @@ def make_figure(out_stem, slice_data, n_grid, coverage, n_over_p,
 
     # ---- (a) the misspecification, physically: the BAO wiggle ----------
     kg, y_engine, cells = slice_data
+    # exact equal-tail 95.45% (+-2 sigma mass) quantile of the
+    # projected-ball pushforward: P(|t| <= q sqrt(v)) = I_{q^2}(1/2,
+    # (n_dim+1)/2); Gaussian limit 2/sqrt(n_dim+2), analytic from the
+    # cached support half-width - no additional simulation
+    P = int(round(n_grid[0] / n_over_p[0]))
+    n_dim = P + 1
+    q95 = float(np.sqrt(betaincinv(0.5, 0.5 * (n_dim + 1.0), 0.9545)))
     for ax, (n_sl, c) in zip((ax_a1, ax_a2), cells):
+        half_sup = 0.5 * (c["e_hi"] - c["e_lo"])
+        mid = 0.5 * (c["e_hi"] + c["e_lo"])
         ax.fill_between(kg, c["p_lo"], c["p_hi"], color="0.75", alpha=0.6,
                         lw=0)
         ax.fill_between(kg, c["e_lo"], c["e_hi"], color="tab:orange",
-                        alpha=0.45, lw=0)
+                        alpha=0.25, lw=0)
+        ax.fill_between(kg, mid - q95 * half_sup, mid + q95 * half_sup,
+                        color="tab:orange", alpha=0.65, lw=0)
         ax.plot(kg, c["mean"], color="tab:orange", lw=1.4)
         ax.plot(kg, y_engine, "k-", lw=1.2)
         ax.set_xlim(kg[0], kg[-1])
