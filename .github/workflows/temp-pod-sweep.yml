@@ -12,8 +12,7 @@ jobs:
         with:
           python-version: '3.12'
       - name: Install
-        run: |
-          python -m pip install -e . matplotlib
+        run: python -m pip install -e . matplotlib
       - name: Sweep
         env:
           MPLBACKEND: Agg
@@ -27,79 +26,42 @@ jobs:
           import example_burgers as burgers
           import example_burgers_pod as ep
 
-          def cov(y, lo, hi):
-              return np.mean((y >= lo) & (y <= hi))
+          def cov(y, lo, hi): return np.mean((y >= lo) & (y <= hi))
 
-          def evaluate(name, low, ppc, pod_nu, pod_t, theta):
-              ep.POD_NU_RANGE = pod_nu
-              ep.POD_T_RANGE = pod_t
-              mean_field, modes, sv, energy = ep.build_pod_basis(rank=2, n_basis_cases=48, seed=1001)
-              rng = np.random.default_rng(1)
-              all_train = burgers.draw_cases(rng, 80)
-              test_cases = burgers.draw_cases(rng, 80)
-              Xtest, rtest = ep.simulate_cases(test_cases, modes, mean_field, points_per_case=16)
-              p = Xtest.shape[1]
+          def evaluate(low, theta):
+              ep.POD_NU_RANGE=(0.055,0.08); ep.POD_T_RANGE=(0.15,0.35)
+              mean_field,modes,_,energy=ep.build_pod_basis(rank=2,n_basis_cases=48,seed=1001)
+              rng=np.random.default_rng(1)
+              train=burgers.draw_cases(rng,80); test=burgers.draw_cases(rng,80)
+              Xt,rt=ep.simulate_cases(test,modes,mean_field,points_per_case=16)
+              p=Xt.shape[1]
+              print(f'\n### low={low}, theta={theta}, PODenergy={energy[1]:.6f}')
+              for n in (low,80):
+                  X,r=ep.simulate_cases(train[:n],modes,mean_field,points_per_case=12)
+                  br=BayesianRidge(fit_intercept=False).fit(X,r)
+                  hy=POPSRegression(minimum_relative_error=0.0,posterior='hypercube').fit(X,r)
+                  el=POPSRegressionEllipse(random_state=1).fit(X,r)
+                  pa=POPSRegressionEllipse(random_state=1,pac_bayes=True).fit(X,r)
+                  x,Xs,off,truth=ep.slice_design(theta,modes,mean_field); target=truth-off
+                  bm=br.predict(Xs); bs=burgers.epistemic_bayes_std(br,Xs)
+                  hm,hs,hhi,hlo=hy.predict(Xs,return_std=True,return_bounds=True)
+                  em,ehi,elo=el.predict(Xs,return_bounds=True)
+                  eqlo,eqhi=burgers.bare_percentile_interval(el,Xs)
+                  pm,phi,plo,pbsd=pa.predict(Xs,return_bounds=True,return_bound_std=True)
+                  pqlo,pqhi=burgers.pac_percentile_interval(pa,Xs)
+                  _,_,thhi,thlo=hy.predict(Xt,return_std=True,return_bounds=True)
+                  _,tehi,telo=el.predict(Xt,return_bounds=True)
+                  _,tphi,tplo,tpbsd=pa.predict(Xt,return_bounds=True,return_bound_std=True)
+                  bw=(tphi-tplo)-4*tpbsd; ok=bw>1e-12
+                  pacplus=np.mean((tphi[ok]-tplo[ok])/bw[ok]-1)
+                  print(f'N={n:2d} rows={len(r):3d} rows/P={len(r)/p:5.2f} '
+                        f'slice95 H/E/P={cov(target,hm-2*hs,hm+2*hs):.2f}/{cov(target,eqlo,eqhi):.2f}/{cov(target,pqlo,pqhi):.2f} '
+                        f'sliceMAX H/E/P={cov(target,hlo,hhi):.2f}/{cov(target,elo,ehi):.2f}/{cov(target,plo,phi):.2f} '
+                        f'testMAX H/E/P={cov(rt,thlo,thhi):.3f}/{cov(rt,telo,tehi):.3f}/{cov(rt,tplo,tphi):.3f} '
+                        f'PAC+={100*pacplus:.1f}% widths={np.mean(hhi-hlo):.3f}/{np.mean(ehi-elo):.3f}/{np.mean(phi-plo):.3f}')
 
-              vals = []
-              for n in (low, 80):
-                  X, r = ep.simulate_cases(all_train[:n], modes, mean_field, points_per_case=ppc)
-                  br = BayesianRidge(fit_intercept=False).fit(X, r)
-                  hy = POPSRegression(minimum_relative_error=0.0, posterior='hypercube').fit(X, r)
-                  el = POPSRegressionEllipse(random_state=1).fit(X, r)
-                  pa = POPSRegressionEllipse(random_state=1, pac_bayes=True).fit(X, r)
-
-                  x, Xs, off, truth = ep.slice_design(theta, modes, mean_field)
-                  target = truth - off
-
-                  bm = br.predict(Xs); bs = burgers.epistemic_bayes_std(br, Xs)
-                  hm, hs, hhi, hlo = hy.predict(Xs, return_std=True, return_bounds=True)
-                  em, ehi, elo = el.predict(Xs, return_bounds=True)
-                  eqlo, eqhi = burgers.bare_percentile_interval(el, Xs)
-                  pm, phi, plo, pbsd = pa.predict(Xs, return_bounds=True, return_bound_std=True)
-                  pqlo, pqhi = burgers.pac_percentile_interval(pa, Xs)
-
-                  _, _, thhi, thlo = hy.predict(Xtest, return_std=True, return_bounds=True)
-                  _, tehi, telo = el.predict(Xtest, return_bounds=True)
-                  _, tphi, tplo, tpbsd = pa.predict(Xtest, return_bounds=True, return_bound_std=True)
-                  bw = (tphi - tplo) - 4*tpbsd
-                  ok = bw > 1e-12
-                  pacplus = np.mean((tphi[ok]-tplo[ok])/bw[ok]-1) if np.any(ok) else np.nan
-
-                  vals.append(dict(
-                      n=n, rows=len(r), ratio=len(r)/p,
-                      rmse=np.sqrt(np.mean((em-target)**2)),
-                      br95=cov(target,bm-2*bs,bm+2*bs), brmax=cov(target,bm-4*bs,bm+4*bs),
-                      hy95=cov(target,hm-2*hs,hm+2*hs), hymax=cov(target,hlo,hhi),
-                      el95=cov(target,eqlo,eqhi), elmax=cov(target,elo,ehi),
-                      pa95=cov(target,pqlo,pqhi), pamax=cov(target,plo,phi),
-                      testhy=cov(rtest,thlo,thhi), testel=cov(rtest,telo,tehi), testpa=cov(rtest,tplo,tphi),
-                      pacplus=pacplus,
-                      wh=np.mean(hhi-hlo), we=np.mean(ehi-elo), wp=np.mean(phi-plo),
-                  ))
-              print('\n###', name)
-              print('basis',pod_nu,pod_t,'theta',theta,'ppc',ppc,'energy',f'{energy[1]:.6f}')
-              for v in vals:
-                  print(
-                    f"Ncase={v['n']:2d} rows={v['rows']:3d} rows/P={v['ratio']:5.2f} RMSE={v['rmse']:.3f} | "
-                    f"slice95 BR/H/E/P={v['br95']:.2f}/{v['hy95']:.2f}/{v['el95']:.2f}/{v['pa95']:.2f} | "
-                    f"sliceMAX BR/H/E/P={v['brmax']:.2f}/{v['hymax']:.2f}/{v['elmax']:.2f}/{v['pamax']:.2f} | "
-                    f"testMAX H/E/P={v['testhy']:.3f}/{v['testel']:.3f}/{v['testpa']:.3f} | "
-                    f"PAC+={100*v['pacplus']:.1f}% widths H/E/P={v['wh']:.3f}/{v['we']:.3f}/{v['wp']:.3f}"
-                  )
-
-          configs = [
-              ('baseline',8,12,(0.055,0.08),(0.15,0.35),(0.014,1.15,0.78)),
-              ('ppc8',8,8,(0.055,0.08),(0.15,0.35),(0.014,1.15,0.78)),
-              ('ppc6',8,6,(0.055,0.08),(0.15,0.35),(0.014,1.15,0.78)),
-              ('ppc4',8,4,(0.055,0.08),(0.15,0.35),(0.014,1.15,0.78)),
-              ('low6_ppc6',6,6,(0.055,0.08),(0.15,0.35),(0.014,1.15,0.78)),
-              ('extreme_ppc6',8,6,(0.055,0.08),(0.15,0.35),(0.013,1.20,0.90)),
-              ('narrow_ppc6',8,6,(0.060,0.08),(0.15,0.30),(0.014,1.15,0.78)),
-              ('narrow_extreme_ppc6',8,6,(0.060,0.08),(0.15,0.30),(0.013,1.20,0.90)),
-          ]
-          for c in configs:
-              try:
-                  evaluate(*c)
-              except Exception as e:
-                  print('\n###',c[0],'FAILED',repr(e))
+          for low in (3,4,5,6,8):
+              evaluate(low,(0.014,1.15,0.78))
+          for low in (4,5,6):
+              evaluate(low,(0.013,1.20,0.90))
           PY
