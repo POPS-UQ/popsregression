@@ -79,7 +79,7 @@ def main():
             mean + 4 * std,
             alpha=0.20,
             facecolor="0.5",
-            label=r"$99.997\%$ ($\pm4\sigma$)",
+            label=r"max/min ($\simeq\pm4\sigma$)",
         )
         ax.fill_between(
             x_dense,

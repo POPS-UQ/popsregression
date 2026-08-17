@@ -14,7 +14,7 @@ from sklearn.linear_model import BayesianRidge
 
 from popsregression import POPSRegression, POPSRegressionEllipse
 
-SEED = 7
+SEED = 17
 NU_RANGE = (0.012, 0.08)
 AMP_RANGE = (0.7, 1.3)
 T_RANGE = (0.25, 0.85)
@@ -139,7 +139,7 @@ def projected_ball_nll(y, mean, lo, hi, dim, delta=1e-3):
     return float(np.mean(0.5*np.log(v) - log_c - k*np.log(q))), 0
 
 
-def run(seed=SEED, train_case_counts=(10, 16, 24, 40, 80), n_test_cases=80,
+def run(seed=SEED, train_case_counts=(8, 16, 24, 40, 80), n_test_cases=80,
         harmonic_order=2):
     rng = np.random.default_rng(seed)
     all_train = draw_cases(rng, max(train_case_counts))
@@ -217,7 +217,7 @@ def run(seed=SEED, train_case_counts=(10, 16, 24, 40, 80), n_test_cases=80,
     X_slice = make_features(z_slice, harmonic_order)
 
     shown_counts = (train_case_counts[0], train_case_counts[-1])
-    fig, axes = plt.subplots(2, 4, figsize=(10, 5), sharex=True, sharey=True)
+    fig, axes = plt.subplots(2, 4, figsize=(8, 4), sharex=True, sharey=True)
     titles = [
         "Bayesian Ridge", "POPS Hypercube", "POPS Ellipse",
         "POPS Ellipse + PAC"
@@ -242,7 +242,7 @@ def run(seed=SEED, train_case_counts=(10, 16, 24, 40, 80), n_test_cases=80,
         ax = axes[row_idx, 0]
         ax.fill_between(
             x, b_mean - 4*b_std, b_mean + 4*b_std,
-            alpha=0.20, facecolor="0.85", label=r"$99.997\%$"
+            alpha=0.20, facecolor="0.5", label=r"$99.997\%$"
         )
         ax.fill_between(
             x, b_mean - 2*b_std, b_mean + 2*b_std,
@@ -252,7 +252,7 @@ def run(seed=SEED, train_case_counts=(10, 16, 24, 40, 80), n_test_cases=80,
 
         # POPS Hypercube
         ax = axes[row_idx, 1]
-        ax.fill_between(x, h_lo, h_hi, alpha=0.20, facecolor="0.85",
+        ax.fill_between(x, h_lo, h_hi, alpha=0.20, facecolor="0.5",
                         label="max/min")
         ax.fill_between(
             x, h_mean - 2*h_std, h_mean + 2*h_std,
@@ -262,7 +262,7 @@ def run(seed=SEED, train_case_counts=(10, 16, 24, 40, 80), n_test_cases=80,
 
         # POPS Ellipse
         ax = axes[row_idx, 2]
-        ax.fill_between(x, e_lo, e_hi, alpha=0.20, facecolor="0.85",
+        ax.fill_between(x, e_lo, e_hi, alpha=0.20, facecolor="0.5",
                         label="max/min")
         ax.fill_between(x, e_qlo, e_qhi, alpha=0.45, facecolor="C1",
                         label=r"$95.45\%$")
@@ -270,7 +270,7 @@ def run(seed=SEED, train_case_counts=(10, 16, 24, 40, 80), n_test_cases=80,
 
         # POPS Ellipse + PAC
         ax = axes[row_idx, 3]
-        ax.fill_between(x, p_lo, p_hi, alpha=0.20, facecolor="0.85",
+        ax.fill_between(x, p_lo, p_hi, alpha=0.20, facecolor="0.5",
                         label="max/min")
         ax.fill_between(x, p_qlo, p_qhi, alpha=0.45, facecolor="C1",
                         label=r"$95.45\%$")
