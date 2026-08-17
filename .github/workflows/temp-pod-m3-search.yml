@@ -3,6 +3,8 @@ on:
   push:
     paths:
       - '.github/workflows/temp-pod-m3-search.yml'
+permissions:
+  contents: write
 jobs:
   search:
     runs-on: ubuntu-latest
@@ -17,7 +19,7 @@ jobs:
         env:
           MPLBACKEND: Agg
         run: |
-          python - <<'PY'
+          python - <<'PY' | tee examples/pod_m3_search_results.txt
           import sys
           sys.path.insert(0, 'examples')
           import numpy as np
@@ -130,3 +132,10 @@ jobs:
                     f'slice H/E/P={cov(rslice,shlo,shhi):.3f}/{cov(rslice,selo,sehi):.3f}/{cov(rslice,splo,sphi):.3f} '
                     f'PAC+={100*plus:.1f}%')
           PY
+      - name: Commit sweep results
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add examples/pod_m3_search_results.txt
+          git commit -m 'temp: record m3 sweep results' || exit 0
+          git push
