@@ -242,13 +242,13 @@ def run(seed=SEED, train_case_counts=(8, 16, 24, 40, 80), n_test_cases=80,
         ax = axes[row_idx, 0]
         ax.fill_between(
             x, b_mean - 4*b_std, b_mean + 4*b_std,
-            alpha=0.20, facecolor="0.5", label=r"$99.997\%$"
+            alpha=0.20, facecolor="0.85", label=r"max/min ($\pm4\sigma$)"
         )
         ax.fill_between(
             x, b_mean - 2*b_std, b_mean + 2*b_std,
-            alpha=0.45, facecolor="C1", label=r"$95.45\%$"
+            alpha=0.45, facecolor="C1", label=r"$95.45\%$ ($\pm2\sigma$)"
         )
-        ax.plot(x, b_mean, "C1-", lw=2)
+        ax.plot(x, b_mean, "C1-", lw=2, label="mean")
 
         # POPS Hypercube
         ax = axes[row_idx, 1]
@@ -278,15 +278,35 @@ def run(seed=SEED, train_case_counts=(8, 16, 24, 40, 80), n_test_cases=80,
 
         for col in range(4):
             ax = axes[row_idx, col]
-            ax.plot(x, truth, "k-", lw=1.5, label="Truth")
+            truth_label = "Truth" if col == 2 else "_nolegend_"
+            ax.plot(x, truth, "k-", lw=1.5, label=truth_label)
             ax.tick_params(labelsize=8)
             if row_idx == 1:
                 ax.set_xlabel("x", fontsize=9)
 
         axes[row_idx, 0].set_ylabel(f"N = {n_cases}\nu(x,t)", fontsize=9)
 
-    # One compact legend, as in the polynomial workshop presentation.
-    axes[0, 1].legend(fontsize=7, loc="lower left")
+    # Two legends only: one explains Bayesian notation, one explains POPS.
+    # Use the top row so the bottom row remains visually uncluttered.
+    br_handles, br_labels = axes[0, 0].get_legend_handles_labels()
+    # Reorder to mean, 95.45%, max/min.
+    br_order = [2, 1, 0]
+    axes[0, 0].legend(
+        [br_handles[i] for i in br_order],
+        [br_labels[i] for i in br_order],
+        fontsize=7, loc="lower left"
+    )
+
+    pops_handles, pops_labels = axes[0, 2].get_legend_handles_labels()
+    # Reorder to Truth, 95.45%, max/min.
+    label_to_handle = dict(zip(pops_labels, pops_handles))
+    pops_order = ["Truth", r"$95.45\%$", "max/min"]
+    axes[0, 2].legend(
+        [label_to_handle[label] for label in pops_order],
+        pops_order,
+        fontsize=7, loc="lower left"
+    )
+
     fig.tight_layout()
     out = f"burgers_sim2science_h{harmonic_order}.png"
     fig.savefig(out, dpi=180, bbox_inches="tight")
