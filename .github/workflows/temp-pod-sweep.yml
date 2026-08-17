@@ -59,7 +59,7 @@ jobs:
                   pqlo, pqhi = burgers.pac_percentile_interval(pa, Xs)
 
                   # full-domain support coverage
-                  _, thhi, thlo = hy.predict(Xtest, return_bounds=True)
+                  _, _, thhi, thlo = hy.predict(Xtest, return_std=True, return_bounds=True)
                   _, tehi, telo = el.predict(Xtest, return_bounds=True)
                   _, tphi, tplo, tpbsd = pa.predict(Xtest, return_bounds=True, return_bound_std=True)
                   bw = (tphi - tplo) - 4*tpbsd
@@ -77,7 +77,6 @@ jobs:
                       pacplus=pacplus,
                       wh=np.mean(hhi-hlo), we=np.mean(ehi-elo), wp=np.mean(phi-plo),
                   ))
-              lo, hi = vals
               print('\n###', name)
               print('basis',pod_nu,pod_t,'theta',theta,'ppc',ppc,'energy',f'{energy[1]:.6f}')
               for v in vals:
