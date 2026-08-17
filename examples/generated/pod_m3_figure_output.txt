@@ -1,9 +1,0 @@
-Burgers POD emulator: rank=2, P=8; basis nu=(0.055, 0.08), t=(0.15, 0.35); random training x, 3 points/case; spatial_seed=4432
-POD cumulative snapshot energy at rank 2: 0.99984
-cases rows rows/P  BRcov4s  Hcov  Ellcov PACcov  PAC+%   slice H/E/P max
-    8   24   3.00     0.771 0.407  0.752  0.942  111.4%   0.44/0.85/0.88
-   16   48   6.00     0.698 0.664  0.876  0.938   56.7%   0.67/0.90/0.90
-   24   72   9.00     0.765 0.813  0.949  0.968   48.0%   0.75/0.90/0.92
-   40  120  15.00     0.770 0.758  0.975  0.983   44.2%   0.65/0.92/0.94
-   80  240  30.00     0.629 0.924  0.993  0.994   27.7%   0.84/0.96/0.96
-Saved example_burgers_pod_randomx_r2_m3_s4432.png and example_burgers_pod_randomx_r2_m3_s4432.pdf
