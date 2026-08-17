@@ -1,12 +1,12 @@
 """Small-N POPS/PAC-Bayes emulator for viscous Burgers' equation.
 
 A cheap deterministic PDE simulator is emulated by a deliberately restricted
-13-parameter linear basis.  The basis captures the broad dependence on
-viscosity, amplitude, time and position but cannot reproduce the higher
-spatial harmonics generated as the Burgers front steepens.  The example is
-therefore a compact simulation-to-science demonstration of model-form
-misspecification: ordinary parameter uncertainty contracts with data while
-POPS retains uncertainty associated with the unresolved physics.
+17-parameter linear basis.  The basis captures the fundamental and leading
+second spatial harmonic, but omits the higher harmonics generated as the
+Burgers front steepens.  The example is therefore a compact
+simulation-to-science demonstration of model-form misspecification: ordinary
+parameter uncertainty contracts with data while POPS retains uncertainty
+associated with unresolved physics.
 
 The PAC diagnostics mirror the EH workshop example: the script reports the
 held-out projected-ball negative log predictive density G_test, the PAC bound,
@@ -76,15 +76,16 @@ def raw_inputs(nu, amp, time, x):
 
 
 def make_features(z):
-    """Restricted P=13 basis with deliberately missing higher harmonics.
+    """Restricted P=17 basis with only the leading nonlinear harmonic.
 
-    Burgers evolution transfers power from the fundamental sin(x) mode into
-    higher harmonics as the front steepens.  This basis includes only the
-    fundamental spatial mode and a few physically natural parameter-mode
-    interactions.  It can track the broad response but cannot remove the
-    structured front error by collecting more data.
+    Burgers evolution transfers power from sin(x) into successively higher
+    harmonics as the front steepens.  Including sin(2x)/cos(2x) makes the mean
+    visibly more realistic than a fundamental-only surrogate, while omission
+    of n>=3 harmonics leaves structured, irreducible model-form error.
     """
     nu, amp, time, sx, cx = z.T
+    s2 = 2.0 * sx * cx
+    c2 = cx * cx - sx * sx
     return np.column_stack(
         [
             np.ones(len(z)),
@@ -93,6 +94,8 @@ def make_features(z):
             time,
             sx,
             cx,
+            s2,
+            c2,
             amp * sx,
             time * sx,
             time * cx,
@@ -100,6 +103,8 @@ def make_features(z):
             nu * cx,
             amp * time,
             nu * time,
+            amp * s2,
+            time * s2,
         ]
     )
 
@@ -145,7 +150,7 @@ def coverage(y, lo, hi):
 def projected_ball_nll(y, mean, lo, hi, dim, delta=1e-3):
     """Mean exact projected-ball NLL for a uniform dim-ball pushforward.
 
-    ``lo`` and ``hi`` are the bare ellipsoid support bounds.  Points outside
+    ``lo`` and ``hi`` are the bare ellipsoid support bounds. Points outside
     support have infinite NLL; this is reported rather than clipped.
     """
     radius = 0.5 * (hi - lo)
@@ -155,7 +160,6 @@ def projected_ball_nll(y, mean, lo, hi, dim, delta=1e-3):
     if not np.all(inside):
         return np.inf, int(np.sum(~inside))
 
-    # C_d = Gamma(d/2+1) / (sqrt(pi) Gamma((d+1)/2))
     log_c = gammaln(0.5 * dim + 1.0) - 0.5 * np.log(np.pi) - gammaln(
         0.5 * (dim + 1.0)
     )
@@ -245,7 +249,8 @@ def run(seed=SEED, train_case_counts=(6, 10, 16, 24, 40), n_test_cases=80):
         if uncovered:
             print(f"      note: {uncovered}/{len(y_test)} test points outside bare support")
 
-    # Hard low-viscosity slice: missing higher harmonics are visually obvious.
+    # Hard low-viscosity slice: higher harmonics omitted from the emulator
+    # remain visible without making the mean qualitatively wrong.
     theta = (0.014, 1.15, 0.78)
     x, truth = burgers_solution(*theta)
     z_slice = raw_inputs(
@@ -256,39 +261,50 @@ def run(seed=SEED, train_case_counts=(6, 10, 16, 24, 40), n_test_cases=80):
     )
     X_slice = make_features(z_slice)
 
-    fig, axes = plt.subplots(2, 2, figsize=(10, 7), sharex="col")
-    for col, n_cases in enumerate((train_case_counts[0], train_case_counts[-1])):
+    # Rows: scarce-data and data-rich fits. Columns: BR, POPS, POPS+PAC.
+    shown_counts = (train_case_counts[0], train_case_counts[-1])
+    fig, axes = plt.subplots(2, 3, figsize=(13, 7), sharex=True, sharey=True)
+    column_titles = ["BayesianRidge", "POPS ellipse", "POPS + PAC"]
+    for col, title in enumerate(column_titles):
+        axes[0, col].set_title(title)
+
+    for row_idx, n_cases in enumerate(shown_counts):
         bayes, ellipse, pac = fitted[n_cases]
         b_mean = bayes.predict(X_slice)
         b_std = epistemic_bayes_std(bayes, X_slice)
+        e_mean, e_hi, e_lo = ellipse.predict(X_slice, return_bounds=True)
         p_mean, p_hi, p_lo = pac.predict(X_slice, return_bounds=True)
 
-        ax = axes[0, col]
+        ax = axes[row_idx, 0]
         ax.plot(x, truth, "k-", lw=2, label="Burgers truth")
-        ax.plot(x, b_mean, "C1-", lw=2, label="restricted emulator")
+        ax.plot(x, b_mean, "C1-", lw=2, label="emulator mean")
         ax.fill_between(
             x,
             b_mean - 4 * b_std,
             b_mean + 4 * b_std,
             alpha=0.25,
-            label=r"BayesianRidge $\pm4\sigma$",
+            label=r"$\pm4\sigma$ epistemic",
         )
-        ax.set_title(f"{n_cases} simulator cases")
-        ax.set_ylabel("u(x,t)")
-        ax.legend(fontsize=8)
 
-        ax = axes[1, col]
+        ax = axes[row_idx, 1]
+        ax.plot(x, truth, "k-", lw=2, label="Burgers truth")
+        ax.plot(x, e_mean, "C1-", lw=2, label="POPS mean")
+        ax.fill_between(x, e_lo, e_hi, alpha=0.3, label="ellipse support")
+
+        ax = axes[row_idx, 2]
         ax.plot(x, truth, "k-", lw=2, label="Burgers truth")
         ax.plot(x, p_mean, "C1-", lw=2, label="POPS mean")
-        ax.fill_between(x, p_lo, p_hi, alpha=0.3, label="POPS ellipse + PAC")
-        ax.set_xlabel("x")
-        ax.set_ylabel("u(x,t)")
-        ax.legend(fontsize=8)
+        ax.fill_between(x, p_lo, p_hi, alpha=0.3, label="ellipse + PAC")
+
+        axes[row_idx, 0].set_ylabel(f"{n_cases} simulator cases\nu(x,t)")
+        for col in range(3):
+            axes[row_idx, col].legend(fontsize=8, loc="lower left")
+            if row_idx == 1:
+                axes[row_idx, col].set_xlabel("x")
 
     fig.suptitle(
         "Viscous Burgers: structured model-form error survives as data increase\n"
-        r"$u_t + u u_x = \nu u_{xx}$; restricted fundamental-mode surrogate, P="
-        + str(p)
+        r"$u_t + u u_x = \nu u_{xx}$; two-harmonic surrogate, P=" + str(p)
     )
     fig.tight_layout()
     fig.savefig("burgers_sim2science.png", dpi=180, bbox_inches="tight")
