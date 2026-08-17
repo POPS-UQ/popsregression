@@ -542,7 +542,14 @@ def main(argv=None):
                     help="output directory for figure and summary")
     ap.add_argument("--skip-p2000", action="store_true",
                     help="skip the large P~2000 timing attempt")
+    ap.add_argument("--replot", action="store_true",
+                    help="re-render the figure from the cached "
+                         "eh_emulator_figdata.npz of a previous run "
+                         "(no fitting)")
     args = ap.parse_args(argv)
+
+    if args.replot:
+        return replot(args.outdir)
 
     master = args.seed
     if args.quick:
@@ -879,6 +886,8 @@ def main(argv=None):
         for short, key in (("post", "s_post"), ("hyper", "s_hyper"))
     }
     n_over_p = np.array(n_grid, dtype=float) / P
+    save_figdata(args.outdir / "eh_emulator_figdata.npz", slice_data,
+                 n_grid, coverage, n_over_p, decomposition)
     make_figure(out_stem, slice_data, n_grid, coverage, n_over_p,
                 decomposition)
     print(f"figure -> {out_stem}.png / .pdf")
@@ -896,6 +905,52 @@ def main(argv=None):
     print(f"total: {total_min:.1f} min; acceptance checks "
           f"{'ALL PASSED' if checks.all_passed else 'FAILED'}")
     return 0 if checks.all_passed else 1
+
+
+# --------------------------------------------------------------------------
+# Figure-data cache: lets the figure be re-rendered without refitting
+# --------------------------------------------------------------------------
+
+
+def save_figdata(path, slice_data, n_grid, coverage, n_over_p,
+                 decomposition):
+    """Save the exact make_figure inputs of this run to ``path``."""
+    kg, y_slice, slice_cells = slice_data
+    arrays = dict(kg=kg, y_slice=y_slice, n_grid=np.array(n_grid),
+                  n_over_p=n_over_p,
+                  panel_ns=np.array([n for n, _ in slice_cells]))
+    for i, (_, c) in enumerate(slice_cells):
+        for key, val in c.items():
+            arrays[f"cell{i}_{key}"] = val
+    for short, (m, s) in coverage.items():
+        arrays[f"cov_{short}_m"], arrays[f"cov_{short}_s"] = m, s
+    for short, (m, s) in decomposition.items():
+        arrays[f"dec_{short}_m"], arrays[f"dec_{short}_s"] = m, s
+    np.savez(path, **arrays)
+
+
+def replot(outdir):
+    """Re-render the figure from the cached inputs of a previous run."""
+    path = outdir / "eh_emulator_figdata.npz"
+    if not path.exists():
+        print(f"no cached figure data at {path}; run the full experiment")
+        return 1
+    d = np.load(path)
+    slice_cells = [
+        (int(n), {key: d[f"cell{i}_{key}"]
+                  for key in ("mean", "e_lo", "e_hi", "p_lo", "p_hi")})
+        for i, n in enumerate(d["panel_ns"])
+    ]
+    slice_data = (d["kg"], d["y_slice"], slice_cells)
+    n_grid = [int(n) for n in d["n_grid"]]
+    coverage = {short: (d[f"cov_{short}_m"], d[f"cov_{short}_s"])
+                for short in ("br", "hc", "e", "pac")}
+    decomposition = {short: (d[f"dec_{short}_m"], d[f"dec_{short}_s"])
+                     for short in ("post", "hyper")}
+    make_figure(outdir / "eh_emulator", slice_data, n_grid, coverage,
+                d["n_over_p"], decomposition)
+    print(f"figure -> {outdir / 'eh_emulator'}.png / .pdf (from cache)")
+    return 0
 
 
 # --------------------------------------------------------------------------

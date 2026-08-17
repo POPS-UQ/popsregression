@@ -97,6 +97,10 @@ def make_figure(out_stem, slice_data, n_grid, coverage, n_over_p,
         ax.set_xticks([0.05, 0.2, 0.35])
         ax.set_xlabel(r"$k$ [$h$/Mpc]")
         ax.set_title(f"N = {n_sl}", fontsize=12)
+    # clip the small-N extrapolation flare at the k-box edges so the
+    # BAO oscillation stays legible
+    amp_a = 4.5 * float(abs(y_engine).max())
+    ax_a1.set_ylim(-amp_a, amp_a)
     ax_a1.set_ylabel(r"$\ln[P / P_{\rm nw}]$")
     ax_a2.tick_params(labelleft=False)
 
@@ -107,7 +111,8 @@ def make_figure(out_stem, slice_data, n_grid, coverage, n_over_p,
                       ms=4.5, lw=1.4, capsize=2, label=label)
     ax_b.axhline(1.0, color="k", ls=":", lw=1.0)
     ax_b.set_xscale("log")
-    ax_b.set_xticks(n_grid, [str(n) for n in n_grid])
+    ax_b.set_xticks(n_grid, [str(n) for n in n_grid], rotation=35,
+                    ha="right", rotation_mode="anchor")
     ax_b.xaxis.set_minor_formatter(NullFormatter())
     ax_b.set_ylim(0.0, 1.02)
     ax_b.set_xlabel("N")
@@ -127,11 +132,20 @@ def make_figure(out_stem, slice_data, n_grid, coverage, n_over_p,
                       ms=4.5, lw=1.4, mfc=mfc, capsize=2, label=label)
     ax_c.set_xscale("log")
     ax_c.set_yscale("log")
+    mh, sh = decomposition["hyper"]
+    mp, sp = decomposition["post"]
+    y_lo = 0.75 * float((mh - sh).min())
+    y_hi = 1.35 * float((mp + sp).max())
+    ax_c.set_ylim(y_lo, y_hi)
     ax_c.set_xticks(n_over_p, [f"{v:.0f}" for v in n_over_p])
     ax_c.xaxis.set_minor_formatter(NullFormatter())
+    ticks = [t for t in (0.1, 0.15, 0.2, 0.3, 0.5, 0.7, 1.0, 1.5, 2.0)
+             if y_lo <= t <= y_hi]
+    ax_c.set_yticks(ticks, [f"{t:g}" for t in ticks])
+    ax_c.yaxis.set_minor_formatter(NullFormatter())
     ax_c.set_xlabel("N / P")
     ax_c.set_ylabel(r"predictive std / std$(y)$")
-    ax_c.legend(loc="lower left", fontsize=9, frameon=True,
+    ax_c.legend(loc="upper right", fontsize=9, frameon=True,
                 framealpha=0.9, edgecolor="none", handlelength=1.6,
                 labelspacing=0.35)
 
