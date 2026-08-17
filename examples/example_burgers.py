@@ -14,10 +14,10 @@ from sklearn.linear_model import BayesianRidge
 
 from popsregression import POPSRegression, POPSRegressionEllipse
 
-SEED = 17
+SEED = 1
 NU_RANGE = (0.012, 0.08)
 AMP_RANGE = (0.7, 1.3)
-T_RANGE = (0.25, 0.85)
+T_RANGE = (0.15, 0.95)
 N_GRID = 96
 
 
@@ -217,7 +217,7 @@ def run(seed=SEED, train_case_counts=(8, 16, 24, 40, 80), n_test_cases=80,
     X_slice = make_features(z_slice, harmonic_order)
 
     shown_counts = (train_case_counts[0], train_case_counts[-1])
-    fig, axes = plt.subplots(2, 4, figsize=(8, 4), sharex=True, sharey=True)
+    fig, axes = plt.subplots(2, 4, figsize=(8, 3), sharex=True, sharey=True)
     titles = [
         "Bayesian Ridge", "POPS Hypercube", "POPS Ellipse",
         "POPS Ellipse + PAC"
@@ -283,6 +283,7 @@ def run(seed=SEED, train_case_counts=(8, 16, 24, 40, 80), n_test_cases=80,
             ax.tick_params(labelsize=8)
             if row_idx == 1:
                 ax.set_xlabel("x", fontsize=9)
+            ax.set_ylim(-2,2)
 
         axes[row_idx, 0].set_ylabel(f"N = {n_cases}\nu(x,t)", fontsize=9)
 
@@ -301,13 +302,13 @@ def run(seed=SEED, train_case_counts=(8, 16, 24, 40, 80), n_test_cases=80,
     # Reorder to Truth, 95.45%, max/min.
     label_to_handle = dict(zip(pops_labels, pops_handles))
     pops_order = ["Truth", r"$95.45\%$", "max/min"]
-    axes[0, 2].legend(
+    axes[0, 1].legend(
         [label_to_handle[label] for label in pops_order],
         pops_order,
         fontsize=7, loc="lower left"
     )
 
-    fig.tight_layout()
+    fig.tight_layout(pad=0.2, w_pad=0.1, h_pad=0.1)
     out = f"example_burgers_h{harmonic_order}.png"
     fig.savefig(out, dpi=180, bbox_inches="tight")
     print(f"Saved {out}")
@@ -320,5 +321,6 @@ if __name__ == "__main__":
         "--harmonics", type=int, choices=(2, 3, 4), default=2,
         help="number of Fourier harmonics retained in the surrogate"
     )
+    parser.add_argument("--seed", type=int,default=7)
     args = parser.parse_args()
-    run(harmonic_order=args.harmonics)
+    run(seed=args.seed,harmonic_order=args.harmonics)
