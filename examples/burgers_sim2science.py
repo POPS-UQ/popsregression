@@ -113,7 +113,7 @@ def bare_percentile_interval(model, X, half_percentile=0.33):
     return mean - hw, mean + hw
 
 
-def pac_percentile_interval(model, X, half_percentile=0.33):
+def pac_percentile_interval(model, X, half_percentile=0.5-0.023):
     """Central percentile interval with the same 2-sigma PAC envelope as max/min.
 
     For percentile fraction q, the fitted-ellipse bound is mean +/- q*sqrt(v).
@@ -147,7 +147,7 @@ def projected_ball_nll(y, mean, lo, hi, dim, delta=1e-3):
     return float(np.mean(0.5*np.log(v) - log_c - k*np.log(q))), 0
 
 
-def run(seed=SEED, train_case_counts=(6, 10, 16, 24, 40), n_test_cases=80,
+def run(seed=SEED, train_case_counts=(10, 16, 24, 40, 1000), n_test_cases=80,
         harmonic_order=2):
     rng = np.random.default_rng(seed)
     all_train = draw_cases(rng, max(train_case_counts))
@@ -225,21 +225,21 @@ def run(seed=SEED, train_case_counts=(6, 10, 16, 24, 40), n_test_cases=80,
         ax.plot(x, truth, "k-", lw=2, label="Burgers truth")
         ax.plot(x, b_mean, "C1-", lw=2, label="emulator mean")
         ax.fill_between(x, b_mean-4*b_std, b_mean+4*b_std, alpha=0.20,
-                        label=r"$\pm4\sigma$")
-        ax.fill_between(x, b_mean-b_std, b_mean+b_std, alpha=0.45,
-                        label=r"$\pm\sigma$")
+                        label=r"$99.997\%$ confidence ($\pm4\sigma$)")
+        ax.fill_between(x, b_mean-b_std, b_mean+2*b_std, alpha=0.45,
+                        label=r"$95.45\%$ confidence ($\pm2\sigma$)")
 
         ax = axes[row_idx, 1]
         ax.plot(x, truth, "k-", lw=2, label="Burgers truth")
         ax.plot(x, e_mean, "C1-", lw=2, label="POPS mean")
-        ax.fill_between(x, e_lo, e_hi, alpha=0.20, label="max/min")
-        ax.fill_between(x, e_qlo, e_qhi, alpha=0.45, label=r"$50\pm33\%$")
+        ax.fill_between(x, e_lo, e_hi, alpha=0.20, label=r"$99.997\%$ confidence")
+        ax.fill_between(x, e_qlo, e_qhi, alpha=0.45,label=r"$95.45\%$ confidence")
 
         ax = axes[row_idx, 2]
         ax.plot(x, truth, "k-", lw=2, label="Burgers truth")
         ax.plot(x, p_mean, "C1-", lw=2, label="POPS mean")
-        ax.fill_between(x, p_lo, p_hi, alpha=0.20, label="max/min")
-        ax.fill_between(x, p_qlo, p_qhi, alpha=0.45, label=r"$50\pm33\%$")
+        ax.fill_between(x, p_lo, p_hi, alpha=0.20, label=r"$99.997\%$ confidence")
+        ax.fill_between(x, p_qlo, p_qhi, alpha=0.45, label=r"$95.45\%$ confidence")
 
         axes[row_idx, 0].set_ylabel(f"{n_cases} simulator cases\nu(x,t)")
         for col in range(3):
