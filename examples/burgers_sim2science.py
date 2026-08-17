@@ -208,9 +208,10 @@ def run(seed=SEED, train_case_counts=(10, 16, 24, 40, 1000), n_test_cases=80,
     X_slice = make_features(z_slice, harmonic_order)
 
     shown_counts = (train_case_counts[0], train_case_counts[-1])
-    fig, axes = plt.subplots(2, 3, figsize=(13, 7), sharex=True, sharey=True)
+    # Match the compact presentation width/aspect of EllipseExample.ipynb.
+    fig, axes = plt.subplots(2, 3, figsize=(8, 5.0), sharex=True, sharey=True)
     for col, title in enumerate(["BayesianRidge", "POPS ellipse", "POPS + PAC"]):
-        axes[0, col].set_title(title)
+        axes[0, col].set_title(title, fontsize=10)
 
     for row_idx, n_cases in enumerate(shown_counts):
         bayes, ellipse, pac = fitted[n_cases]
@@ -218,37 +219,43 @@ def run(seed=SEED, train_case_counts=(10, 16, 24, 40, 1000), n_test_cases=80,
         b_std = epistemic_bayes_std(bayes, X_slice)
         e_mean, e_hi, e_lo = ellipse.predict(X_slice, return_bounds=True)
         p_mean, p_hi, p_lo = pac.predict(X_slice, return_bounds=True)
-        e_qlo, e_qhi = bare_percentile_interval(ellipse, X_slice)
-        p_qlo, p_qhi = pac_percentile_interval(pac, X_slice)
+        e_qlo, e_qhi = bare_percentile_interval(ellipse, X_slice,
+                                                half_percentile=0.5-0.023)
+        p_qlo, p_qhi = pac_percentile_interval(pac, X_slice,
+                                               half_percentile=0.5-0.023)
 
         ax = axes[row_idx, 0]
-        ax.plot(x, truth, "k-", lw=2, label="Burgers truth")
+        ax.plot(x, truth, "k-", lw=1.5, label="Burgers truth")
         ax.plot(x, b_mean, "C1-", lw=2, label="emulator mean")
         ax.fill_between(x, b_mean-4*b_std, b_mean+4*b_std, alpha=0.20,
                         label=r"$99.997\%$ confidence ($\pm4\sigma$)")
-        ax.fill_between(x, b_mean-b_std, b_mean+2*b_std, alpha=0.45,
+        ax.fill_between(x, b_mean-2*b_std, b_mean+2*b_std, alpha=0.45,
                         label=r"$95.45\%$ confidence ($\pm2\sigma$)")
 
         ax = axes[row_idx, 1]
-        ax.plot(x, truth, "k-", lw=2, label="Burgers truth")
+        ax.plot(x, truth, "k-", lw=1.5, label="Burgers truth")
         ax.plot(x, e_mean, "C1-", lw=2, label="POPS mean")
         ax.fill_between(x, e_lo, e_hi, alpha=0.20, label=r"$99.997\%$ confidence")
-        ax.fill_between(x, e_qlo, e_qhi, alpha=0.45,label=r"$95.45\%$ confidence")
+        ax.fill_between(x, e_qlo, e_qhi, alpha=0.45,
+                        label=r"$95.45\%$ confidence")
 
         ax = axes[row_idx, 2]
-        ax.plot(x, truth, "k-", lw=2, label="Burgers truth")
+        ax.plot(x, truth, "k-", lw=1.5, label="Burgers truth")
         ax.plot(x, p_mean, "C1-", lw=2, label="POPS mean")
         ax.fill_between(x, p_lo, p_hi, alpha=0.20, label=r"$99.997\%$ confidence")
-        ax.fill_between(x, p_qlo, p_qhi, alpha=0.45, label=r"$95.45\%$ confidence")
+        ax.fill_between(x, p_qlo, p_qhi, alpha=0.45,
+                        label=r"$95.45\%$ confidence")
 
-        axes[row_idx, 0].set_ylabel(f"{n_cases} simulator cases\nu(x,t)")
+        axes[row_idx, 0].set_ylabel(f"{n_cases} cases\nu(x,t)", fontsize=9)
         for col in range(3):
-            axes[row_idx, col].legend(fontsize=8, loc="lower left")
+            axes[row_idx, col].legend(fontsize=6, loc="lower left")
+            axes[row_idx, col].tick_params(labelsize=8)
             if row_idx == 1:
-                axes[row_idx, col].set_xlabel("x")
+                axes[row_idx, col].set_xlabel("x", fontsize=9)
 
     fig.suptitle("Viscous Burgers: structured model-form error survives as data increase\n"
-                 + rf"$u_t + u u_x = \nu u_{{xx}}$; {harmonic_order}-harmonic surrogate, P={p}")
+                 + rf"$u_t + u u_x = \nu u_{{xx}}$; {harmonic_order}-harmonic surrogate, P={p}",
+                 fontsize=10)
     fig.tight_layout()
     out = f"burgers_sim2science_h{harmonic_order}.png"
     fig.savefig(out, dpi=180, bbox_inches="tight")
