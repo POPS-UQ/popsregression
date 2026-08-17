@@ -1,10 +1,10 @@
 """POD reduced-order Burgers emulator with controlled ROM misspecification.
 
-Matches ``example_burgers.py`` in solver, plotting, data sizes, and legends.
-The POD basis is intentionally learned only from smooth Burgers snapshots,
-and the modal coefficient map is linear.  The default rank-2 ROM therefore
-cannot reproduce the sharp low-viscosity late-time front even with abundant
-regression data.
+Matches ``example_burgers.py`` in solver and plotting style.  The POD basis is
+learned only from smooth Burgers snapshots and the modal coefficient map is
+linear.  Training keeps only a few random spatial observations from each PDE
+run; this exposes finite-sample overconfidence at low N while the data-rich
+limit remains well resolved.
 """
 
 import argparse
@@ -69,12 +69,19 @@ def rom_features(nu, amp, time, x, modes):
     return np.einsum("ni,nj->nij", phi, g).reshape(len(g), -1)
 
 
-def simulate_cases(cases, modes, mean_field, points_per_case=12):
-    idx = np.linspace(0, N_GRID - 1, points_per_case, dtype=int)
+def simulate_cases(cases, modes, mean_field, points_per_case=12,
+                   random_x=False, seed=None):
+    """Sample each PDE run at either fixed or independently random x points."""
     x_grid = np.linspace(0.0, 2.0 * np.pi, N_GRID, endpoint=False)
+    rng = np.random.default_rng(seed)
+    fixed_idx = np.linspace(0, N_GRID - 1, points_per_case, dtype=int)
     rows, residuals = [], []
     for nu, amp, time in cases:
         _, u = burgers.burgers_solution(nu, amp, time)
+        if random_x:
+            idx = np.sort(rng.choice(N_GRID, size=points_per_case, replace=False))
+        else:
+            idx = fixed_idx
         x = x_grid[idx]
         rows.append(rom_features(
             np.full(idx.size, nu), np.full(idx.size, amp),
@@ -97,7 +104,7 @@ def slice_design(theta, modes, mean_field):
 
 
 def run(seed=SEED, train_case_counts=(8, 16, 24, 40, 80), n_test_cases=80,
-        pod_rank=2, n_basis_cases=48):
+        pod_rank=2, n_basis_cases=48, points_per_case=4):
     rng = np.random.default_rng(seed)
     mean_field, modes, singular_values, energy = build_pod_basis(
         rank=pod_rank, n_basis_cases=n_basis_cases, seed=seed + 1000
@@ -105,20 +112,32 @@ def run(seed=SEED, train_case_counts=(8, 16, 24, 40, 80), n_test_cases=80,
 
     all_train = burgers.draw_cases(rng, max(train_case_counts))
     test_cases = burgers.draw_cases(rng, n_test_cases)
-    X_test, r_test = simulate_cases(test_cases, modes, mean_field, points_per_case=16)
+    X_test, r_test = simulate_cases(
+        test_cases, modes, mean_field, points_per_case=16, random_x=False
+    )
     p = X_test.shape[1]
 
     print(
         f"Burgers POD emulator: rank={pod_rank}, P={p}; "
-        f"basis nu={POD_NU_RANGE}, t={POD_T_RANGE}"
+        f"basis nu={POD_NU_RANGE}, t={POD_T_RANGE}; "
+        f"random training x, {points_per_case} points/case"
     )
     print(f"POD cumulative snapshot energy at rank {pod_rank}: {energy[pod_rank-1]:.5f}")
-    print("cases rows rows/P  BRcov4s Ellcov PACcov  PAC+%")
+    print(
+        "cases rows rows/P  BRcov4s  Hcov  Ellcov PACcov  PAC+%   "
+        "slice H/E/P max"
+    )
+
+    theta = (0.014, 1.15, 0.78)
+    x, X_slice, offset, truth = slice_design(theta, modes, mean_field)
+    target_slice = truth - offset
 
     fitted = {}
     for n_cases in train_case_counts:
         X_train, r_train = simulate_cases(
-            all_train[:n_cases], modes, mean_field, points_per_case=12
+            all_train[:n_cases], modes, mean_field,
+            points_per_case=points_per_case, random_x=True,
+            seed=2000 + n_cases + points_per_case,
         )
         bayes = BayesianRidge(fit_intercept=False).fit(X_train, r_train)
         hypercube = POPSRegression(
@@ -132,28 +151,43 @@ def run(seed=SEED, train_case_counts=(8, 16, 24, 40, 80), n_test_cases=80,
         b_mean = bayes.predict(X_test)
         b_std = burgers.epistemic_bayes_std(bayes, X_test)
         b_cov = burgers.coverage(r_test, b_mean - 4*b_std, b_mean + 4*b_std)
-        e_mean, e_hi, e_lo = ellipse.predict(X_test, return_bounds=True)
-        e_cov = burgers.coverage(r_test, e_lo, e_hi)
-        _, p_hi, p_lo, p_bstd = pac.predict(
+
+        _, _, h_hi_test, h_lo_test = hypercube.predict(
+            X_test, return_std=True, return_bounds=True
+        )
+        h_cov = burgers.coverage(r_test, h_lo_test, h_hi_test)
+
+        _, e_hi_test, e_lo_test = ellipse.predict(X_test, return_bounds=True)
+        e_cov = burgers.coverage(r_test, e_lo_test, e_hi_test)
+
+        _, p_hi_test, p_lo_test, p_bstd = pac.predict(
             X_test, return_bounds=True, return_bound_std=True
         )
-        p_cov = burgers.coverage(r_test, p_lo, p_hi)
-        bare_width = (p_hi - p_lo) - 4.0*p_bstd
+        p_cov = burgers.coverage(r_test, p_lo_test, p_hi_test)
+        bare_width = (p_hi_test - p_lo_test) - 4.0*p_bstd
         valid = bare_width > 1e-12
         broadening = np.mean(
-            (p_hi[valid] - p_lo[valid]) / bare_width[valid] - 1.0
+            (p_hi_test[valid] - p_lo_test[valid]) / bare_width[valid] - 1.0
         )
+
+        _, _, h_hi_slice, h_lo_slice = hypercube.predict(
+            X_slice, return_std=True, return_bounds=True
+        )
+        _, e_hi_slice, e_lo_slice = ellipse.predict(X_slice, return_bounds=True)
+        _, p_hi_slice, p_lo_slice = pac.predict(X_slice, return_bounds=True)
+        h_slice_cov = burgers.coverage(target_slice, h_lo_slice, h_hi_slice)
+        e_slice_cov = burgers.coverage(target_slice, e_lo_slice, e_hi_slice)
+        p_slice_cov = burgers.coverage(target_slice, p_lo_slice, p_hi_slice)
+
         fitted[n_cases] = (bayes, hypercube, ellipse, pac)
         print(
             f"{n_cases:5d} {len(r_train):4d} {len(r_train)/p:6.2f}"
-            f"   {b_cov:7.3f} {e_cov:6.3f} {p_cov:6.3f}"
-            f" {100*broadening:6.1f}%"
+            f"   {b_cov:7.3f} {h_cov:5.3f} {e_cov:6.3f} {p_cov:6.3f}"
+            f" {100*broadening:6.1f}%   "
+            f"{h_slice_cov:4.2f}/{e_slice_cov:4.2f}/{p_slice_cov:4.2f}"
         )
 
-    theta = (0.014, 1.15, 0.78)
-    x, X_slice, offset, truth = slice_design(theta, modes, mean_field)
     shown_counts = (train_case_counts[0], train_case_counts[-1])
-
     fig, axes = plt.subplots(2, 4, figsize=(8, 3), sharex=True, sharey=True)
     titles = [
         "Bayesian Ridge", "POPS Hypercube", "POPS Ellipse",
@@ -168,13 +202,16 @@ def run(seed=SEED, train_case_counts=(8, 16, 24, 40, 80), n_test_cases=80,
         b_resid = bayes.predict(X_slice)
         b_mean = offset + b_resid
         b_std = burgers.epistemic_bayes_std(bayes, X_slice)
+
         h_resid, h_std, h_hi, h_lo = hypercube.predict(
             X_slice, return_std=True, return_bounds=True
         )
         h_mean = offset + h_resid
+
         e_resid, e_hi, e_lo = ellipse.predict(X_slice, return_bounds=True)
         e_qlo, e_qhi = burgers.bare_percentile_interval(ellipse, X_slice)
         e_mean = offset + e_resid
+
         p_resid, p_hi, p_lo = pac.predict(X_slice, return_bounds=True)
         p_qlo, p_qhi = burgers.pac_percentile_interval(pac, X_slice)
         p_mean = offset + p_resid
@@ -234,9 +271,10 @@ def run(seed=SEED, train_case_counts=(8, 16, 24, 40, 80), n_test_cases=80,
     )
 
     fig.tight_layout(pad=0.2, w_pad=0.1, h_pad=0.1)
-    out = f"example_burgers_pod_r{pod_rank}.png"
-    fig.savefig(out, dpi=180, bbox_inches="tight")
-    print(f"Saved {out}")
+    stem = f"example_burgers_pod_randomx_r{pod_rank}_m{points_per_case}"
+    fig.savefig(stem + ".png", dpi=180, bbox_inches="tight")
+    fig.savefig(stem + ".pdf", bbox_inches="tight")
+    print(f"Saved {stem}.png and {stem}.pdf")
     return fitted
 
 
@@ -244,5 +282,10 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--rank", type=int, default=2, choices=(1, 2, 3, 4, 5))
     parser.add_argument("--basis-cases", type=int, default=48)
+    parser.add_argument("--points-per-case", type=int, default=4)
     args = parser.parse_args()
-    run(pod_rank=args.rank, n_basis_cases=args.basis_cases)
+    run(
+        pod_rank=args.rank,
+        n_basis_cases=args.basis_cases,
+        points_per_case=args.points_per_case,
+    )
