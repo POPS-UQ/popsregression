@@ -308,10 +308,9 @@ def run(seed=SEED, train_case_counts=(8, 16, 24, 40, 80), n_test_cases=80,
     )
 
     fig.tight_layout()
-    out = f"burgers_sim2science_h{harmonic_order}.png"
+    out = f"example_burgers_h{harmonic_order}.png"
     fig.savefig(out, dpi=180, bbox_inches="tight")
-    fig.savefig(out.replace(".png", ".pdf"), bbox_inches="tight")
-    print(f"Saved {out} and {out.replace('.png', '.pdf')}")
+    print(f"Saved {out}")
     return records
 
 

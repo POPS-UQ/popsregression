@@ -155,9 +155,8 @@ def main():
     )
 
     fig.tight_layout(pad=0.7, w_pad=0.4, h_pad=0.3)
-    fig.savefig("demo_workshop_burgers_layout.png", dpi=180, bbox_inches="tight")
-    fig.savefig("demo_workshop_burgers_layout.pdf", bbox_inches="tight")
-    print("Saved demo_workshop_burgers_layout.png and .pdf")
+    fig.savefig("example_polynomial.png", dpi=180, bbox_inches="tight")
+    print("Saved example_polynomial.png")
 
 
 if __name__ == "__main__":

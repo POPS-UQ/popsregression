@@ -139,3 +139,8 @@ ignore=[
 [tool.pytest.ini_options]
 addopts = "--doctest-modules --color=yes"
 doctest_optionflags = "NORMALIZE_WHITESPACE"
+
+[project.optional-dependencies]
+examples = [
+    "matplotlib",
+]
