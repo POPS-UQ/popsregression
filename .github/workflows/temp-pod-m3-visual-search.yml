@@ -1,0 +1,83 @@
+name: temp-pod-m3-visual-search
+on:
+  push:
+    paths:
+      - '.github/workflows/temp-pod-m3-visual-search.yml'
+permissions:
+  contents: write
+jobs:
+  search:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install
+        run: python -m pip install -e . matplotlib
+      - name: Search visible validation slices
+        env:
+          MPLBACKEND: Agg
+        run: |
+          python - <<'PY' | tee examples/pod_m3_visual_search_results.txt
+          import sys
+          sys.path.insert(0,'examples')
+          import numpy as np
+          from popsregression import POPSRegression, POPSRegressionEllipse
+          import example_burgers as burgers
+          import example_burgers_pod as ep
+
+          mean_field,modes,_,_=ep.build_pod_basis(rank=2,n_basis_cases=48,seed=1001)
+          train=burgers.draw_cases(np.random.default_rng(1),80)
+          val=burgers.draw_cases(np.random.default_rng(31415),320)
+          m=3; spatial_seed=4432
+
+          def fit(n):
+              X,r=ep.simulate_cases(train[:n],modes,mean_field,points_per_case=m,
+                                    random_x=True,seed=spatial_seed)
+              hy=POPSRegression(minimum_relative_error=0.0,posterior='hypercube').fit(X,r)
+              el=POPSRegressionEllipse(random_state=1).fit(X,r)
+              pa=POPSRegressionEllipse(random_state=1,pac_bayes=True).fit(X,r)
+              return hy,el,pa
+          lo=fit(8); hi=fit(80)
+          def cov(y,a,b): return float(np.mean((y>=a)&(y<=b)))
+          rows=[]
+          for i,theta in enumerate(val):
+              if theta[2] < 0.30:
+                  continue
+              x,Xs,off,truth=ep.slice_design(theta,modes,mean_field)
+              y=truth-off
+              hy,el,pa=lo
+              _,_,hhi,hlo=hy.predict(Xs,return_std=True,return_bounds=True)
+              em,ehi,elo=el.predict(Xs,return_bounds=True)
+              pm,phi,plo=pa.predict(Xs,return_bounds=True)
+              hl,ec,pc=cov(y,hlo,hhi),cov(y,elo,ehi),cov(y,plo,phi)
+              outside=np.maximum(np.maximum(elo-y,y-ehi),0.0)
+              pac_inside=(y>=plo)&(y<=phi)
+              rescued=outside*pac_inside
+              max_rescue=float(np.max(rescued))
+              mean_rescue=float(np.mean(rescued))
+              rmse=float(np.sqrt(np.mean((y-em)**2)))
+
+              hy2,el2,pa2=hi
+              _,eh2,el2lo=el2.predict(Xs,return_bounds=True)
+              _,ph2,pl2=pa2.predict(Xs,return_bounds=True)
+              ehc,phc=cov(y,el2lo,eh2),cov(y,pl2,ph2)
+
+              # Large visible rescue, PAC nearly covers low-N slice, high-N converges.
+              score=8.0*max_rescue + 4.0*mean_rescue + 1.5*(pc-ec) + 0.5*rmse
+              score -= 5.0*max(0.0,0.90-pc)
+              score -= 5.0*max(0.0,0.95-ehc)
+              rows.append((score,i,*theta,hl,ec,pc,ehc,phc,max_rescue,mean_rescue,rmse))
+          rows.sort(reverse=True)
+          print('score idx nu A t | low H E P | high E P | max_rescue mean_rescue rmse')
+          for r in rows[:30]: print(r)
+          print('CHOSEN',rows[0])
+          PY
+      - name: Commit results
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add examples/pod_m3_visual_search_results.txt
+          git commit -m 'temp: record m3 visual search results' || exit 0
+          git push
