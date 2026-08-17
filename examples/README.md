@@ -11,8 +11,10 @@ Runnable example scripts for `popsregression`.
   PAC-Bayes layer. See [Ellipsoid
   posteriors](https://POPS-UQ.github.io/popsregression/ellipse/) in the docs.
 - `burgers_sim2science.py` — small-N simulation-to-science example using a
-  deterministic periodic viscous Burgers solver. A deliberately misspecified
-  degree-2 emulator (P=21) cannot reproduce the low-viscosity steepening front.
-  It compares epistemic-only `BayesianRidge`, the POPS ellipse, and the
-  PAC-Bayes ellipse for 3/6/12/24 simulator cases, reports held-out coverage,
-  PAC broadening and the PAC bound, and writes `burgers_sim2science.png`.
+  deterministic periodic viscous Burgers solver. A deliberately restricted
+  fundamental-mode emulator (P=13) omits the higher spatial harmonics produced
+  by nonlinear front steepening. It compares epistemic-only `BayesianRidge`,
+  the POPS ellipse, and the PAC-Bayes ellipse for 6/10/16/24/40 simulator cases,
+  and reports held-out coverage, PAC broadening, held-out projected-ball NLL,
+  the uniform-density reference, PAC bound and certificate gap. It writes
+  `burgers_sim2science.png`.
