@@ -1,0 +1,28 @@
+name: temp-export-m3-artifact
+on:
+  push:
+    paths:
+      - '.github/workflows/temp-export-m3-artifact.yml'
+permissions:
+  contents: write
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Record run id
+        run: echo '${{ github.run_id }}' > examples/generated/m3_artifact_run_id.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: burgers-pod-m3-figure
+          path: |
+            examples/generated/example_burgers_pod_randomx_r2_m3_s4432.png
+            examples/generated/example_burgers_pod_randomx_r2_m3_s4432.pdf
+            examples/generated/pod_m3_figure_output.txt
+      - name: Commit run id
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add examples/generated/m3_artifact_run_id.txt
+          git commit -m 'temp: record m3 artifact run id' || exit 0
+          git push
