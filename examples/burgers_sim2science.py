@@ -139,7 +139,7 @@ def projected_ball_nll(y, mean, lo, hi, dim, delta=1e-3):
     return float(np.mean(0.5*np.log(v) - log_c - k*np.log(q))), 0
 
 
-def run(seed=SEED, train_case_counts=(10, 16, 24, 40, 1000), n_test_cases=80,
+def run(seed=SEED, train_case_counts=(10, 16, 24, 40, 80), n_test_cases=80,
         harmonic_order=2):
     rng = np.random.default_rng(seed)
     all_train = draw_cases(rng, max(train_case_counts))
