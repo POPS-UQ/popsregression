@@ -49,7 +49,7 @@ def main():
 
     # Match the compact Burgers presentation: two rows, four method columns.
     fig, axes = plt.subplots(
-        len(train_sizes), 4, figsize=(10, 5), sharex=True, sharey=True
+        len(train_sizes), 4, figsize=(8, 4), sharex=True, sharey=True
     )
 
     for col, title in enumerate(titles):
@@ -119,14 +119,14 @@ def main():
 
     for ax in axes.flat:
         ax.set_xlim(-10, 10)
-        ax.set_ylim(-250, 250)
+        ax.set_ylim(-150, 150)
         ax.tick_params(labelsize=8)
 
     for ax in axes[-1]:
         ax.set_xlabel("x")
 
     # Keep one unobtrusive legend, as in the pasted workshop figure.
-    axes[0, 3].legend(fontsize=7, loc="lower left")
+    axes[1, 0].legend(fontsize=7, loc="lower right")
 
     fig.tight_layout(pad=0.7, w_pad=0.4, h_pad=0.3)
     fig.savefig("demo_workshop_burgers_layout.png", dpi=180, bbox_inches="tight")
