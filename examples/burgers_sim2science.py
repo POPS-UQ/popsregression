@@ -2,8 +2,6 @@
 
 The deterministic PDE simulator is emulated by a truncated Fourier surrogate.
 Choose 2, 3, or 4 retained harmonics to control model-form misspecification.
-The PAC plots propagate the same 2-sigma Laplace hyperposterior envelope used
-for max/min to the central 50 +/- 33% projected-ball percentile curves.
 """
 
 import argparse
@@ -14,7 +12,7 @@ from scipy.special import gammaln
 from scipy.stats import beta
 from sklearn.linear_model import BayesianRidge
 
-from popsregression import POPSRegressionEllipse
+from popsregression import POPSRegression, POPSRegressionEllipse
 
 SEED = 7
 NU_RANGE = (0.012, 0.08)
@@ -34,8 +32,10 @@ def burgers_solution(nu, amplitude, t_final, n_grid=N_GRID):
         u_xx = (np.roll(u, -1) - 2.0 * u + np.roll(u, 1)) / dx**2
         return -flux_x + nu * u_xx
 
-    sol = solve_ivp(rhs, (0.0, t_final), u0, method="RK45", rtol=2e-6,
-                    atol=2e-8, max_step=0.01)
+    sol = solve_ivp(
+        rhs, (0.0, t_final), u0, method="RK45", rtol=2e-6,
+        atol=2e-8, max_step=0.01
+    )
     if not sol.success:
         raise RuntimeError(sol.message)
     return x, sol.y[:, -1]
@@ -53,12 +53,7 @@ def raw_inputs(nu, amp, time, x):
 
 
 def make_features(z, harmonic_order=2):
-    """Truncated Fourier surrogate; harmonic_order may be 2, 3, or 4.
-
-    Each retained harmonic contributes sin(nx), cos(nx), plus amplitude/time
-    modulation of sin(nx). Fundamental-mode viscosity interactions are kept
-    explicitly. Higher omitted harmonics remain structured model-form error.
-    """
+    """Truncated Fourier surrogate; harmonic_order may be 2, 3, or 4."""
     if harmonic_order not in (2, 3, 4):
         raise ValueError("harmonic_order must be 2, 3, or 4")
     nu, amp, time, x = z.T
@@ -76,8 +71,10 @@ def simulate_cases(cases, points_per_case=12):
     idx = np.linspace(0, N_GRID - 1, points_per_case, dtype=int)
     for j, (nu, amp, time) in enumerate(cases):
         x, u = burgers_solution(nu, amp, time)
-        rows.append(raw_inputs(np.full(idx.size, nu), np.full(idx.size, amp),
-                               np.full(idx.size, time), x[idx]))
+        rows.append(raw_inputs(
+            np.full(idx.size, nu), np.full(idx.size, amp),
+            np.full(idx.size, time), x[idx]
+        ))
         values.append(u[idx])
         case_ids.extend([j] * idx.size)
     return np.vstack(rows), np.concatenate(values), np.asarray(case_ids)
@@ -99,12 +96,11 @@ def coverage(y, lo, hi):
 
 
 def projected_ball_fraction(dim, half_percentile=0.33):
-    """Half-width/support ratio for central 50 +/- half_percentile band."""
     a = 0.5 * (dim + 1.0)
     return 2.0 * beta.ppf(0.5 + half_percentile, a, a) - 1.0
 
 
-def bare_percentile_interval(model, X, half_percentile=0.33):
+def bare_percentile_interval(model, X, half_percentile=0.5 - 0.023):
     mean = model.predict(X)
     Xc, Z = model._whitened_design(np.asarray(X, dtype=float))
     v = model._squared_widths(Xc, Z) + model.delta**2
@@ -113,15 +109,8 @@ def bare_percentile_interval(model, X, half_percentile=0.33):
     return mean - hw, mean + hw
 
 
-def pac_percentile_interval(model, X, half_percentile=0.5-0.023):
-    """Central percentile interval with the same 2-sigma PAC envelope as max/min.
-
-    For percentile fraction q, the fitted-ellipse bound is mean +/- q*sqrt(v).
-    First-order hyperposterior propagation gives
-      Var(bound_q) = Var(mean) + q^2 Var(v)/(4v).
-    The displayed PAC interval is the max/min over the same 2-sigma Laplace
-    hyperposterior approximation used by predict(return_bounds=True).
-    """
+def pac_percentile_interval(model, X, half_percentile=0.5 - 0.023):
+    """Central interval with same 2-sigma hyperposterior envelope as max/min."""
     mean = model.predict(X)
     Xc, Z = model._whitened_design(np.asarray(X, dtype=float))
     v = model._squared_widths(Xc, Z) + model.delta**2
@@ -142,7 +131,10 @@ def projected_ball_nll(y, mean, lo, hi, dim, delta=1e-3):
     inside = q > 0.0
     if not np.all(inside):
         return np.inf, int(np.sum(~inside))
-    log_c = gammaln(0.5*dim + 1.0) - 0.5*np.log(np.pi) - gammaln(0.5*(dim + 1.0))
+    log_c = (
+        gammaln(0.5*dim + 1.0) - 0.5*np.log(np.pi)
+        - gammaln(0.5*(dim + 1.0))
+    )
     k = 0.5 * (dim - 1.0)
     return float(np.mean(0.5*np.log(v) - log_c - k*np.log(q))), 0
 
@@ -164,108 +156,150 @@ def run(seed=SEED, train_case_counts=(10, 16, 24, 40, 1000), n_test_cases=80,
 
     records, fitted = [], {}
     for n_cases in train_case_counts:
-        z_train, y_train, _ = simulate_cases(all_train[:n_cases], points_per_case=12)
+        z_train, y_train, _ = simulate_cases(
+            all_train[:n_cases], points_per_case=12
+        )
         X_train = make_features(z_train, harmonic_order)
         bayes = BayesianRidge(fit_intercept=False).fit(X_train, y_train)
+        hypercube = POPSRegression(
+            minimum_relative_error=0.0, posterior="hypercube"
+        ).fit(X_train, y_train)
         ellipse = POPSRegressionEllipse(random_state=seed).fit(X_train, y_train)
-        pac = POPSRegressionEllipse(random_state=seed, pac_bayes=True).fit(X_train, y_train)
+        pac = POPSRegressionEllipse(
+            random_state=seed, pac_bayes=True
+        ).fit(X_train, y_train)
 
         b_mean = bayes.predict(X_test)
         b_std = epistemic_bayes_std(bayes, X_test)
         b_cov = coverage(y_test, b_mean - 4*b_std, b_mean + 4*b_std)
         e_mean, e_hi, e_lo = ellipse.predict(X_test, return_bounds=True)
         e_cov = coverage(y_test, e_lo, e_hi)
-        g_test, uncovered = projected_ball_nll(y_test, e_mean, e_lo, e_hi,
-                                               ellipse._ball_dim, ellipse.delta)
-        _, p_hi, p_lo, p_bstd = pac.predict(X_test, return_bounds=True,
-                                            return_bound_std=True)
+        g_test, uncovered = projected_ball_nll(
+            y_test, e_mean, e_lo, e_hi, ellipse._ball_dim, ellipse.delta
+        )
+        _, p_hi, p_lo, p_bstd = pac.predict(
+            X_test, return_bounds=True, return_bound_std=True
+        )
         p_cov = coverage(y_test, p_lo, p_hi)
         bare_width = (p_hi - p_lo) - 4.0*p_bstd
         valid = bare_width > 1e-12
-        broadening = np.mean((p_hi[valid] - p_lo[valid])/bare_width[valid] - 1.0)
+        broadening = np.mean(
+            (p_hi[valid] - p_lo[valid])/bare_width[valid] - 1.0
+        )
         gap = pac.bound_ - g_test
         certified = np.isfinite(pac.bound_) and pac.bound_ < uniform_nll
-        records.append(dict(cases=n_cases, n=len(y_train), ratio=len(y_train)/p,
-                            bayes_coverage=b_cov, ellipse_coverage=e_cov,
-                            pac_coverage=p_cov, pac_broadening=broadening,
-                            g_test=g_test, uncovered=uncovered,
-                            uniform_nll=uniform_nll, bound=pac.bound_,
-                            bound_gap=gap, nonvacuous=certified,
-                            objective=pac.objective_, kl=pac.kl_))
-        fitted[n_cases] = (bayes, ellipse, pac)
+        records.append(dict(
+            cases=n_cases, n=len(y_train), ratio=len(y_train)/p,
+            bayes_coverage=b_cov, ellipse_coverage=e_cov,
+            pac_coverage=p_cov, pac_broadening=broadening,
+            g_test=g_test, uncovered=uncovered,
+            uniform_nll=uniform_nll, bound=pac.bound_,
+            bound_gap=gap, nonvacuous=certified,
+            objective=pac.objective_, kl=pac.kl_
+        ))
+        fitted[n_cases] = (bayes, hypercube, ellipse, pac)
         g_txt = " inf" if not np.isfinite(g_test) else f"{g_test:7.3f}"
-        print(f"{n_cases:5d} {len(y_train):4d} {len(y_train)/p:6.2f}"
-              f"   {b_cov:7.3f} {e_cov:6.3f} {p_cov:6.3f}"
-              f" {100*broadening:6.1f}% {g_txt} {pac.bound_:7.3f}"
-              f" {gap:6.3f}   {'YES' if certified else 'no'}")
+        print(
+            f"{n_cases:5d} {len(y_train):4d} {len(y_train)/p:6.2f}"
+            f"   {b_cov:7.3f} {e_cov:6.3f} {p_cov:6.3f}"
+            f" {100*broadening:6.1f}% {g_txt} {pac.bound_:7.3f}"
+            f" {gap:6.3f}   {'YES' if certified else 'no'}"
+        )
         if uncovered:
             print(f"      note: {uncovered}/{len(y_test)} test points outside bare support")
 
     theta = (0.014, 1.15, 0.78)
     x, truth = burgers_solution(*theta)
-    z_slice = raw_inputs(np.full_like(x, theta[0]), np.full_like(x, theta[1]),
-                         np.full_like(x, theta[2]), x)
+    z_slice = raw_inputs(
+        np.full_like(x, theta[0]), np.full_like(x, theta[1]),
+        np.full_like(x, theta[2]), x
+    )
     X_slice = make_features(z_slice, harmonic_order)
 
     shown_counts = (train_case_counts[0], train_case_counts[-1])
-    # Match the compact presentation width/aspect of EllipseExample.ipynb.
-    fig, axes = plt.subplots(2, 3, figsize=(8, 5.0), sharex=True, sharey=True)
-    for col, title in enumerate(["BayesianRidge", "POPS ellipse", "POPS + PAC"]):
+    fig, axes = plt.subplots(2, 4, figsize=(10, 5), sharex=True, sharey=True)
+    titles = [
+        "Bayesian Ridge", "POPS Hypercube", "POPS Ellipse",
+        "POPS Ellipse + PAC"
+    ]
+    for col, title in enumerate(titles):
         axes[0, col].set_title(title, fontsize=10)
 
     for row_idx, n_cases in enumerate(shown_counts):
-        bayes, ellipse, pac = fitted[n_cases]
+        bayes, hypercube, ellipse, pac = fitted[n_cases]
+
         b_mean = bayes.predict(X_slice)
         b_std = epistemic_bayes_std(bayes, X_slice)
+        h_mean, h_std, h_hi, h_lo = hypercube.predict(
+            X_slice, return_std=True, return_bounds=True
+        )
         e_mean, e_hi, e_lo = ellipse.predict(X_slice, return_bounds=True)
+        e_qlo, e_qhi = bare_percentile_interval(ellipse, X_slice)
         p_mean, p_hi, p_lo = pac.predict(X_slice, return_bounds=True)
-        e_qlo, e_qhi = bare_percentile_interval(ellipse, X_slice,
-                                                half_percentile=0.5-0.023)
-        p_qlo, p_qhi = pac_percentile_interval(pac, X_slice,
-                                               half_percentile=0.5-0.023)
+        p_qlo, p_qhi = pac_percentile_interval(pac, X_slice)
 
+        # Bayesian Ridge
         ax = axes[row_idx, 0]
-        ax.plot(x, truth, "k-", lw=1.5, label="Burgers truth")
-        ax.plot(x, b_mean, "C1-", lw=2, label="emulator mean")
-        ax.fill_between(x, b_mean-4*b_std, b_mean+4*b_std, alpha=0.20,
-                        label=r"$99.997\%$ confidence ($\pm4\sigma$)")
-        ax.fill_between(x, b_mean-2*b_std, b_mean+2*b_std, alpha=0.45,
-                        label=r"$95.45\%$ confidence ($\pm2\sigma$)")
+        ax.fill_between(
+            x, b_mean - 4*b_std, b_mean + 4*b_std,
+            alpha=0.20, facecolor="0.85", label=r"$99.997\%$"
+        )
+        ax.fill_between(
+            x, b_mean - 2*b_std, b_mean + 2*b_std,
+            alpha=0.45, facecolor="C1", label=r"$95.45\%$"
+        )
+        ax.plot(x, b_mean, "C1-", lw=2)
 
+        # POPS Hypercube
         ax = axes[row_idx, 1]
-        ax.plot(x, truth, "k-", lw=1.5, label="Burgers truth")
-        ax.plot(x, e_mean, "C1-", lw=2, label="POPS mean")
-        ax.fill_between(x, e_lo, e_hi, alpha=0.20, label=r"$99.997\%$ confidence")
-        ax.fill_between(x, e_qlo, e_qhi, alpha=0.45,
-                        label=r"$95.45\%$ confidence")
+        ax.fill_between(x, h_lo, h_hi, alpha=0.20, facecolor="0.85",
+                        label="max/min")
+        ax.fill_between(
+            x, h_mean - 2*h_std, h_mean + 2*h_std,
+            alpha=0.45, facecolor="C1", label=r"$95.45\%$"
+        )
+        ax.plot(x, h_mean, "C1-", lw=2)
 
+        # POPS Ellipse
         ax = axes[row_idx, 2]
-        ax.plot(x, truth, "k-", lw=1.5, label="Burgers truth")
-        ax.plot(x, p_mean, "C1-", lw=2, label="POPS mean")
-        ax.fill_between(x, p_lo, p_hi, alpha=0.20, label=r"$99.997\%$ confidence")
-        ax.fill_between(x, p_qlo, p_qhi, alpha=0.45,
-                        label=r"$95.45\%$ confidence")
+        ax.fill_between(x, e_lo, e_hi, alpha=0.20, facecolor="0.85",
+                        label="max/min")
+        ax.fill_between(x, e_qlo, e_qhi, alpha=0.45, facecolor="C1",
+                        label=r"$95.45\%$")
+        ax.plot(x, e_mean, "C1-", lw=2)
 
-        axes[row_idx, 0].set_ylabel(f"{n_cases} cases\nu(x,t)", fontsize=9)
-        for col in range(3):
-            axes[row_idx, col].legend(fontsize=6, loc="lower left")
-            axes[row_idx, col].tick_params(labelsize=8)
+        # POPS Ellipse + PAC
+        ax = axes[row_idx, 3]
+        ax.fill_between(x, p_lo, p_hi, alpha=0.20, facecolor="0.85",
+                        label="max/min")
+        ax.fill_between(x, p_qlo, p_qhi, alpha=0.45, facecolor="C1",
+                        label=r"$95.45\%$")
+        ax.plot(x, p_mean, "C1-", lw=2)
+
+        for col in range(4):
+            ax = axes[row_idx, col]
+            ax.plot(x, truth, "k-", lw=1.5, label="Truth")
+            ax.tick_params(labelsize=8)
             if row_idx == 1:
-                axes[row_idx, col].set_xlabel("x", fontsize=9)
+                ax.set_xlabel("x", fontsize=9)
 
-    fig.suptitle("Viscous Burgers: structured model-form error survives as data increase\n"
-                 + rf"$u_t + u u_x = \nu u_{{xx}}$; {harmonic_order}-harmonic surrogate, P={p}",
-                 fontsize=10)
+        axes[row_idx, 0].set_ylabel(f"N = {n_cases}\nu(x,t)", fontsize=9)
+
+    # One compact legend, as in the polynomial workshop presentation.
+    axes[0, 1].legend(fontsize=7, loc="lower left")
     fig.tight_layout()
     out = f"burgers_sim2science_h{harmonic_order}.png"
     fig.savefig(out, dpi=180, bbox_inches="tight")
-    print(f"Saved {out}")
+    fig.savefig(out.replace(".png", ".pdf"), bbox_inches="tight")
+    print(f"Saved {out} and {out.replace('.png', '.pdf')}")
     return records
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--harmonics", type=int, choices=(2, 3, 4), default=2,
-                        help="number of Fourier harmonics retained in the surrogate")
+    parser.add_argument(
+        "--harmonics", type=int, choices=(2, 3, 4), default=2,
+        help="number of Fourier harmonics retained in the surrogate"
+    )
     args = parser.parse_args()
     run(harmonic_order=args.harmonics)
