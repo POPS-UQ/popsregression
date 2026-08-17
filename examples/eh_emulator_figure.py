@@ -123,9 +123,8 @@ def make_figure(out_stem, slice_data, n_grid, coverage, n_over_p,
 
     # ---- (c) predictive-std decomposition vs N/P -----------------------
     for key, color, marker, mfc, label in [
-        ("post", "tab:orange", "o", "tab:orange",
-         "posterior (within-ellipse)"),
-        ("hyper", "0.35", "^", "0.35", "hyperposterior (ensemble)"),
+        ("post", "tab:orange", "o", "tab:orange", "posterior"),
+        ("hyper", "0.35", "^", "0.35", "hyperposterior"),
     ]:
         m, s = decomposition[key]
         ax_c.errorbar(n_over_p, m, yerr=s, color=color, marker=marker,
@@ -145,7 +144,7 @@ def make_figure(out_stem, slice_data, n_grid, coverage, n_over_p,
     ax_c.yaxis.set_minor_formatter(NullFormatter())
     ax_c.set_xlabel("N / P")
     ax_c.set_ylabel(r"predictive std / std$(y)$")
-    ax_c.legend(loc="upper right", fontsize=9, frameon=True,
+    ax_c.legend(loc="center right", fontsize=9, frameon=True,
                 framealpha=0.9, edgecolor="none", handlelength=1.6,
                 labelspacing=0.35)
 
