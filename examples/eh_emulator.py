@@ -410,7 +410,10 @@ def fit_cell(F_tr, y_tr, F_te, y_te, P, seed_ell, seed_pops, checks=None,
     delta = 1e-3 * float(y_tr.std())
     row = dict(delta=delta)
 
-    # -- BayesianRidge, +-4 sigma epistemic band -------------------------
+    # -- BayesianRidge, +-4 sigma epistemic band x^T sigma_ x; the
+    # aleatoric predictive term 1/alpha_ of predict(return_std=True) is
+    # excluded (zero) - the engine is noise-free, alpha_ merely absorbs
+    # the misspecification residual into a constant pseudo-noise floor
     br = BayesianRidge(fit_intercept=True)
     br.fit(F_tr, y_tr)
     br_mean = br.predict(F_te)
@@ -880,6 +883,18 @@ def write_summary(path, master, quick, eh_report, scan_rows, degree, P,
              f"Pool M = {m_pool} uniform draws over the box; test = last "
              f"{n_test}; validation = {n_val}; std(y) = {y_all.std():.4f}, "
              f"test range = {y_test.max() - y_test.min():.4f}.\n")
+    L.append("All BayesianRidge bands and coverage rows use the "
+             "epistemic-only predictive std (x^T sigma_ x)^(1/2); the "
+             "aleatoric term 1/alpha_ of sklearn's predict(return_std=True) "
+             "is excluded, i.e. set to zero, throughout. Included, it would "
+             "add a constant band of width ~1/sqrt(alpha_) ~= the residual "
+             "RMSE that BayesianRidge misreads as observation noise, hiding "
+             "the concentration pathology (coverage ~1.0 at every N). "
+             "The estimated alpha_ still sets the scale of the weight "
+             "posterior sigma_ = (alpha_ X^T X + lambda_ I)^(-1), which is "
+             "inherent to BayesianRidge; pinning the noise precision to a "
+             "zero-noise value instead collapses sigma_ entirely "
+             "(coverage 0.000 at every N).\n")
 
     L.append("## Engine validation\n")
     L.append("| fiducial | s eq.(6) [Mpc] | vs quadrature | vs eq.(26) fit "

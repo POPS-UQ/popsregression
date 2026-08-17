@@ -105,7 +105,10 @@ def main(argv=None):
         # panels hold explicit band edges:
         # (mean, orange_lo, orange_hi, grey_lo, grey_hi)
 
-        # Bayesian Ridge: epistemic-only sigma; outer band +-4 sigma
+        # Bayesian Ridge: epistemic-only band x^T sigma_ x; the aleatoric
+        # predictive term 1/alpha_ of predict(return_std=True) is excluded
+        # (zero) - the engine is noise-free, alpha_ merely absorbs the
+        # misspecification residual. Outer band +-4 sigma.
         br = BayesianRidge(fit_intercept=False)
         br.fit(X_tr, y_tr)
         m = br.predict(X_plot)
