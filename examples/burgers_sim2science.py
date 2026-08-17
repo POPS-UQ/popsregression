@@ -19,6 +19,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from scipy.integrate import solve_ivp
 from scipy.special import gammaln
+from scipy.stats import beta
 from sklearn.linear_model import BayesianRidge
 
 from popsregression import POPSRegressionEllipse
@@ -147,6 +148,21 @@ def coverage(y, lo, hi):
     return np.mean((y >= lo) & (y <= hi))
 
 
+def central_projected_ball_interval(mean, lo, hi, dim, half_percentile=0.33):
+    """Central 50 +/- half_percentile interval inside a ball pushforward.
+
+    A scalar projection of a uniform d-ball has (z+1)/2 distributed as
+    Beta((d+1)/2, (d+1)/2) on z in [-1, 1].  ``half_percentile=0.33``
+    therefore gives the central 17th--83rd percentile band requested for the
+    plot.  For POPS+PAC the same fractional projected-ball interval is drawn
+    inside the displayed PAC-expanded min/max envelope as a visualization.
+    """
+    a = 0.5 * (dim + 1.0)
+    q_hi = 2.0 * beta.ppf(0.5 + half_percentile, a, a) - 1.0
+    radius = 0.5 * (hi - lo)
+    return mean - q_hi * radius, mean + q_hi * radius
+
+
 def projected_ball_nll(y, mean, lo, hi, dim, delta=1e-3):
     """Mean exact projected-ball NLL for a uniform dim-ball pushforward.
 
@@ -249,8 +265,6 @@ def run(seed=SEED, train_case_counts=(6, 10, 16, 24, 40), n_test_cases=80):
         if uncovered:
             print(f"      note: {uncovered}/{len(y_test)} test points outside bare support")
 
-    # Hard low-viscosity slice: higher harmonics omitted from the emulator
-    # remain visible without making the mean qualitatively wrong.
     theta = (0.014, 1.15, 0.78)
     x, truth = burgers_solution(*theta)
     z_slice = raw_inputs(
@@ -261,7 +275,6 @@ def run(seed=SEED, train_case_counts=(6, 10, 16, 24, 40), n_test_cases=80):
     )
     X_slice = make_features(z_slice)
 
-    # Rows: scarce-data and data-rich fits. Columns: BR, POPS, POPS+PAC.
     shown_counts = (train_case_counts[0], train_case_counts[-1])
     fig, axes = plt.subplots(2, 3, figsize=(13, 7), sharex=True, sharey=True)
     column_titles = ["BayesianRidge", "POPS ellipse", "POPS + PAC"]
@@ -275,6 +288,13 @@ def run(seed=SEED, train_case_counts=(6, 10, 16, 24, 40), n_test_cases=80):
         e_mean, e_hi, e_lo = ellipse.predict(X_slice, return_bounds=True)
         p_mean, p_hi, p_lo = pac.predict(X_slice, return_bounds=True)
 
+        e_qlo, e_qhi = central_projected_ball_interval(
+            e_mean, e_lo, e_hi, ellipse._ball_dim
+        )
+        p_qlo, p_qhi = central_projected_ball_interval(
+            p_mean, p_lo, p_hi, pac._ball_dim
+        )
+
         ax = axes[row_idx, 0]
         ax.plot(x, truth, "k-", lw=2, label="Burgers truth")
         ax.plot(x, b_mean, "C1-", lw=2, label="emulator mean")
@@ -282,19 +302,32 @@ def run(seed=SEED, train_case_counts=(6, 10, 16, 24, 40), n_test_cases=80):
             x,
             b_mean - 4 * b_std,
             b_mean + 4 * b_std,
-            alpha=0.25,
+            alpha=0.20,
             label=r"$\pm4\sigma$ epistemic",
+        )
+        ax.fill_between(
+            x,
+            b_mean - b_std,
+            b_mean + b_std,
+            alpha=0.45,
+            label=r"$\pm1\sigma$ epistemic",
         )
 
         ax = axes[row_idx, 1]
         ax.plot(x, truth, "k-", lw=2, label="Burgers truth")
         ax.plot(x, e_mean, "C1-", lw=2, label="POPS mean")
-        ax.fill_between(x, e_lo, e_hi, alpha=0.3, label="ellipse support")
+        ax.fill_between(x, e_lo, e_hi, alpha=0.20, label="100% support")
+        ax.fill_between(
+            x, e_qlo, e_qhi, alpha=0.45, label="17th--83rd percentile"
+        )
 
         ax = axes[row_idx, 2]
         ax.plot(x, truth, "k-", lw=2, label="Burgers truth")
         ax.plot(x, p_mean, "C1-", lw=2, label="POPS mean")
-        ax.fill_between(x, p_lo, p_hi, alpha=0.3, label="ellipse + PAC")
+        ax.fill_between(x, p_lo, p_hi, alpha=0.20, label="100% PAC envelope")
+        ax.fill_between(
+            x, p_qlo, p_qhi, alpha=0.45, label="17th--83rd percentile"
+        )
 
         axes[row_idx, 0].set_ylabel(f"{n_cases} simulator cases\nu(x,t)")
         for col in range(3):
