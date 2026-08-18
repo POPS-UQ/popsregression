@@ -33,6 +33,14 @@ POD_T_RANGE = (T_RANGE[0], 0.35)
 SPATIAL_SEED = 4432
 TEST_SEED = 27182
 
+# Plot styling: use a distinct cool outer band so max/min is visually
+# separable from the central 95.45% interval.
+OUTER_COLOR = "#8FA4BF"
+OUTER_ALPHA = 0.42
+INNER_COLOR = "C1"
+INNER_ALPHA = 0.45
+COVERAGE_BBOX = dict(boxstyle="round,pad=0.18", fc="white", ec="0.65", alpha=0.90)
+
 
 def build_pod_basis(rank=2, n_basis_cases=48, seed=SEED + 1000):
     rng = np.random.default_rng(seed)
@@ -142,6 +150,7 @@ def run(seed=SEED, train_case_counts=(8, 16, 24, 40, 80), n_test_cases=120,
     target_slice = truth - offset
 
     fitted = {}
+    coverages = {}
     for n_cases in train_case_counts:
         X_train, r_train = simulate_cases(
             all_train[:n_cases], modes, mean_field,
@@ -188,6 +197,12 @@ def run(seed=SEED, train_case_counts=(8, 16, 24, 40, 80), n_test_cases=120,
         e_slice_cov = burgers.coverage(target_slice, e_lo_slice, e_hi_slice)
         p_slice_cov = burgers.coverage(target_slice, p_lo_slice, p_hi_slice)
 
+        coverages[n_cases] = {
+            "bayes": b_cov,
+            "hyper": h_cov,
+            "ellipse": e_cov,
+            "pac": p_cov,
+        }
         fitted[n_cases] = (bayes, hypercube, ellipse, pac)
         print(
             f"{n_cases:5d} {len(r_train):4d} {len(r_train)/p:6.2f}"
@@ -227,33 +242,50 @@ def run(seed=SEED, train_case_counts=(8, 16, 24, 40, 80), n_test_cases=120,
 
         ax = axes[row_idx, 0]
         ax.fill_between(x, b_mean-4*b_std, b_mean+4*b_std,
-                        alpha=0.20, facecolor="0.85",
+                        alpha=OUTER_ALPHA, facecolor=OUTER_COLOR,
                         label=r"max/min ($\pm4\sigma$)")
         ax.fill_between(x, b_mean-2*b_std, b_mean+2*b_std,
-                        alpha=0.45, facecolor="C1",
+                        alpha=INNER_ALPHA, facecolor=INNER_COLOR,
                         label=r"$95.45\%$ ($\pm2\sigma$)")
         ax.plot(x, b_mean, "C1-", lw=2, label="mean")
 
         ax = axes[row_idx, 1]
         ax.fill_between(x, offset+h_lo, offset+h_hi,
-                        alpha=0.20, facecolor="0.5", label="max/min")
+                        alpha=OUTER_ALPHA, facecolor=OUTER_COLOR, label="max/min")
         ax.fill_between(x, h_mean-2*h_std, h_mean+2*h_std,
-                        alpha=0.45, facecolor="C1", label=r"$95.45\%$")
+                        alpha=INNER_ALPHA, facecolor=INNER_COLOR, label=r"$95.45\%$")
         ax.plot(x, h_mean, "C1-", lw=2)
 
         ax = axes[row_idx, 2]
         ax.fill_between(x, offset+e_lo, offset+e_hi,
-                        alpha=0.20, facecolor="0.5", label="max/min")
+                        alpha=OUTER_ALPHA, facecolor=OUTER_COLOR, label="max/min")
         ax.fill_between(x, offset+e_qlo, offset+e_qhi,
-                        alpha=0.45, facecolor="C1", label=r"$95.45\%$")
+                        alpha=INNER_ALPHA, facecolor=INNER_COLOR, label=r"$95.45\%$")
         ax.plot(x, e_mean, "C1-", lw=2)
 
         ax = axes[row_idx, 3]
         ax.fill_between(x, offset+p_lo, offset+p_hi,
-                        alpha=0.20, facecolor="0.5", label="max/min")
+                        alpha=OUTER_ALPHA, facecolor=OUTER_COLOR, label="max/min")
         ax.fill_between(x, offset+p_qlo, offset+p_qhi,
-                        alpha=0.45, facecolor="C1", label=r"$95.45\%$")
+                        alpha=INNER_ALPHA, facecolor=INNER_COLOR, label=r"$95.45\%$")
         ax.plot(x, p_mean, "C1-", lw=2)
+
+        # Annotate held-out coverage of the outer interval. These values come
+        # from the independent test set, not the displayed slice.
+        cov = coverages[n_cases]
+        coverage_text = [
+            rf"$4\sigma$ cov. = {cov['bayes']:.3f}",
+            f"cov. = {cov['hyper']:.3f}",
+            f"cov. = {cov['ellipse']:.3f}",
+            f"cov. = {cov['pac']:.3f}",
+        ]
+        for col, text in enumerate(coverage_text):
+            axes[row_idx, col].text(
+                0.97, 0.95, text,
+                transform=axes[row_idx, col].transAxes,
+                ha="right", va="top", fontsize=6.5,
+                bbox=COVERAGE_BBOX, zorder=10,
+            )
 
         for col in range(4):
             ax = axes[row_idx, col]
