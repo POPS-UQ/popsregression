@@ -317,8 +317,7 @@ def run(seed=SEED, train_case_counts=(8, 16, 24, 40, 80), n_test_cases=120,
         f"_s{spatial_seed}"
     )
     fig.savefig(stem + ".png", dpi=180, bbox_inches="tight")
-    fig.savefig(stem + ".pdf", bbox_inches="tight")
-    print(f"Saved {stem}.png and {stem}.pdf")
+    print(f"Saved {stem}.png")
     return fitted
 
 

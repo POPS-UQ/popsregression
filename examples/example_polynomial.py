@@ -56,8 +56,8 @@ def draw_common(ax, x, truth, x_train, y_train, mean,
 
 
 def main():
-    rng = np.random.RandomState(42)
-    train_sizes = (10, 500)
+    rng = np.random.RandomState(1042)
+    train_sizes = (10, 100)
     titles = [
         "Bayesian Ridge", "POPS Hypercube", "POPS Ellipse",
         "POPS Ellipse + PAC"
@@ -149,9 +149,9 @@ def main():
         ]
         for col, text in enumerate(coverage_text):
             axes[row, col].text(
-                0.97, 0.95, text,
+                0.5, 0.95, text,
                 transform=axes[row, col].transAxes,
-                ha="right", va="top", fontsize=6.5,
+                ha="center", va="top", fontsize=6,
                 bbox=COVERAGE_BBOX, zorder=10,
             )
 
@@ -176,7 +176,7 @@ def main():
     ]
     bay_ax.legend(
         [handles[i] for i in order], [labels[i] for i in order],
-        fontsize=7, loc="lower left"
+        fontsize=6, loc="lower center"
     )
 
     pops_ax = axes[0, 2]
@@ -187,13 +187,12 @@ def main():
     ]
     axes[0, 1].legend(
         [handles[i] for i in order], [labels[i] for i in order],
-        fontsize=7, loc="lower left"
+        fontsize=6, loc="lower center"
     )
 
     fig.tight_layout(pad=0.2, w_pad=0.1, h_pad=0.1)
     fig.savefig("example_polynomial.png", dpi=180, bbox_inches="tight")
-    fig.savefig("example_polynomial.pdf", bbox_inches="tight")
-    print("Saved example_polynomial.png and example_polynomial.pdf")
+    print("Saved example_polynomial.png")
 
 
 if __name__ == "__main__":
