@@ -14,6 +14,14 @@ from sklearn.preprocessing import PolynomialFeatures
 from popsregression import POPSRegression, POPSRegressionEllipse
 
 
+# Match the Burgers/POD workshop figure styling.
+OUTER_COLOR = "#8FA4BF"
+OUTER_ALPHA = 0.42
+INNER_COLOR = "C1"
+INNER_ALPHA = 0.45
+COVERAGE_BBOX = dict(boxstyle="round,pad=0.18", fc="white", ec="0.65", alpha=0.90)
+
+
 def target_function(x):
     return (x**3 + 0.01 * x**4) * 0.1 + np.sin(x) * x * 10.0
 
@@ -36,10 +44,14 @@ def epistemic_std(model, X):
     return np.sqrt(np.sum((X @ model.sigma_) * X, axis=1))
 
 
+def coverage(y, lo, hi):
+    return float(np.mean((y >= lo) & (y <= hi)))
+
+
 def draw_common(ax, x, truth, x_train, y_train, mean,
                 truth_label="_nolegend_", mean_label="_nolegend_"):
-    ax.plot(x, truth, "k-", lw=1.6, label=truth_label)
-    ax.plot(x, mean, "C1-", lw=2.8, label=mean_label)
+    ax.plot(x, truth, "k-", lw=1.5, label=truth_label)
+    ax.plot(x, mean, "C1-", lw=2, label=mean_label)
     ax.plot(x_train, y_train, "b.", ms=4, label="_nolegend_")
 
 
@@ -52,11 +64,11 @@ def main():
     ]
 
     fig, axes = plt.subplots(
-        len(train_sizes), 4, figsize=(8, 4), sharex=True, sharey=True
+        len(train_sizes), 4, figsize=(8, 3), sharex=True, sharey=True
     )
 
     for col, title in enumerate(titles):
-        axes[0, col].set_title(title, fontsize=11)
+        axes[0, col].set_title(title, fontsize=10)
 
     for row, n_samples in enumerate(train_sizes):
         X_train, x_train, y_train, X_dense, x_dense, y_dense = generate_data(
@@ -75,22 +87,24 @@ def main():
         # BayesianRidge: +/-4 sigma outer, +/-2 sigma inner.
         mean = bay.predict(X_dense)
         std = epistemic_std(bay, X_dense)
+        b_lo = mean - 4 * std
+        b_hi = mean + 4 * std
+        b_cov = coverage(y_dense, b_lo, b_hi)
+
         ax = axes[row, 0]
         ax.fill_between(
-            x_dense,
-            mean - 4 * std,
-            mean + 4 * std,
-            alpha=0.20,
-            facecolor="0.5",
-            label="max/min ($\\pm4\\sigma$)",
+            x_dense, b_lo, b_hi,
+            alpha=OUTER_ALPHA,
+            facecolor=OUTER_COLOR,
+            label=r"max/min ($\pm4\sigma$)",
         )
         ax.fill_between(
             x_dense,
             mean - 2 * std,
             mean + 2 * std,
-            alpha=0.50,
-            facecolor="C1",
-            label=r"95.45% ($\pm2\sigma$)",
+            alpha=INNER_ALPHA,
+            facecolor=INNER_COLOR,
+            label=r"$95.45\%$ ($\pm2\sigma$)",
         )
         draw_common(
             ax, x_dense, y_dense, x_train, y_train, mean,
@@ -98,33 +112,50 @@ def main():
         )
 
         # POPS variants: full max/min outer band and +/-2 predictive std inner.
-        for col, model in ((1, hyc), (2, ell), (3, pac)):
+        pop_cov = {}
+        for col, key, model in (
+            (1, "hyper", hyc), (2, "ellipse", ell), (3, "pac", pac)
+        ):
             mean, std, hi, lo = model.predict(
                 X_dense, return_std=True, return_bounds=True
             )
+            pop_cov[key] = coverage(y_dense, lo, hi)
             ax = axes[row, col]
             ax.fill_between(
-                x_dense,
-                lo,
-                hi,
-                alpha=0.20,
-                facecolor="0.5",
+                x_dense, lo, hi,
+                alpha=OUTER_ALPHA,
+                facecolor=OUTER_COLOR,
                 label="max/min",
             )
             ax.fill_between(
                 x_dense,
                 mean - 2 * std,
                 mean + 2 * std,
-                alpha=0.50,
-                facecolor="C1",
-                label="95.45%",
+                alpha=INNER_ALPHA,
+                facecolor=INNER_COLOR,
+                label=r"$95.45\%$",
             )
             draw_common(
                 ax, x_dense, y_dense, x_train, y_train, mean,
                 truth_label="Truth"
             )
 
-        axes[row, 0].set_ylabel(f"N = {n_samples}", fontsize=11)
+        # Coverage of the outer interval over the dense evaluation grid.
+        coverage_text = [
+            rf"$4\sigma$ cov. = {b_cov:.3f}",
+            f"cov. = {pop_cov['hyper']:.3f}",
+            f"cov. = {pop_cov['ellipse']:.3f}",
+            f"cov. = {pop_cov['pac']:.3f}",
+        ]
+        for col, text in enumerate(coverage_text):
+            axes[row, col].text(
+                0.97, 0.95, text,
+                transform=axes[row, col].transAxes,
+                ha="right", va="top", fontsize=6.5,
+                bbox=COVERAGE_BBOX, zorder=10,
+            )
+
+        axes[row, 0].set_ylabel(f"N = {n_samples}", fontsize=9)
 
     for ax in axes.flat:
         ax.set_xlim(-10, 10)
@@ -132,31 +163,37 @@ def main():
         ax.tick_params(labelsize=8)
 
     for ax in axes[-1]:
-        ax.set_xlabel("x")
+        ax.set_xlabel("x", fontsize=9)
 
-    # Exactly two legends for readability.  BayesianRidge explains the
+    # Exactly two legends for readability. BayesianRidge explains the
     # Gaussian bands; a single POPS panel explains truth and POPS bands.
     bay_ax = axes[0, 0]
     handles, labels = bay_ax.get_legend_handles_labels()
-    order = [labels.index("mean"), labels.index("95.45% ($\\pm2\\sigma$)"),
-             labels.index("max/min ($\\pm4\\sigma$)")]
+    order = [
+        labels.index("mean"),
+        labels.index(r"$95.45\%$ ($\pm2\sigma$)"),
+        labels.index(r"max/min ($\pm4\sigma$)"),
+    ]
     bay_ax.legend(
         [handles[i] for i in order], [labels[i] for i in order],
-        fontsize=7, loc="lower right"
+        fontsize=7, loc="lower left"
     )
 
     pops_ax = axes[0, 2]
     handles, labels = pops_ax.get_legend_handles_labels()
-    order = [labels.index("Truth"), labels.index("95.45%"),
-             labels.index("max/min")]
-    pops_ax.legend(
+    order = [
+        labels.index("Truth"), labels.index(r"$95.45\%$"),
+        labels.index("max/min")
+    ]
+    axes[0, 1].legend(
         [handles[i] for i in order], [labels[i] for i in order],
-        fontsize=7, loc="lower right"
+        fontsize=7, loc="lower left"
     )
 
-    fig.tight_layout(pad=0.7, w_pad=0.4, h_pad=0.3)
+    fig.tight_layout(pad=0.2, w_pad=0.1, h_pad=0.1)
     fig.savefig("example_polynomial.png", dpi=180, bbox_inches="tight")
-    print("Saved example_polynomial.png")
+    fig.savefig("example_polynomial.pdf", bbox_inches="tight")
+    print("Saved example_polynomial.png and example_polynomial.pdf")
 
 
 if __name__ == "__main__":
