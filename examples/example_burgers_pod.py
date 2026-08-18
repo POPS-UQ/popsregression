@@ -281,9 +281,9 @@ def run(seed=SEED, train_case_counts=(8, 16, 24, 40, 80), n_test_cases=120,
         ]
         for col, text in enumerate(coverage_text):
             axes[row_idx, col].text(
-                0.97, 0.95, text,
+                0.5, 0.95, text,
                 transform=axes[row_idx, col].transAxes,
-                ha="right", va="top", fontsize=6.5,
+                ha="center", va="top", fontsize=6,
                 bbox=COVERAGE_BBOX, zorder=10,
             )
 
@@ -301,14 +301,14 @@ def run(seed=SEED, train_case_counts=(8, 16, 24, 40, 80), n_test_cases=120,
     axes[0, 0].legend(
         [br_handles[i] for i in [2, 1, 0]],
         [br_labels[i] for i in [2, 1, 0]],
-        fontsize=7, loc="lower left"
+        fontsize=6, loc="lower center"
     )
     pops_handles, pops_labels = axes[0, 2].get_legend_handles_labels()
     label_to_handle = dict(zip(pops_labels, pops_handles))
     pops_order = ["Truth", r"$95.45\%$", "max/min"]
     axes[0, 1].legend(
         [label_to_handle[label] for label in pops_order],
-        pops_order, fontsize=7, loc="lower left"
+        pops_order, fontsize=6, loc="lower center"
     )
 
     fig.tight_layout(pad=0.2, w_pad=0.1, h_pad=0.1)

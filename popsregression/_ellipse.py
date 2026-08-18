@@ -807,23 +807,24 @@ class POPSRegressionEllipse(RegressorMixin, BaseEstimator):
         the fitted ellipsoid, ``mean +/- sqrt(v)`` (the ellipse max/min).
 
         If the model was fitted with ``pac_bayes=True``, the analytic
-        (first-order delta-method) hyperposterior spread enters, with no
-        sampling anywhere:
+        hyperposterior spread enters, with no sampling anywhere:
 
         - ``y_std`` averages over the hyperposterior: the mean variance
           gains ``z^2 @ Sigma_c`` and the expected squared width gains
           ``dv = sum_m z^2 @ Sigma_U[:, m]``, i.e.
           ``std = sqrt((v + dv) / (n_dim + 2) + z^2 @ Sigma_c)``.
         - ``y_bound_std`` is the hyperposterior standard deviation of the
-          support-bound curves: ``Var[y_max] = Var[y_min] =
-          z^2 @ Sigma_c + Var[v] / (4 v)`` with
-          ``Var[v] = 4 sum_m (z @ U_m)^2 (z^2 @ Sigma_U[:, m])``. For a
+          support-bound curves, propagated about the hyperposterior mean
+          squared width ``v_mixed = v + dv``:
+          ``Var[y_max] = Var[y_min] = z^2 @ Sigma_c
+          + Var[v] / (4 v_mixed)``, where the exact Gaussian quadratic
+          moments give ``Var[v] = 4 sum_m (z @ U_m)^2 s_m
+          + 2 sum_m s_m^2`` and ``s_m = z^2 @ Sigma_U[:, m]``. For a
           model fitted without ``pac_bayes`` it is identically zero.
         - the returned ``bounds`` are the max/min over the ensemble of
           ellipses within the 2-sigma range of the hyperposterior,
-          ``mean +/- (sqrt(v) + 2 * y_bound_std)`` — strictly broader
-          than the fitted ellipse's own support, which is recovered as
-          ``bounds -/+ 2 * y_bound_std``.
+          ``mean +/- (sqrt(v_mixed) + 2 * y_bound_std)`` — strictly
+          broader than the hyperposterior-averaged support.
 
         Parameters
         ----------
@@ -879,14 +880,16 @@ class POPSRegressionEllipse(RegressorMixin, BaseEstimator):
             sigma_u_proj = Z2 @ self._sigma_U
             v_mixed = v + np.sum(sigma_u_proj, axis=1)
             mean_var = Z2 @ self._sigma_c
-            var_v = 4.0 * np.sum((Z @ self.U_) ** 2 * sigma_u_proj, axis=1)
-            bound_var = mean_var + var_v / (4.0 * v)
+            var_v = 4.0 * np.sum(
+                (Z @ self.U_) ** 2 * sigma_u_proj, axis=1
+            ) + 2.0 * np.sum(sigma_u_proj**2, axis=1)
+            bound_var = mean_var + var_v / (4.0 * v_mixed)
 
         result = [y_mean]
         if return_std:
             result.append(np.sqrt(v_mixed / (self._ball_dim + 2.0) + mean_var))
         if return_bounds:
-            half_width = np.sqrt(v) + 2.0 * np.sqrt(bound_var)
+            half_width = np.sqrt(v_mixed) + 2.0 * np.sqrt(bound_var)
             result.extend([y_mean + half_width, y_mean - half_width])
         if return_bound_std:
             result.append(np.sqrt(bound_var))

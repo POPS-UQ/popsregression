@@ -328,7 +328,7 @@ def test_pac_bayes_finite_components():
 
 
 def test_pac_bayes_predictive_spread_added():
-    """predict follows the documented delta-method formulas exactly."""
+    """predict follows the documented Gaussian-moment formulas exactly."""
     X_train, y_train, X_dense, _ = _make_misspecified_data(50)
     pac = POPSRegressionEllipse(random_state=0, pac_bayes=True).fit(X_train, y_train)
     _, std_pac, max_pac, min_pac, bstd = pac.predict(
@@ -336,26 +336,28 @@ def test_pac_bayes_predictive_spread_added():
     )
 
     # Bounds are the max/min over the 2-sigma hyperposterior ensemble:
-    # mean +/- (sqrt(v) + 2*bound_std), v = x^T B x + delta^2.
+    # mean +/- (sqrt(v_mixed) + 2*bound_std), where v_mixed is the
+    # hyperposterior-averaged squared support width.
     v_point = (
         np.einsum("ij,jk,ik->i", X_dense, pac.ellipsoid_B_, X_dense) + pac.delta**2
     )
-    assert_allclose(0.5 * (max_pac - min_pac), np.sqrt(v_point) + 2.0 * bstd, rtol=1e-8)
-
-    # std averages over the hyperposterior: sqrt((v+dv)/(P+2) + z^2 Sc);
-    # bound_std is the delta-method std of the bound curves:
-    # sqrt(z^2 Sc + Var[v]/(4v)), Var[v] = 4 sum_m (zU_m)^2 (z^2 SU_m).
     _, Z = pac._whitened_design(X_dense)
     n_dim = X_dense.shape[1]
     sigma_u = pac.hyper_sigma_diag_[n_dim:].reshape(n_dim, -1)
     sigma_u_proj = (Z * Z) @ sigma_u
     d_v = np.sum(sigma_u_proj, axis=1)
+    v_mixed = v_point + d_v
+    assert_allclose(0.5 * (max_pac - min_pac), np.sqrt(v_mixed) + 2.0 * bstd, rtol=1e-8)
+
+    # std averages over the hyperposterior: sqrt(v_mixed/(P+2) + z^2 Sc);
+    # bound_std uses the exact Gaussian variance of the squared width,
+    # including the second-order term that remains positive when zU_m = 0.
     mean_var = (Z * Z) @ pac.hyper_sigma_diag_[:n_dim]
-    var_v = 4.0 * np.sum((Z @ pac.U_) ** 2 * sigma_u_proj, axis=1)
-    assert_allclose(
-        std_pac, np.sqrt((v_point + d_v) / (n_dim + 2.0) + mean_var), rtol=1e-8
+    var_v = 4.0 * np.sum((Z @ pac.U_) ** 2 * sigma_u_proj, axis=1) + 2.0 * np.sum(
+        sigma_u_proj**2, axis=1
     )
-    assert_allclose(bstd, np.sqrt(mean_var + var_v / (4.0 * v_point)), rtol=1e-8)
+    assert_allclose(std_pac, np.sqrt(v_mixed / (n_dim + 2.0) + mean_var), rtol=1e-8)
+    assert_allclose(bstd, np.sqrt(mean_var + var_v / (4.0 * v_mixed)), rtol=1e-8)
     assert np.all(d_v > 0) and np.all(bstd > 0)
 
     # A model fitted without pac_bayes has zero bound spread.
@@ -410,10 +412,11 @@ def test_pac_bayes_never_narrower_than_bare():
         assert np.all(p_max > b_max)
         assert np.all(p_min < b_min)
         assert np.all(p_std > b_std)
-        # ...and stripping the 2-sigma ensemble widening recovers the
-        # bare ellipse's own support exactly (identical fitted B).
-        assert_allclose(p_max - 2 * p_bstd, b_max, rtol=1e-12)
-        assert_allclose(p_min + 2 * p_bstd, b_min, rtol=1e-12)
+        # ...and stripping the 2-sigma ensemble widening retains the
+        # hyperposterior-averaged support, which is broader than the bare
+        # ellipse despite the identical fitted B.
+        assert np.all(p_max - 2 * p_bstd > b_max)
+        assert np.all(p_min + 2 * p_bstd < b_min)
         rel_broadening[n_samples] = np.mean((p_max - p_min) / (b_max - b_min) - 1.0)
     assert 0.0 < rel_broadening[500] < rel_broadening[10]
 
