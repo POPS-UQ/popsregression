@@ -9,7 +9,6 @@ import warnings
 import numpy as np
 import pytest
 from numpy.testing import assert_allclose, assert_array_less
-
 from sklearn.linear_model import BayesianRidge
 from sklearn.preprocessing import PolynomialFeatures
 from sklearn.utils.estimator_checks import parametrize_with_checks
@@ -220,9 +219,7 @@ def test_compute_score():
 @pytest.mark.parametrize("minimum_relative_error", [0.0, 0.01, 0.5])
 def test_minimum_relative_error(minimum_relative_error):
     X, y, _ = _make_low_noise_data()
-    model = POPSRegression(
-        minimum_relative_error=minimum_relative_error
-    ).fit(X, y)
+    model = POPSRegression(minimum_relative_error=minimum_relative_error).fit(X, y)
     y_pred = model.predict(X)
     assert y_pred.shape == (X.shape[0],)
 
@@ -280,9 +277,9 @@ def test_leverage_percentile_is_ignored():
 
     reference = POPSRegression(posterior="ensemble").fit(X, y)
     with pytest.warns(FutureWarning):
-        deprecated = POPSRegression(
-            posterior="ensemble", leverage_percentile=90.0
-        ).fit(X, y)
+        deprecated = POPSRegression(posterior="ensemble", leverage_percentile=90.0).fit(
+            X, y
+        )
 
     assert_allclose(
         deprecated.misspecification_sigma_, reference.misspecification_sigma_

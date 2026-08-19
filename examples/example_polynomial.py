@@ -51,8 +51,16 @@ def coverage(y, lo, hi):
     return float(np.mean((y >= lo) & (y <= hi)))
 
 
-def draw_common(ax, x, truth, x_train, y_train, mean,
-                truth_label="_nolegend_", mean_label="_nolegend_"):
+def draw_common(
+    ax,
+    x,
+    truth,
+    x_train,
+    y_train,
+    mean,
+    truth_label="_nolegend_",
+    mean_label="_nolegend_",
+):
     ax.plot(x, truth, "k-", lw=1.5, label=truth_label)
     ax.plot(x, mean, "C1-", lw=2, label=mean_label)
     ax.plot(x_train, y_train, "b.", ms=4, label="_nolegend_")
@@ -64,10 +72,7 @@ def main():
     np.random.seed(SEED)
     rng = np.random.RandomState(SEED)
     train_sizes = (10, 100)
-    titles = [
-        "Bayesian Ridge", "POPS Hypercube", "POPS Ellipse",
-        "POPS Ellipse + PAC"
-    ]
+    titles = ["Bayesian Ridge", "POPS Hypercube", "POPS Ellipse", "POPS Ellipse + PAC"]
 
     fig, axes = plt.subplots(
         len(train_sizes), 4, figsize=(8, 3), sharex=True, sharey=True
@@ -82,9 +87,9 @@ def main():
         )
 
         bay = BayesianRidge(fit_intercept=False).fit(X_train, y_train)
-        hyc = POPSRegression(
-            minimum_relative_error=0.0, posterior="hypercube"
-        ).fit(X_train, y_train)
+        hyc = POPSRegression(minimum_relative_error=0.0, posterior="hypercube").fit(
+            X_train, y_train
+        )
         ell = POPSRegressionEllipse(random_state=0).fit(X_train, y_train)
         pac = POPSRegressionEllipse(random_state=0, pac_bayes=True).fit(
             X_train, y_train
@@ -99,7 +104,9 @@ def main():
 
         ax = axes[row, 0]
         ax.fill_between(
-            x_dense, b_lo, b_hi,
+            x_dense,
+            b_lo,
+            b_hi,
             alpha=OUTER_ALPHA,
             facecolor=OUTER_COLOR,
             label=r"max/min ($\pm4\sigma$)",
@@ -112,15 +119,14 @@ def main():
             facecolor=INNER_COLOR,
             label=r"$95.45\%$ ($\pm2\sigma$)",
         )
-        draw_common(
-            ax, x_dense, y_dense, x_train, y_train, mean,
-            mean_label="mean"
-        )
+        draw_common(ax, x_dense, y_dense, x_train, y_train, mean, mean_label="mean")
 
         # POPS variants: full max/min outer band and +/-2 predictive std inner.
         pop_cov = {}
         for col, key, model in (
-            (1, "hyper", hyc), (2, "ellipse", ell), (3, "pac", pac)
+            (1, "hyper", hyc),
+            (2, "ellipse", ell),
+            (3, "pac", pac),
         ):
             mean, std, hi, lo = model.predict(
                 X_dense, return_std=True, return_bounds=True
@@ -128,7 +134,9 @@ def main():
             pop_cov[key] = coverage(y_dense, lo, hi)
             ax = axes[row, col]
             ax.fill_between(
-                x_dense, lo, hi,
+                x_dense,
+                lo,
+                hi,
                 alpha=OUTER_ALPHA,
                 facecolor=OUTER_COLOR,
                 label="max/min",
@@ -142,8 +150,7 @@ def main():
                 label=r"$95.45\%$",
             )
             draw_common(
-                ax, x_dense, y_dense, x_train, y_train, mean,
-                truth_label="Truth"
+                ax, x_dense, y_dense, x_train, y_train, mean, truth_label="Truth"
             )
 
         # Coverage of the outer interval over the dense evaluation grid.
@@ -155,10 +162,15 @@ def main():
         ]
         for col, text in enumerate(coverage_text):
             axes[row, col].text(
-                0.5, 0.95, text,
+                0.5,
+                0.95,
+                text,
                 transform=axes[row, col].transAxes,
-                ha="center", va="top", fontsize=6,
-                bbox=COVERAGE_BBOX, zorder=10,
+                ha="center",
+                va="top",
+                fontsize=6,
+                bbox=COVERAGE_BBOX,
+                zorder=10,
             )
 
         axes[row, 0].set_ylabel(f"N = {n_samples}", fontsize=9)
@@ -181,19 +193,20 @@ def main():
         labels.index(r"max/min ($\pm4\sigma$)"),
     ]
     bay_ax.legend(
-        [handles[i] for i in order], [labels[i] for i in order],
-        fontsize=6, loc="lower center"
+        [handles[i] for i in order],
+        [labels[i] for i in order],
+        fontsize=6,
+        loc="lower center",
     )
 
     pops_ax = axes[0, 2]
     handles, labels = pops_ax.get_legend_handles_labels()
-    order = [
-        labels.index("Truth"), labels.index(r"$95.45\%$"),
-        labels.index("max/min")
-    ]
+    order = [labels.index("Truth"), labels.index(r"$95.45\%$"), labels.index("max/min")]
     axes[0, 1].legend(
-        [handles[i] for i in order], [labels[i] for i in order],
-        fontsize=6, loc="lower center"
+        [handles[i] for i in order],
+        [labels[i] for i in order],
+        fontsize=6,
+        loc="lower center",
     )
 
     fig.tight_layout(pad=0.2, w_pad=0.1, h_pad=0.1)

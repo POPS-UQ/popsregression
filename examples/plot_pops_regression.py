@@ -57,13 +57,12 @@ y_test = target_function(x_test)
 # shrinks to near-zero, but POPS misspecification uncertainty persists
 # because the polynomial is fundamentally unable to fit the target.
 
+# %%
+import matplotlib.pyplot as plt
 from sklearn.linear_model import BayesianRidge
 from sklearn.preprocessing import PolynomialFeatures
 
 from popsregression import POPSRegression
-
-# %%
-import matplotlib.pyplot as plt
 
 fig, axes = plt.subplots(1, 3, figsize=(15, 5), sharey=True)
 train_sizes = [10, 30, 500]
@@ -132,8 +131,10 @@ for ax, n_samples in zip(axes, train_sizes):
 axes[0].set_ylabel("y")
 axes[1].legend(loc="lower center", fontsize=7, ncol=2)
 fig.suptitle(
-    "POPS Regression captures misspecification uncertainty\n"
-    "that BayesianRidge misses in the low-noise regime",
+    (
+        "POPS Regression captures misspecification uncertainty\n"
+        "that BayesianRidge misses in the low-noise regime"
+    ),
     fontsize=12,
 )
 plt.tight_layout()
@@ -168,9 +169,7 @@ fig, axes = plt.subplots(1, 2, figsize=(12, 5), sharey=True)
 posteriors = ["ensemble", "hypercube"]
 
 n_samples = 30
-x_train = np.sort(
-    np.append(rng.uniform(-1, 1, n_samples), np.linspace(-1, 1, 2)) * 10
-)
+x_train = np.sort(np.append(rng.uniform(-1, 1, n_samples), np.linspace(-1, 1, 2)) * 10)
 y_train = target_function(x_train)
 
 poly = PolynomialFeatures(degree=4, include_bias=True)
@@ -189,9 +188,7 @@ for ax, posterior in zip(axes, posteriors):
         X_test, return_std=True, return_bounds=True
     )
 
-    ax.fill_between(
-        x_test, y_min, y_max, alpha=0.2, facecolor="0.5", label="max/min"
-    )
+    ax.fill_between(x_test, y_min, y_max, alpha=0.2, facecolor="0.5", label="max/min")
     ax.fill_between(
         x_test,
         y_pred - 2 * y_std,

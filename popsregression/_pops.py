@@ -9,21 +9,20 @@ Bayesian regression for low-noise data accounting for model misspecification.
 # SPDX-License-Identifier: BSD-3-Clause
 
 import warnings
-import numpy as np
 from numbers import Real
 
+import numpy as np
 from scipy.linalg import eigh
 from scipy.stats import qmc
-
 from sklearn.base import _fit_context
-from sklearn.linear_model._bayes import BayesianRidge
 from sklearn.linear_model._base import _preprocess_data
+from sklearn.linear_model._bayes import BayesianRidge
+from sklearn.utils._param_validation import Hidden, Interval, StrOptions
 from sklearn.utils.validation import (
     _check_sample_weight,
     check_is_fitted,
     validate_data,
 )
-from sklearn.utils._param_validation import Hidden, Interval, StrOptions
 
 
 class POPSRegression(BayesianRidge):
@@ -281,10 +280,12 @@ class POPSRegression(BayesianRidge):
         """
         if not isinstance(self.leverage_percentile, str):
             warnings.warn(
-                "'leverage_percentile' was deprecated in 0.5 and will be "
-                "removed in 0.7. Training points are now selected by residual "
-                "magnitude: use 'minimum_relative_error' instead. The value "
-                "passed to 'leverage_percentile' is ignored.",
+                (
+                    "'leverage_percentile' was deprecated in 0.5 and will be "
+                    "removed in 0.7. Training points are now selected by residual "
+                    "magnitude: use 'minimum_relative_error' instead. The value "
+                    "passed to 'leverage_percentile' is ignored."
+                ),
                 FutureWarning,
             )
 
@@ -362,9 +363,7 @@ class POPSRegression(BayesianRidge):
             return pc.T, sigma
 
         elif self.posterior == "hypercube":
-            self._hypercube_support, self._hypercube_bounds = (
-                self._fit_hypercube(pc)
-            )
+            self._hypercube_support, self._hypercube_bounds = self._fit_hypercube(pc)
             return self._sample_hypercube()
 
     def _fit_hypercube(self, pointwise_correction):
@@ -384,9 +383,7 @@ class POPSRegression(BayesianRidge):
             Two arrays [low, high] giving the min/max bounds along each
             principal component.
         """
-        e_values, e_vectors = eigh(
-            pointwise_correction.T @ pointwise_correction
-        )
+        e_values, e_vectors = eigh(pointwise_correction.T @ pointwise_correction)
 
         mask = e_values > self.mode_threshold * e_values.max()
         e_vectors = e_vectors[:, mask]
@@ -427,9 +424,7 @@ class POPSRegression(BayesianRidge):
         high = self._hypercube_bounds[1]
 
         if size is None:
-            n_resample = int(
-                self.resample_density * len(self._pointwise_correction)
-            )
+            n_resample = int(self.resample_density * len(self._pointwise_correction))
         else:
             n_resample = size
         n_resample = max(n_resample, 100)
@@ -519,9 +514,7 @@ class POPSRegression(BayesianRidge):
                 y_misspecification_var = (
                     np.dot(X, self.misspecification_sigma_) * X
                 ).sum(axis=1)
-                result.append(
-                    np.sqrt(y_misspecification_var + y_epistemic_var)
-                )
+                result.append(np.sqrt(y_misspecification_var + y_epistemic_var))
 
             if return_bounds:
                 y_posterior = X @ self.posterior_samples_
