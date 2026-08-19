@@ -159,18 +159,18 @@ https://POPS-UQ.github.io/popsregression
 
 ## Development
 
+The repository is managed with [uv](https://docs.astral.sh/uv/); `uv run`
+resolves the pinned environment from `uv.lock` on first use.
+
 ```bash
-# Install in development mode
-pip install -e .
-
-# Run tests
-pytest -vsl popsregression
-
-# With pixi
-pixi run test
-pixi run lint
-pixi run build-doc
+uv run --group test pytest -vsl popsregression        # tests
+uv run --group lint ruff check popsregression examples  # linter
+uv run --group lint black --check popsregression examples
+uv run --group doc mkdocs serve                       # docs at localhost:8000
+uv run --extra examples examples/example_polynomial.py  # example figures
 ```
+
+Without uv, `pip install -e ".[examples]"` and run the tools directly.
 
 ## Citation
 

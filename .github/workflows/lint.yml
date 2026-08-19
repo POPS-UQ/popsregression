@@ -18,11 +18,13 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - uses: prefix-dev/setup-pixi@v0.9.4
+      - uses: astral-sh/setup-uv@v6
         with:
-          pixi-version: v0.41.4
-          environments: lint
-          frozen: false
+          enable-cache: true
+          python-version: "3.12"
+
+      - name: Check formatting
+        run: uv run --locked --group lint black --check --diff popsregression examples
 
       - name: Run linter
-        run: pixi run -e lint lint
+        run: uv run --locked --group lint ruff check --output-format=full popsregression examples

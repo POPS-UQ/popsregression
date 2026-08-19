@@ -59,7 +59,6 @@ site/
 # PyBuilder
 target/
 
-.pixi
 
 # General
 .DS_Store

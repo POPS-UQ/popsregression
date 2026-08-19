@@ -17,21 +17,21 @@ jobs:
     strategy:
       matrix:
         os: [windows-latest, ubuntu-latest, macos-latest]
-        environment: [test]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
-      - uses: prefix-dev/setup-pixi@v0.9.4
+      - uses: astral-sh/setup-uv@v6
         with:
-          pixi-version: v0.41.4
-          environments: ${{ matrix.environment }}
-          frozen: false
+          enable-cache: true
+          python-version: "3.12"
 
       - name: Run tests
-        run: pixi run -e ${{ matrix.environment }} test
+        run: >-
+          uv run --locked --group test
+          pytest -vsl --cov=popsregression --cov-report=xml popsregression
 
       - name: Upload coverage reports to Codecov
         uses: codecov/codecov-action@v5.5.3

@@ -43,55 +43,26 @@ include = ["popsregression*"]
 [tool.setuptools_scm]
 version_file = "popsregression/_version.py"
 
-[tool.pixi.project]
-channels = ["conda-forge"]
-platforms = ["win-64", "linux-64", "osx-64", "osx-arm64"]
-
-[tool.pixi.dependencies]
-python = ">=3.9"
-scikit-learn = ">=1.6.1"
-scipy = ">=1.6.0"
-setuptools = ">=64"
-setuptools-scm = ">=8"
-
-[tool.pixi.pypi-dependencies]
-popsregression = { path=".", editable=true }
-
-[tool.pixi.feature.lint.dependencies]
-# The version below should be aligned with the one of `.pre-commit-config.yaml`
-black = "23.3.0"
-pre-commit = "3.7.1"
-ruff = "0.4.2"
-
-[tool.pixi.feature.lint.tasks]
-black = { cmd = "black --check --diff popsregression && black --check --diff examples" }
-ruff = { cmd = "ruff check --output-format=full popsregression && ruff check --output-format=full examples" }
-lint = { depends_on = ["black", "ruff"]}
-
-[tool.pixi.feature.test.dependencies]
-pytest = "*"
-pytest-cov = "*"
-
-[tool.pixi.feature.test.tasks]
-test = { cmd = "pytest -vsl --cov=popsregression --cov-report=xml popsregression" }
-
-[tool.pixi.feature.doc.dependencies]
-black = "*"  # used by mkdocstrings to format rendered signatures
-mkdocs-material = "*"
-mkdocstrings = "*"
-mkdocstrings-python = "*"
-setuptools-scm = ">=8"  # needed for the versioning
-
-[tool.pixi.feature.doc.tasks]
-build-doc = { cmd = "mkdocs build" }
-serve-doc = { cmd = "mkdocs serve" }
-clean-doc = { cmd = "rm -rf site" }
-
-[tool.pixi.environments]
-doc = ["doc"]
-lint = ["lint"]
-test = ["test"]
-dev = ["doc", "lint", "test"]
+[dependency-groups]
+# Keep the pinned versions aligned with `.pre-commit-config.yaml`.
+lint = [
+  "black==23.3.0",
+  "ruff==0.4.2",
+]
+test = [
+  "pytest",
+  "pytest-cov",
+]
+doc = [
+  "black",  # used by mkdocstrings to format rendered signatures
+  "mkdocs-material",
+  "mkdocstrings[python]",
+]
+dev = [
+  { include-group = "lint" },
+  { include-group = "test" },
+  { include-group = "doc" },
+]
 
 [tool.black]
 line-length = 88

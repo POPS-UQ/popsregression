@@ -45,10 +45,11 @@ y_pred, y_std = model.predict(X_test, return_std=True)
 Source and issue tracker:
 [github.com/POPS-UQ/popsregression](https://github.com/POPS-UQ/popsregression).
 
-```bash
-pytest -vsl popsregression   # tests
+The repository is managed with [uv](https://docs.astral.sh/uv/), which
+resolves the pinned environment from `uv.lock`:
 
-pixi run test                # or, with pixi
-pixi run lint
-pixi run build-doc
+```bash
+uv run --group test pytest -vsl popsregression   # tests
+uv run --group lint ruff check popsregression    # linter
+uv run --group doc mkdocs serve                  # docs
 ```
