@@ -51,7 +51,7 @@ X_train, X_test, y_train, y_test = ...
 
 # Fit POPSRegression
 # fit_intercept=False by default
-model = POPSRegression() 
+model = POPSRegression()
 model.fit(X_train, y_train)
 
 # Prediction with misspecification & epistemic uncertainty
@@ -61,6 +61,7 @@ y_pred, y_std = model.predict(X_test, return_std=True)
 y_pred, y_std, y_max, y_min = model.predict(
     X_test, return_std=True, return_bounds=True
 )
+
 # Also return epistemic-only uncertainty separately
 y_pred, y_std, y_max, y_min, y_epistemic_std = model.predict(
     X_test,

@@ -37,13 +37,7 @@ so run that one from this directory.
   band. It writes `example_polynomial.png`, which is also the figure in the
   root README and in the rendered
   [Example](https://POPS-UQ.github.io/popsregression/example/) in the docs.
-- `plot_pops_regression.py` — an earlier, single-estimator walkthrough of the
-  same polynomial problem, laid out as an annotated sphinx-gallery script.
-- `EllipseExample.ipynb` — compares `BayesianRidge`, `POPSRegression` and
-  `POPSRegressionEllipse` at N = 10/50/500, showing the optimized ellipsoid
-  bounds tracking the sampled POPS hypercube bounds, plus the closed-form
-  PAC-Bayes layer. See [Ellipsoid
-  posteriors](https://POPS-UQ.github.io/popsregression/ellipse/) in the docs.
+
 - `example_burgers.py` / `example_burgers_pod.py` — small-N
   simulation-to-science example using a deterministic periodic viscous Burgers
   solver. The POD basis is learned only from smooth snapshots, so the linear
