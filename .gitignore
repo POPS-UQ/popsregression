@@ -68,3 +68,7 @@ target/
 
 # auto-generated files
 popsregression/_version.py
+
+# Local virtual environments
+.venv/
+venv/
