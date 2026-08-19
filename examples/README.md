@@ -1,6 +1,16 @@
 # Examples
 
-Runnable example scripts for `popsregression`.
+Runnable example scripts for `popsregression`. Plotting needs the optional
+`examples` extra; with [uv](https://docs.astral.sh/uv/) the lockfile at the
+repository root gives a pinned environment with no setup:
+
+```bash
+uv run --extra examples examples/example_polynomial.py
+```
+
+Otherwise `pip install popsregression[examples]` into your own environment and
+run the scripts directly. `example_burgers_pod.py` imports `example_burgers`,
+so run that one from this directory.
 
 - `example_mliap.py` — compares `BayesianRidge`, the POPS hypercube, the POPS
   ellipse, and the PAC-Bayes POPS ellipse for a linear 267-feature Cu ACE
@@ -20,9 +30,15 @@ Runnable example scripts for `popsregression`.
   too narrow and negative when it is too wide. `--error-output` additionally
   writes the two error densities that the P-P plot compares. A trusted pickle
   with the same four keys can be passed with `--data`.
-- `plot_pops_regression.py` — compares POPS vs `BayesianRidge` uncertainty for a
-  misspecified, low-noise polynomial fit. See the rendered
+- `example_polynomial.py` — the headline figure: `BayesianRidge`, the POPS
+  hypercube, the POPS ellipse and the PAC-Bayes ellipse fitting a quartic
+  polynomial to an oscillatory target it cannot represent, at N = 10 and
+  N = 100. Each panel reports the fraction of the truth covered by its outer
+  band. It writes `example_polynomial.png`, which is also the figure in the
+  root README and in the rendered
   [Example](https://POPS-UQ.github.io/popsregression/example/) in the docs.
+- `plot_pops_regression.py` — an earlier, single-estimator walkthrough of the
+  same polynomial problem, laid out as an annotated sphinx-gallery script.
 - `EllipseExample.ipynb` — compares `BayesianRidge`, `POPSRegression` and
   `POPSRegressionEllipse` at N = 10/50/500, showing the optimized ellipsoid
   bounds tracking the sampled POPS hypercube bounds, plus the closed-form

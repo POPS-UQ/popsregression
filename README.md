@@ -28,11 +28,11 @@ The result is wider, more honest uncertainty estimates that properly cover the t
 The misspecified, near-deterministic regression problem that `POPSRegression` addresses is particularly relevant to the fitting of surrogate simulation models in computational science, i.e. interatomic potentials,where by construction the optimal surrogate model is structurally unable to capture the target function exactly.
 
 ## Example
-Fitting a quartic polynomial (P=5 parameters) to a complex oscillatory function with N=10, 50, 500 training points. Top row: BayesianRidge epistemic uncertainty vanishes with more data. Bottom rows: POPS correctly maintains uncertainty where the polynomial deviates from the truth.
+Fitting a quartic polynomial (P=5 parameters) to a complex oscillatory function with N=10 (top row) and N=100 (bottom row) training points. Columns are BayesianRidge, the POPS hypercube, the POPS ellipse, and the PAC-Bayes POPS ellipse; the orange band is the 95.45% interval, the grey band the max/min posterior envelope, and each panel reports the fraction of the truth covered by the outer band. BayesianRidge epistemic uncertainty vanishes with more data, while POPS maintains uncertainty where the polynomial deviates from the truth.
 
-![Example comparison of BayesianRidge vs POPS uncertainty](https://raw.githubusercontent.com/POPS-UQ/popsregression/main/example_image.png)
+![Example comparison of BayesianRidge vs POPS uncertainty](https://raw.githubusercontent.com/POPS-UQ/popsregression/main/examples/example_polynomial.png)
 
-See the [SimpleExample.ipynb](SimpleExample.ipynb) notebook for a runnable version.
+The figure is produced by [examples/example_polynomial.py](examples/example_polynomial.py); see [SimpleExample.ipynb](SimpleExample.ipynb) for a step-by-step notebook.
 
 ## Installation
 

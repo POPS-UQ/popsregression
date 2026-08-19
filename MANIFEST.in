@@ -14,7 +14,6 @@ prune docs
 
 exclude MERGE_NOTES.md
 exclude SimpleExample.ipynb
-exclude example_image.png
 exclude mkdocs.yml
 exclude uv.lock
 

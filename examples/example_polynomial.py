@@ -6,13 +6,16 @@ Burgers example: an outer high-confidence/support band and a darker inner
 band, with truth and training data overlaid.
 """
 
-import numpy as np
+from pathlib import Path
+
 import matplotlib.pyplot as plt
+import numpy as np
 from sklearn.linear_model import BayesianRidge
 from sklearn.preprocessing import PolynomialFeatures
 
 from popsregression import POPSRegression, POPSRegressionEllipse
 
+SEED = 1042
 
 # Match the Burgers/POD workshop figure styling.
 OUTER_COLOR = "#8FA4BF"
@@ -56,7 +59,10 @@ def draw_common(ax, x, truth, x_train, y_train, mean,
 
 
 def main():
-    rng = np.random.RandomState(1042)
+    # POPSRegression resamples from NumPy's global RNG, so seed it as well as
+    # the local generator to keep the committed figure reproducible.
+    np.random.seed(SEED)
+    rng = np.random.RandomState(SEED)
     train_sizes = (10, 100)
     titles = [
         "Bayesian Ridge", "POPS Hypercube", "POPS Ellipse",
@@ -191,8 +197,9 @@ def main():
     )
 
     fig.tight_layout(pad=0.2, w_pad=0.1, h_pad=0.1)
-    fig.savefig("example_polynomial.png", dpi=180, bbox_inches="tight")
-    print("Saved example_polynomial.png")
+    output = Path(__file__).resolve().parent / "example_polynomial.png"
+    fig.savefig(output, dpi=180, bbox_inches="tight")
+    print(f"Saved {output}")
 
 
 if __name__ == "__main__":
