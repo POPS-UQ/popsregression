@@ -13,7 +13,7 @@ from scipy.special import gammaln
 from scipy.stats import beta
 from sklearn.linear_model import BayesianRidge
 
-from popsregression import POPSRegression, POPSRegressionEllipse
+from popsregression import POPSRegression, POPSRegressionPAC
 
 SEED = 1
 NU_RANGE = (0.012, 0.08)
@@ -107,11 +107,21 @@ def projected_ball_fraction(dim, half_percentile=0.33):
     return 2.0 * beta.ppf(0.5 + half_percentile, a, a) - 1.0
 
 
+def as_ellipsoid(model):
+    """The fitted ellipsoid behind either spelling of the POPS ellipsoid.
+
+    ``POPSRegression(posterior="ellipsoid")`` exposes it as ``ellipsoid_``;
+    ``POPSRegressionPAC`` is the ellipsoid estimator itself.
+    """
+    return getattr(model, "ellipsoid_", model)
+
+
 def bare_percentile_interval(model, X, half_percentile=0.5 - 0.023):
     mean = model.predict(X)
-    Xc, Z = model._whitened_design(np.asarray(X, dtype=float))
-    v = model._squared_widths(Xc, Z) + model.delta**2
-    q = projected_ball_fraction(model._ball_dim, half_percentile)
+    ellipsoid = as_ellipsoid(model)
+    Xc, Z = ellipsoid._whitened_design(np.asarray(X, dtype=float))
+    v = ellipsoid._squared_widths(Xc, Z) + ellipsoid.delta**2
+    q = projected_ball_fraction(ellipsoid._ball_dim, half_percentile)
     hw = q * np.sqrt(v)
     return mean - hw, mean + hw
 
@@ -119,13 +129,14 @@ def bare_percentile_interval(model, X, half_percentile=0.5 - 0.023):
 def pac_percentile_interval(model, X, half_percentile=0.5 - 0.023):
     """Central interval with same 2-sigma hyperposterior envelope as max/min."""
     mean = model.predict(X)
-    Xc, Z = model._whitened_design(np.asarray(X, dtype=float))
-    v = model._squared_widths(Xc, Z) + model.delta**2
-    q = projected_ball_fraction(model._ball_dim, half_percentile)
+    ellipsoid = as_ellipsoid(model)
+    Xc, Z = ellipsoid._whitened_design(np.asarray(X, dtype=float))
+    v = ellipsoid._squared_widths(Xc, Z) + ellipsoid.delta**2
+    q = projected_ball_fraction(ellipsoid._ball_dim, half_percentile)
     Z2 = Z * Z
-    sigma_u_proj = Z2 @ model._sigma_U
-    mean_var = Z2 @ model._sigma_c
-    var_v = 4.0 * np.sum((Z @ model.U_) ** 2 * sigma_u_proj, axis=1)
+    sigma_u_proj = Z2 @ ellipsoid._sigma_U
+    mean_var = Z2 @ ellipsoid._sigma_c
+    var_v = 4.0 * np.sum((Z @ ellipsoid.U_) ** 2 * sigma_u_proj, axis=1)
     q_bound_std = np.sqrt(mean_var + q * q * var_v / (4.0 * v))
     hw = q * np.sqrt(v) + 2.0 * q_bound_std
     return mean - hw, mean + hw
@@ -169,12 +180,12 @@ def run(
         X_train = make_features(z_train, harmonic_order)
         bayes = BayesianRidge(fit_intercept=False).fit(X_train, y_train)
         hypercube = POPSRegression(
-            minimum_relative_error=0.0, posterior="hypercube"
+            minimum_relative_error=0.0, posterior="hypercube", random_state=seed
         ).fit(X_train, y_train)
-        ellipse = POPSRegressionEllipse(random_state=seed).fit(X_train, y_train)
-        pac = POPSRegressionEllipse(random_state=seed, pac_bayes=True).fit(
+        ellipse = POPSRegression(posterior="ellipsoid", random_state=seed).fit(
             X_train, y_train
         )
+        pac = POPSRegressionPAC(random_state=seed).fit(X_train, y_train)
 
         b_mean = bayes.predict(X_test)
         b_std = epistemic_bayes_std(bayes, X_test)
@@ -182,7 +193,12 @@ def run(
         e_mean, e_hi, e_lo = ellipse.predict(X_test, return_bounds=True)
         e_cov = coverage(y_test, e_lo, e_hi)
         g_test, uncovered = projected_ball_nll(
-            y_test, e_mean, e_lo, e_hi, ellipse._ball_dim, ellipse.delta
+            y_test,
+            e_mean,
+            e_lo,
+            e_hi,
+            as_ellipsoid(ellipse)._ball_dim,
+            as_ellipsoid(ellipse).delta,
         )
         _, p_hi, p_lo, p_bstd = pac.predict(
             X_test, return_bounds=True, return_bound_std=True

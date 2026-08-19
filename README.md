@@ -75,7 +75,9 @@ y_pred, y_std, y_max, y_min, y_epistemic_std = model.predict(
 
 | Parameter | Default | Description |
 |---|---|---|
-| `posterior` | `'hypercube'` | Posterior form: `'hypercube'` (PCA-aligned box) or `'ensemble'` (raw corrections) |
+| `posterior` | `'hypercube'` | Posterior form: `'hypercube'` (PCA-aligned box), `'ensemble'` (raw corrections) or `'ellipsoid'` (uniform ellipsoid, see below) |
+| `posterior_options` | `None` | Settings for the `'ellipsoid'` posterior, e.g. `{'rank': 16}` |
+| `random_state` | `None` | Seed for the posterior resampling; `None` uses the global NumPy state |
 | `resampling_method` | `'uniform'` | Sampling method: `'uniform'`, `'sobol'`, `'latin'`, `'halton'` |
 | `resample_density` | `1.0` | Number of posterior samples per training point |
 | `minimum_relative_error` | `0.01` | Relative residual threshold: only points with \|y - Xw\| >= this times the fit RMSE contribute to the POPS posterior |
@@ -102,20 +104,20 @@ All `BayesianRidge` parameters (`max_iter`, `tol`, `alpha_1`, `alpha_2`,
 | `posterior_samples_` | Samples from the POPS posterior |
 | `alpha_` | Estimated noise precision (not used for prediction) |
 
-## Ellipsoid posteriors: `POPSRegressionEllipse`
+## Ellipsoid posteriors: `posterior='ellipsoid'` and `POPSRegressionPAC`
 
-`POPSRegressionEllipse` fits a **uniform-ellipsoid** parameter posterior by
-directly optimizing the empirical generalization error of the exact
-projected-ball predictive pushforward. The POPS covering condition enters as a
-log-barrier, so the fit is an interior-point method for POPS coverage; an
-optional hierarchical PAC-Bayes layer (`pac_bayes=True`) provides closed-form
-KL and bound components via a Laplace hyperposterior — no sampling anywhere.
+The **uniform-ellipsoid** posterior is fitted by directly optimizing the
+empirical generalization error of the exact projected-ball predictive
+pushforward. The POPS covering condition enters as a log-barrier, so the fit is
+an interior-point method for POPS coverage. `POPSRegressionPAC` adds a
+hierarchical PAC-Bayes layer on top, giving closed-form KL and bound components
+via a Laplace hyperposterior — no sampling anywhere.
 
 ```python
-from popsregression import POPSRegressionEllipse
+from popsregression import POPSRegression, POPSRegressionPAC
 
 # Defaults: baseline='pops', optimize_center=False (mean = POPS pre-fit)
-model = POPSRegressionEllipse()
+model = POPSRegression(posterior="ellipsoid")
 model.fit(X_train, y_train)
 
 # std = pushforward std sqrt(v/(P+2)); bounds = ellipse support
@@ -133,7 +135,12 @@ y_pred, y_std, y_max, y_min = model.predict(
 | `baseline` | `'pops'` | Fixed baseline `B0`: `'pops'`, `'ridge'`, or `'zero'` |
 | `optimize_center` | `False` | Freeze the mean at the POPS pre-fit; `True` optimizes it jointly |
 | `rho_schedule` | `(1e-1, ..., 1e-4)` | Continuation schedule of the log-barrier |
-| `pac_bayes` | `False` | Closed-form PAC-Bayes layer (`kl_`, `bound_`, 2σ-ensemble bounds) |
+
+These are named arguments of `POPSRegressionPAC`, and go through
+`POPSRegression(posterior='ellipsoid', posterior_options={...})` for the
+no-PAC spelling. The PAC-Bayes layer is what separates the two, so it is not
+a parameter of either: use `POPSRegressionPAC` to get `kl_`, `bound_` and the
+2σ-ensemble bounds.
 
 See the [documentation](https://POPS-UQ.github.io/popsregression) and
 [examples/EllipseExample.ipynb](examples/EllipseExample.ipynb) for details.

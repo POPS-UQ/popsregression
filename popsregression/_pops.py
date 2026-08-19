@@ -17,6 +17,7 @@ from scipy.stats import qmc
 from sklearn.base import _fit_context
 from sklearn.linear_model._base import _preprocess_data
 from sklearn.linear_model._bayes import BayesianRidge
+from sklearn.utils import check_random_state
 from sklearn.utils._param_validation import Hidden, Interval, StrOptions
 from sklearn.utils.validation import (
     _check_sample_weight,
@@ -116,11 +117,29 @@ class POPSRegression(BayesianRidge):
         information. Use ``0.0`` to keep every training point. If no point
         passes the threshold, all points are used.
 
-    posterior : {'hypercube', 'ensemble'}, default='hypercube'
+    posterior : {'hypercube', 'ensemble', 'ellipsoid'}, default='hypercube'
         Form of the POPS parameter posterior:
 
         - ``'hypercube'``: fit an axis-aligned box in PCA space (default).
         - ``'ensemble'``: use raw pointwise corrections directly.
+        - ``'ellipsoid'``: fit a uniform ellipsoid by direct minimization of
+          the projected-ball generalization error, delegating to
+          :class:`POPSRegressionEllipse`. Predictions then use the exact
+          pushforward rather than the posterior samples. For the PAC-Bayes
+          layer on top of this posterior, use :class:`POPSRegressionPAC`.
+
+    posterior_options : dict, default=None
+        Extra keyword arguments for the ``'ellipsoid'`` posterior, passed to
+        :class:`POPSRegressionEllipse` (for example ``rank``, ``delta``,
+        ``baseline`` or ``rho_schedule``). Must be None for the other
+        posteriors. ``fit_intercept``, ``weights`` and ``random_state`` are
+        controlled by this estimator and cannot be set here, and ``pac_bayes``
+        is rejected: use :class:`POPSRegressionPAC` instead.
+
+    random_state : int, RandomState instance or None, default=None
+        Seed for the posterior resampling. ``None`` uses the global NumPy
+        random state, which is the historical behaviour of the ``'uniform'``
+        hypercube resampling.
 
     leverage_percentile : float, default='deprecated'
         Deprecated. Training points used to be selected by leverage score
@@ -157,6 +176,10 @@ class POPSRegression(BayesianRidge):
         Samples from the POPS posterior, representing plausible weight
         perturbations.
 
+    ellipsoid_ : POPSRegressionEllipse
+        The fitted ellipsoid posterior. Only present when
+        ``posterior='ellipsoid'``.
+
     scores_ : ndarray of shape (n_iter_,)
         Value of the log marginal likelihood at each iteration.
         Only available if ``compute_score=True``.
@@ -173,6 +196,9 @@ class POPSRegression(BayesianRidge):
 
     See Also
     --------
+    POPSRegressionEllipse : Uniform-ellipsoid posterior, used by
+        ``posterior='ellipsoid'``.
+    POPSRegressionPAC : The ellipsoid posterior with the PAC-Bayes layer.
     sklearn.linear_model.BayesianRidge : Bayesian ridge regression without
         misspecification correction.
     sklearn.linear_model.ARDRegression : Bayesian ARD regression.
@@ -206,7 +232,9 @@ class POPSRegression(BayesianRidge):
         "resampling_method": [StrOptions({"uniform", "sobol", "latin", "halton"})],
         "percentile_clipping": [Interval(Real, 0, 50.0, closed="both")],
         "minimum_relative_error": [Interval(Real, 0.0, None, closed="left")],
-        "posterior": [StrOptions({"hypercube", "ensemble"})],
+        "posterior": [StrOptions({"hypercube", "ensemble", "ellipsoid"})],
+        "posterior_options": [dict, None],
+        "random_state": ["random_state"],
         "leverage_percentile": [
             Interval(Real, 0.0, 100.0, closed="left"),
             Hidden(StrOptions({"deprecated"})),
@@ -234,6 +262,8 @@ class POPSRegression(BayesianRidge):
         percentile_clipping=0.0,
         minimum_relative_error=1.0e-2,
         posterior="hypercube",
+        posterior_options=None,
+        random_state=None,
         leverage_percentile="deprecated",
     ):
         super().__init__(
@@ -256,6 +286,8 @@ class POPSRegression(BayesianRidge):
         self.percentile_clipping = percentile_clipping
         self.minimum_relative_error = minimum_relative_error
         self.posterior = posterior
+        self.posterior_options = posterior_options
+        self.random_state = random_state
         self.leverage_percentile = leverage_percentile
 
     @_fit_context(prefer_skip_nested_validation=True)
@@ -298,18 +330,20 @@ class POPSRegression(BayesianRidge):
         try:
             super().fit(X, y, sample_weight=sample_weight)
 
-            X_pp, y_pp = validate_data(
+            X_valid, y_valid = validate_data(
                 self, X, y, dtype=[np.float64, np.float32], reset=False
             )
 
             if sample_weight is not None:
-                sw = _check_sample_weight(sample_weight, X_pp, dtype=X_pp.dtype)
+                sw = _check_sample_weight(sample_weight, X_valid, dtype=X_valid.dtype)
             else:
                 sw = None
 
+            # Note this rescales X and y by sqrt(sample_weight), so the
+            # pointwise corrections below live in the reweighted space.
             preprocess_result = _preprocess_data(
-                X_pp,
-                y_pp,
+                X_valid,
+                y_valid,
                 fit_intercept=False,
                 copy=True,
                 sample_weight=sw,
@@ -336,7 +370,7 @@ class POPSRegression(BayesianRidge):
             self._filtering_mask = filtering_mask
 
             self.posterior_samples_, self.misspecification_sigma_ = (
-                self._build_posterior()
+                self._build_posterior(X_valid, y_valid, sw)
             )
             self._fitted_with_intercept = pops_fit_intercept
 
@@ -345,8 +379,21 @@ class POPSRegression(BayesianRidge):
 
         return self
 
-    def _build_posterior(self):
+    def _build_posterior(self, X, y, sample_weight):
         """Build the POPS posterior from pointwise corrections.
+
+        Parameters
+        ----------
+        X : ndarray of shape (n_samples, n_features)
+            Validated design matrix, with the intercept column already
+            appended if ``fit_intercept=True``, and *not* rescaled by
+            ``sqrt(sample_weight)``.
+
+        y : ndarray of shape (n_samples,)
+            Validated target values, likewise unrescaled.
+
+        sample_weight : ndarray of shape (n_samples,) or None
+            Individual weights for each sample.
 
         Returns
         -------
@@ -356,6 +403,12 @@ class POPSRegression(BayesianRidge):
         sigma : ndarray of shape (n_features, n_features)
             Misspecification covariance matrix.
         """
+        if self.posterior != "ellipsoid" and self.posterior_options is not None:
+            raise ValueError(
+                "'posterior_options' only applies to posterior='ellipsoid', "
+                f"got posterior={self.posterior!r}."
+            )
+
         pc = self._pointwise_correction[self._filtering_mask]
 
         if self.posterior == "ensemble":
@@ -365,6 +418,64 @@ class POPSRegression(BayesianRidge):
         elif self.posterior == "hypercube":
             self._hypercube_support, self._hypercube_bounds = self._fit_hypercube(pc)
             return self._sample_hypercube()
+
+        return self._fit_ellipsoid(X, y, sample_weight)
+
+    def _n_resample(self):
+        """Number of posterior draws implied by ``resample_density``."""
+        return max(int(self.resample_density * len(self._pointwise_correction)), 100)
+
+    def _fit_ellipsoid(self, X, y, sample_weight):
+        """Fit the uniform-ellipsoid posterior and sample it.
+
+        The ellipsoid is fitted by :class:`POPSRegressionEllipse`, whose
+        default ``baseline='pops'`` starts from the hypercube posterior of
+        this same estimator, so the two posteriors share a centre. The
+        centre is copied back into ``coef_`` because the ellipsoid may
+        optimize it (``posterior_options={'optimize_center': True}``).
+        """
+        # Imported lazily: _ellipse builds its baseline from POPSRegression.
+        from ._ellipse import POPSRegressionEllipse
+
+        options = dict(self.posterior_options or {})
+        reserved = {
+            "pac_bayes": (
+                "'pac_bayes' cannot be set through 'posterior_options'; use "
+                "POPSRegressionPAC for the PAC-Bayes ellipsoid posterior."
+            ),
+            "fit_intercept": (
+                "'fit_intercept' cannot be set through 'posterior_options'; "
+                "set it on POPSRegression itself."
+            ),
+            "weights": (
+                "'weights' cannot be set through 'posterior_options'; pass "
+                "'sample_weight' to fit instead."
+            ),
+            "random_state": (
+                "'random_state' cannot be set through 'posterior_options'; "
+                "set it on POPSRegression itself."
+            ),
+        }
+        for name, message in reserved.items():
+            if name in options:
+                raise ValueError(message)
+
+        options.setdefault("mode_threshold", self.mode_threshold)
+        ellipsoid = POPSRegressionEllipse(
+            fit_intercept=False,
+            random_state=self.random_state,
+            weights=sample_weight,
+            **options,
+        )
+        ellipsoid.fit(X, y)
+        self.ellipsoid_ = ellipsoid
+
+        # The ellipsoid owns the posterior centre from here on.
+        self.coef_ = ellipsoid.coef_
+
+        samples = ellipsoid.sample(self._n_resample(), random_state=self.random_state)
+        sigma = ellipsoid.ellipsoid_B_ / (ellipsoid._ball_dim + 2.0)
+        return samples - self.coef_[:, None], sigma
 
     def _fit_hypercube(self, pointwise_correction):
         """Fit a hypercube to the pointwise corrections via PCA.
@@ -423,24 +534,23 @@ class POPSRegression(BayesianRidge):
         low = self._hypercube_bounds[0]
         high = self._hypercube_bounds[1]
 
-        if size is None:
-            n_resample = int(self.resample_density * len(self._pointwise_correction))
-        else:
-            n_resample = size
-        n_resample = max(n_resample, 100)
+        n_resample = self._n_resample() if size is None else max(size, 100)
 
+        # random_state=None keeps NumPy's global RNG for 'uniform' and the
+        # sampler's own entropy for the QMC methods: the historical defaults.
+        seed = self.random_state
         if resampling_method == "latin":
-            sampler = qmc.LatinHypercube(d=low.size)
+            sampler = qmc.LatinHypercube(d=low.size, seed=seed)
             samples = sampler.random(n_resample).T
         elif resampling_method == "sobol":
-            sampler = qmc.Sobol(d=low.size)
+            sampler = qmc.Sobol(d=low.size, seed=seed)
             n_resample = 2 ** int(np.log2(n_resample))
             samples = sampler.random(n_resample).T
         elif resampling_method == "halton":
-            sampler = qmc.Halton(d=low.size)
+            sampler = qmc.Halton(d=low.size, seed=seed)
             samples = sampler.random(n_resample).T
         elif resampling_method == "uniform":
-            samples = np.random.uniform(size=(low.size, n_resample))
+            samples = check_random_state(seed).uniform(size=(low.size, n_resample))
 
         samples = low[:, None] + (high - low)[:, None] * samples
 
@@ -467,11 +577,15 @@ class POPSRegression(BayesianRidge):
 
         return_std : bool, default=False
             If True, return the combined (misspecification + epistemic)
-            standard deviation.
+            standard deviation. With ``posterior='ellipsoid'`` this is the
+            predictive standard deviation of the exact projected-ball
+            pushforward instead.
 
         return_bounds : bool, default=False
             If True, return the max and min predictions over the POPS
-            posterior samples.
+            posterior samples. With ``posterior='ellipsoid'`` these are the
+            exact support bounds of the pushforward rather than sample
+            extrema.
 
         return_epistemic_std : bool, default=False
             If True, return the epistemic-only standard deviation
@@ -504,6 +618,11 @@ class POPSRegression(BayesianRidge):
             X = np.asarray(X)
             X = np.hstack([X, np.ones((X.shape[0], 1))])
 
+        if self.posterior == "ellipsoid":
+            return self._predict_ellipsoid(
+                X, return_std, return_bounds, return_epistemic_std
+            )
+
         y_mean = self._decision_function(X)
         result = [y_mean]
 
@@ -524,6 +643,27 @@ class POPSRegression(BayesianRidge):
 
             if return_epistemic_std:
                 result.append(np.sqrt(y_epistemic_var))
+
+        if len(result) == 1:
+            return result[0]
+        return tuple(result)
+
+    def _predict_ellipsoid(self, X, return_std, return_bounds, return_epistemic_std):
+        """Predict through the fitted ellipsoid's exact pushforward.
+
+        ``X`` already carries the intercept column when the model was fitted
+        with ``fit_intercept=True``, matching the design the ellipsoid saw.
+        """
+        ellipsoid = self.ellipsoid_.predict(
+            X, return_std=return_std, return_bounds=return_bounds
+        )
+        if not (return_std or return_bounds):
+            ellipsoid = (ellipsoid,)
+
+        result = list(ellipsoid)
+        if return_epistemic_std:
+            y_epistemic_var = (np.dot(X, self.sigma_) * X).sum(axis=1)
+            result.append(np.sqrt(y_epistemic_var))
 
         if len(result) == 1:
             return result[0]

@@ -95,7 +95,9 @@ POPS-specific parameters are:
 
 | Parameter | Default | Notes |
 |---|---|---|
-| `posterior` | `'hypercube'` | `'hypercube'` fits a PCA-aligned box to the pointwise corrections and resamples it; `'ensemble'` uses the raw corrections as samples |
+| `posterior` | `'hypercube'` | `'hypercube'` fits a PCA-aligned box to the pointwise corrections and resamples it; `'ensemble'` uses the raw corrections as samples; `'ellipsoid'` fits a uniform ellipsoid (see below) |
+| `posterior_options` | `None` | Extra settings for the `'ellipsoid'` posterior; must be `None` otherwise |
+| `random_state` | `None` | Seed for the posterior resampling; `None` keeps the global NumPy state |
 | `minimum_relative_error` | `0.01` | Relative residual threshold for selecting training points (see below) |
 | `resampling_method` | `'uniform'` | `'uniform'`, `'sobol'`, `'latin'` or `'halton'`; hypercube posterior only |
 | `resample_density` | `1.0` | Posterior samples per training point; the count is floored at 100 |
@@ -153,10 +155,38 @@ model = POPSRegression(resampling_method="sobol", resample_density=10.0)
 ```
 
 Two caveats: `'sobol'` rounds the sample count down to a power of two, and
-`'uniform'` draws from the global NumPy random state, so seed with
+with `random_state=None` (the default) `'uniform'` draws from the global NumPy
+random state, so either pass `random_state=...` or seed with
 `np.random.seed(...)` if you need reproducible bounds. The `'ensemble'`
 posterior ignores both sampling parameters — it uses the pointwise corrections
 directly.
+
+### The `'ellipsoid'` posterior
+
+`posterior='ellipsoid'` replaces the resampled box with a uniform ellipsoid,
+fitted by directly optimizing the generalization error of its exact
+projected-ball pushforward. `predict` then uses that pushforward rather than
+the posterior samples: `return_std` is the predictive standard deviation of
+the pushforward and `return_bounds` its exact support, not sample extrema.
+`return_epistemic_std` is unchanged, and `posterior_samples_` still holds
+draws for downstream use.
+
+```python
+model = POPSRegression(
+    posterior="ellipsoid",
+    random_state=0,
+    posterior_options={"rank": 16, "baseline": "ridge"},
+)
+```
+
+`posterior_options` is forwarded to
+[`POPSRegressionEllipse`][popsregression.POPSRegressionEllipse], which is
+exposed after fitting as `ellipsoid_`. It rejects `fit_intercept`, `weights`
+and `random_state`, which this estimator controls, and `pac_bayes`: for the
+PAC-Bayes layer use
+[`POPSRegressionPAC`][popsregression.POPSRegressionPAC], which takes every
+ellipsoid and PAC-Bayes parameter as a named argument. See
+[Ellipsoid posteriors](ellipse.md).
 
 ## Fitted attributes
 
@@ -167,6 +197,7 @@ directly.
 | `sigma_` | Epistemic variance-covariance matrix of the weights |
 | `misspecification_sigma_` | Misspecification variance-covariance matrix from POPS |
 | `posterior_samples_` | POPS posterior samples, shape `(n_features, n_posterior_samples)` |
+| `ellipsoid_` | The fitted ellipsoid; only with `posterior='ellipsoid'` |
 | `alpha_` | Estimated noise precision — fitted, but not used for prediction |
 | `lambda_` | Estimated weight precision |
 | `scores_` | Log marginal likelihood per iteration; requires `compute_score=True` |
@@ -196,7 +227,7 @@ search = GridSearchCV(
     pipe,
     {
         "polynomialfeatures__degree": [2, 3, 4],
-        "popsregression__posterior": ["hypercube", "ensemble"],
+        "popsregression__posterior": ["hypercube", "ensemble", "ellipsoid"],
     },
 )
 search.fit(X_train, y_train)

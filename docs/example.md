@@ -1,7 +1,7 @@
 # Example: POPS vs BayesianRidge
 
 A runnable comparison of [`POPSRegression`][popsregression.POPSRegression],
-[`POPSRegressionEllipse`][popsregression.POPSRegressionEllipse] and
+[`POPSRegressionPAC`][popsregression.POPSRegressionPAC] and
 [`BayesianRidge`](https://scikit-learn.org/stable/modules/generated/sklearn.linear_model.BayesianRidge.html)
 on a misspecified, low-noise fit. For why the two differ, see
 [Concepts](https://pops-uq.github.io/method/concepts/) on the POPS site; for
@@ -49,7 +49,7 @@ persists because the polynomial is fundamentally unable to fit the target.
 ```python
 from sklearn.linear_model import BayesianRidge
 
-from popsregression import POPSRegression, POPSRegressionEllipse
+from popsregression import POPSRegression, POPSRegressionPAC
 
 for n_samples in (10, 100):
     X_train, y_train, X_dense, y_dense = generate_data(rng, n_samples)
@@ -62,8 +62,8 @@ for n_samples in (10, 100):
     # POPS: mean, combined std, and min/max posterior bounds
     for model in (
         POPSRegression(minimum_relative_error=0.0, posterior="hypercube"),
-        POPSRegressionEllipse(random_state=0),
-        POPSRegressionEllipse(random_state=0, pac_bayes=True),
+        POPSRegression(posterior="ellipsoid", random_state=0),
+        POPSRegressionPAC(random_state=0),
     ):
         model.fit(X_train, y_train)
         mean, std, upper, lower = model.predict(
@@ -97,12 +97,17 @@ that remains.
 
 ## Posterior types
 
-`POPSRegression` supports two posterior forms over the pointwise corrections:
+`POPSRegression` supports three posterior forms over the pointwise
+corrections, all selected with the same `posterior` parameter:
 
 - `'hypercube'` (default): fits a PCA-aligned hypercube to the corrections,
   giving conservative bounds suitable for most use cases.
 - `'ensemble'`: uses the raw pointwise corrections directly as posterior
   samples.
+- `'ellipsoid'`: fits a uniform ellipsoid by direct optimization, and
+  predicts through its exact pushforward rather than through samples (see
+  [Ellipsoid posteriors](ellipse.md)). Add the PAC-Bayes layer with
+  [`POPSRegressionPAC`][popsregression.POPSRegressionPAC].
 
 `minimum_relative_error=0.0` below keeps every training point in the posterior
 estimate rather than only those the model fits poorly.

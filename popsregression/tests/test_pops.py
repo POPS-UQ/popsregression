@@ -13,7 +13,7 @@ from sklearn.linear_model import BayesianRidge
 from sklearn.preprocessing import PolynomialFeatures
 from sklearn.utils.estimator_checks import parametrize_with_checks
 
-from popsregression import POPSRegression
+from popsregression import POPSRegression, POPSRegressionEllipse
 
 
 def _make_low_noise_data(n_samples=50, n_features=5, noise=0.01, seed=42):
@@ -104,13 +104,125 @@ def test_predict_return_epistemic_std():
 # --- Posterior types ---
 
 
-@pytest.mark.parametrize("posterior", ["hypercube", "ensemble"])
+@pytest.mark.parametrize("posterior", ["hypercube", "ensemble", "ellipsoid"])
 def test_posterior_types(posterior):
     X, y, _ = _make_low_noise_data()
-    model = POPSRegression(posterior=posterior).fit(X, y)
+    model = POPSRegression(posterior=posterior, random_state=0).fit(X, y)
     y_pred, y_std = model.predict(X, return_std=True)
     assert y_pred.shape == (X.shape[0],)
     assert np.all(y_std >= 0)
+
+
+@pytest.mark.parametrize("posterior", ["hypercube", "ensemble", "ellipsoid"])
+def test_posterior_common_attributes(posterior):
+    X, y, _ = _make_low_noise_data()
+    model = POPSRegression(posterior=posterior, random_state=0).fit(X, y)
+    n_features = X.shape[1]
+    assert model.coef_.shape == (n_features,)
+    assert model.posterior_samples_.shape[0] == n_features
+    assert model.misspecification_sigma_.shape == (n_features, n_features)
+    y_pred, y_max, y_min = model.predict(X, return_bounds=True)
+    assert np.all(y_max >= y_min)
+    _, y_epi_std = model.predict(X, return_epistemic_std=True)
+    assert np.all(y_epi_std >= 0)
+
+
+# --- Ellipsoid posterior ---
+
+
+@pytest.mark.parametrize("fit_intercept", [False, True])
+def test_ellipsoid_matches_standalone_estimator(fit_intercept):
+    """posterior='ellipsoid' must reproduce POPSRegressionEllipse exactly."""
+    X, y, _ = _make_low_noise_data()
+    model = POPSRegression(
+        posterior="ellipsoid", fit_intercept=fit_intercept, random_state=0
+    ).fit(X, y)
+
+    design = np.hstack([X, np.ones((X.shape[0], 1))]) if fit_intercept else X
+    reference = POPSRegressionEllipse(random_state=0).fit(design, y)
+
+    assert_allclose(model.coef_, reference.coef_)
+    for kwargs in ({}, {"return_std": True}, {"return_bounds": True}):
+        got = model.predict(X, **kwargs)
+        expected = reference.predict(design, **kwargs)
+        assert_allclose(np.asarray(got), np.asarray(expected))
+
+
+def test_ellipsoid_respects_sample_weight():
+    """Weights must reach the ellipsoid, and only once."""
+    X, y, _ = _make_low_noise_data()
+    rng = np.random.RandomState(0)
+    weights = rng.uniform(0.5, 1.5, len(y))
+
+    weighted = POPSRegression(posterior="ellipsoid", random_state=0).fit(
+        X, y, sample_weight=weights
+    )
+    reference = POPSRegressionEllipse(random_state=0, weights=weights).fit(X, y)
+    unweighted = POPSRegression(posterior="ellipsoid", random_state=0).fit(X, y)
+
+    assert_allclose(weighted.coef_, reference.coef_)
+    assert not np.allclose(weighted.coef_, unweighted.coef_)
+
+
+def test_ellipsoid_options_are_forwarded():
+    X, y, _ = _make_low_noise_data()
+    model = POPSRegression(
+        posterior="ellipsoid",
+        random_state=0,
+        posterior_options={"rank": 2, "baseline": "ridge"},
+    ).fit(X, y)
+    assert model.ellipsoid_.rank_ == 2
+    assert model.ellipsoid_.baseline == "ridge"
+
+
+def test_ellipsoid_sigma_is_the_ellipsoid_covariance():
+    X, y, _ = _make_low_noise_data()
+    model = POPSRegression(posterior="ellipsoid", random_state=0).fit(X, y)
+    ellipsoid = model.ellipsoid_
+    expected = ellipsoid.ellipsoid_B_ / (ellipsoid._ball_dim + 2.0)
+    assert_allclose(model.misspecification_sigma_, expected)
+
+
+@pytest.mark.parametrize("posterior", ["hypercube", "ensemble"])
+def test_posterior_options_rejected_for_other_posteriors(posterior):
+    X, y, _ = _make_low_noise_data()
+    with pytest.raises(ValueError, match="only applies to posterior='ellipsoid'"):
+        POPSRegression(posterior=posterior, posterior_options={"rank": 2}).fit(X, y)
+
+
+@pytest.mark.parametrize(
+    "option, match",
+    [
+        ({"pac_bayes": True}, "POPSRegressionPAC"),
+        ({"fit_intercept": True}, "set it on POPSRegression itself"),
+        ({"weights": None}, "sample_weight"),
+        ({"random_state": 0}, "set it on POPSRegression itself"),
+    ],
+)
+def test_reserved_posterior_options(option, match):
+    X, y, _ = _make_low_noise_data()
+    with pytest.raises(ValueError, match=match):
+        POPSRegression(posterior="ellipsoid", posterior_options=option).fit(X, y)
+
+
+# --- random_state ---
+
+
+def test_random_state_makes_resampling_reproducible():
+    X, y, _ = _make_low_noise_data()
+    first = POPSRegression(random_state=7).fit(X, y).posterior_samples_
+    second = POPSRegression(random_state=7).fit(X, y).posterior_samples_
+    assert_allclose(first, second)
+
+
+def test_random_state_none_uses_the_global_rng():
+    """The historical np.random.seed reproducibility must be preserved."""
+    X, y, _ = _make_low_noise_data()
+    np.random.seed(0)
+    first = POPSRegression().fit(X, y).posterior_samples_
+    np.random.seed(0)
+    second = POPSRegression().fit(X, y).posterior_samples_
+    assert_allclose(first, second)
 
 
 # --- Resampling methods ---

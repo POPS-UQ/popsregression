@@ -26,7 +26,11 @@ import matplotlib.pyplot as plt
 import numpy as np
 from sklearn.linear_model import BayesianRidge
 
-from popsregression import POPSRegression, POPSRegressionEllipse
+from popsregression import (
+    POPSRegression,
+    POPSRegressionEllipse,
+    POPSRegressionPAC,
+)
 
 SEED = 0
 POSTERIOR_SAMPLE_COUNT = 1024
@@ -137,14 +141,13 @@ def fit_models(X_train, y_train):
     )
     pops_hypercube.fit(X_train, y_train)
 
-    pops_ellipse = POPSRegressionEllipse(random_state=SEED)
+    pops_ellipse = POPSRegression(posterior="ellipsoid", random_state=SEED)
     pops_ellipse.fit(X_train, y_train)
 
     # PAC-Bayes variant: phase-1 hyperprior centre with a tight scale, and a
     # short rho schedule for faster convergence.
-    pops_ellipse_pac = POPSRegressionEllipse(
+    pops_ellipse_pac = POPSRegressionPAC(
         random_state=SEED,
-        pac_bayes=True,
         hyperprior_center="phase1",
         hyperprior_scale=1.0,
         rho_schedule=[1.0, 0.1, 0.01],
@@ -168,29 +171,29 @@ def projected_ball_samples(rng, n_rows, n_samples, dimension):
     return 2.0 * rng.beta(beta_shape, beta_shape, (n_rows, n_samples)) - 1.0
 
 
-def sample_ellipse_errors(model, X, rng, n_samples):
-    """Draw exact marginal errors from a bare or PAC-Bayes ellipse.
+def sample_ellipse_errors(ellipsoid, X, rng, n_samples):
+    """Draw exact marginal errors from a bare or PAC-Bayes ellipsoid.
 
     For the bare ellipse this is the exact projected-ball pushforward. For the
     PAC model, the diagonal Laplace hyperposterior is sampled first and then a
     projected-ball error is drawn conditionally. Independent hyperposterior
     draws per test row preserve the marginal densities needed by these plots.
     """
-    Xc, Z = model._whitened_design(np.asarray(X, dtype=np.float64))
-    projected_factor = Z @ model.U_
-    fitted_width = model._squared_widths(Xc, Z) + model.delta**2
+    Xc, Z = ellipsoid._whitened_design(np.asarray(X, dtype=np.float64))
+    projected_factor = Z @ ellipsoid.U_
+    fitted_width = ellipsoid._squared_widths(Xc, Z) + ellipsoid.delta**2
     baseline_width = np.maximum(
         fitted_width - np.sum(projected_factor**2, axis=1),
         0.0,
     )
 
-    if not model._pac_bayes_fitted:
-        ball = projected_ball_samples(rng, len(X), n_samples, model._ball_dim)
+    if not ellipsoid._pac_bayes_fitted:
+        ball = projected_ball_samples(rng, len(X), n_samples, ellipsoid._ball_dim)
         return np.sqrt(fitted_width)[:, None] * ball
 
     Z2 = Z * Z
-    projected_variance = np.maximum(Z2 @ model._sigma_U, 0.0)
-    center_variance = np.maximum(Z2 @ model._sigma_c, 0.0)
+    projected_variance = np.maximum(Z2 @ ellipsoid._sigma_U, 0.0)
+    center_variance = np.maximum(Z2 @ ellipsoid._sigma_c, 0.0)
     errors = np.empty((len(X), n_samples))
     chunk_size = 32
     for start in range(0, len(X), chunk_size):
@@ -198,7 +201,7 @@ def sample_ellipse_errors(model, X, rng, n_samples):
         mean_projection = projected_factor[start:stop, None, :]
         projection_scale = np.sqrt(projected_variance[start:stop, None, :])
         sampled_projection = mean_projection + projection_scale * rng.standard_normal(
-            (stop - start, n_samples, model.rank_)
+            (stop - start, n_samples, ellipsoid.rank_)
         )
         sampled_width = baseline_width[start:stop, None] + np.sum(
             sampled_projection**2,
@@ -208,7 +211,7 @@ def sample_ellipse_errors(model, X, rng, n_samples):
             rng,
             stop - start,
             n_samples,
-            model._ball_dim,
+            ellipsoid._ball_dim,
         )
         center_error = np.sqrt(center_variance[start:stop, None]) * (
             rng.standard_normal((stop - start, n_samples))
@@ -218,15 +221,25 @@ def sample_ellipse_errors(model, X, rng, n_samples):
 
 
 def sample_posterior_errors(model, X, rng):
-    """Return posterior prediction errors about the model's point prediction."""
-    if isinstance(model, BayesianRidge) and not isinstance(model, POPSRegression):
-        return sample_bayesian_errors(model, X, rng, POSTERIOR_SAMPLE_COUNT)
+    """Return posterior prediction errors about the model's point prediction.
+
+    Ellipsoid posteriors are sampled from their exact marginal pushforward
+    rather than from the stored draws, whether they were fitted through
+    ``POPSRegression(posterior="ellipsoid")``, which exposes the fitted
+    ellipsoid as ``ellipsoid_``, or directly as a ``POPSRegressionPAC``.
+    """
+    if isinstance(model, POPSRegressionEllipse):
+        ellipsoid = model
+    else:
+        ellipsoid = getattr(model, "ellipsoid_", None)
+    if ellipsoid is not None:
+        return sample_ellipse_errors(ellipsoid, X, rng, POSTERIOR_SAMPLE_COUNT)
     if isinstance(model, POPSRegression):
         # POPSRegression.posterior_samples_ contains coefficient perturbations,
         # not absolute coefficient vectors. Therefore no mean prediction is
         # subtracted here.
         return X @ model.posterior_samples_
-    return sample_ellipse_errors(model, X, rng, POSTERIOR_SAMPLE_COUNT)
+    return sample_bayesian_errors(model, X, rng, POSTERIOR_SAMPLE_COUNT)
 
 
 def probability_probability_curve(observed_errors, posterior_errors):

@@ -114,20 +114,36 @@ than the fitted ellipse's own support (recovered as
 `bounds ∓ 2·y_bound_std`), reverting to it at rate $N$.
 
 For conservative uncertainty in the scarce-data regime (N/P of order
-one), simply enable the PAC layer on the default (frozen-center)
-configuration: `POPSRegressionEllipse(pac_bayes=True)` keeps the mean
-at the POPS pre-fit and takes the bounds over the 2σ hyperposterior
-ensemble of optimized-width ellipses.
+one), simply use `POPSRegressionPAC()` on the default (frozen-center)
+configuration: it keeps the mean at the POPS pre-fit and takes the bounds
+over the 2σ hyperposterior ensemble of optimized-width ellipses.
+
+## Two entry points
+
+The ellipsoid is reached in two ways, and they fit the same estimator:
+
+| Spelling | Layer |
+|---|---|
+| [`POPSRegression(posterior="ellipsoid")`][popsregression.POPSRegression] | the ellipsoid, no PAC-Bayes layer |
+| [`POPSRegressionPAC()`][popsregression.POPSRegressionPAC] | the ellipsoid with the PAC-Bayes layer |
+
+The first keeps the ellipsoid alongside the other POPS posteriors, on one
+estimator with one `posterior` parameter; settings such as `rank` or
+`baseline` go through its `posterior_options` dict, and the fitted ellipsoid
+is exposed as `ellipsoid_`. The second is the ellipsoid estimator itself with
+`pac_bayes` fixed to True, so every ellipsoid and PAC-Bayes parameter is a
+named argument. `POPSRegressionEllipse` below is the shared implementation;
+the two spellings above are the supported way to reach it.
 
 ## Quick start
 
 ```python
-from popsregression import POPSRegressionEllipse
+from popsregression import POPSRegression, POPSRegressionPAC
 
 X_train, X_test, y_train, y_test = ...
 
 # Defaults: baseline='pops', optimize_center=False (mean = POPS pre-fit)
-model = POPSRegressionEllipse()
+model = POPSRegression(posterior="ellipsoid")
 model.fit(X_train, y_train)
 
 # Predictive std of the pushforward: sqrt(v / (P + 2))
@@ -146,11 +162,12 @@ y_pred, y_max, y_min, y_bound_std = model.predict(
     X_test, return_bounds=True, return_bound_std=True
 )
 
-# Posterior parameter draws (affine map of uniform ball samples)
-theta_samples = model.sample(1000)
+# Posterior parameter draws (affine map of uniform ball samples), also
+# available as model.posterior_samples_ (perturbations about the mean)
+theta_samples = model.ellipsoid_.sample(1000)
 
-# Closed-form PAC-Bayes layer
-model = POPSRegressionEllipse(pac_bayes=True, update_hyperprior=True)
+# Closed-form PAC-Bayes layer, with every ellipsoid parameter named
+model = POPSRegressionPAC(update_hyperprior=True)
 model.fit(X_train, y_train)
 print(model.bound_, model.kl_, model.tau2_)
 ```
@@ -168,13 +185,17 @@ The misspecified oscillatory example (see
 [`examples/EllipseExample.ipynb`](https://github.com/POPS-UQ/popsregression/blob/main/examples/EllipseExample.ipynb))
 fits a quartic polynomial to an oscillatory target at $N = 10, 50, 500$
 training points. `BayesianRidge` epistemic uncertainty vanishes as $N$
-grows; `POPSRegressionEllipse` bounds track the `POPSRegression` hypercube
+grows; the ellipsoid bounds track the `POPSRegression` hypercube
 bounds — but are obtained by direct optimization of the generalization-error
 objective, retaining the misspecification uncertainty at any $N$.
 
 ## API
 
 ::: popsregression.POPSRegressionEllipse
+    options:
+      members: false
+
+::: popsregression.POPSRegressionPAC
     options:
       members: false
 

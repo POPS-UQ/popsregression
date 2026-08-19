@@ -14,7 +14,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from sklearn.linear_model import BayesianRidge
 
-from popsregression import POPSRegression, POPSRegressionEllipse
+from popsregression import POPSRegression, POPSRegressionPAC
 
 SEED = burgers.SEED
 NU_RANGE = burgers.NU_RANGE
@@ -174,12 +174,12 @@ def run(
         )
         bayes = BayesianRidge(fit_intercept=False).fit(X_train, r_train)
         hypercube = POPSRegression(
-            minimum_relative_error=0.0, posterior="hypercube"
+            minimum_relative_error=0.0, posterior="hypercube", random_state=seed
         ).fit(X_train, r_train)
-        ellipse = POPSRegressionEllipse(random_state=seed).fit(X_train, r_train)
-        pac = POPSRegressionEllipse(random_state=seed, pac_bayes=True).fit(
+        ellipse = POPSRegression(posterior="ellipsoid", random_state=seed).fit(
             X_train, r_train
         )
+        pac = POPSRegressionPAC(random_state=seed).fit(X_train, r_train)
 
         b_mean = bayes.predict(X_test)
         b_std = burgers.epistemic_bayes_std(bayes, X_test)

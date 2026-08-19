@@ -10,11 +10,16 @@ import warnings
 import numpy as np
 import pytest
 from numpy.testing import assert_allclose, assert_array_less
+from sklearn.base import clone
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import PolynomialFeatures
 from sklearn.utils.estimator_checks import parametrize_with_checks
 
-from popsregression import POPSRegression, POPSRegressionEllipse
+from popsregression import (
+    POPSRegression,
+    POPSRegressionEllipse,
+    POPSRegressionPAC,
+)
 
 
 def _target_function(x):
@@ -551,8 +556,6 @@ def test_low_n_conservatism_recipe():
 
 
 def test_clone_and_get_set_params():
-    from sklearn.base import clone
-
     model = POPSRegressionEllipse(rank=4, baseline="ridge", pac_bayes=True)
     cloned = clone(model)
     assert cloned.get_params() == model.get_params()
@@ -601,3 +604,57 @@ def test_large_problem_memory_and_time():
     assert peak < 4 * design_bytes, f"peak memory {peak / 1e9:.2f} GB"
     assert elapsed < 60.0, f"fit took {elapsed:.1f} s"
     assert model.U_.shape == (n_features, 32)
+
+
+# --- POPSRegressionPAC ---
+
+
+def test_pac_class_matches_the_pac_bayes_flag():
+    """POPSRegressionPAC is POPSRegressionEllipse(pac_bayes=True)."""
+    X_train, y_train, X_test, _ = _make_misspecified_data(40)
+    pac = POPSRegressionPAC(random_state=0).fit(X_train, y_train)
+    reference = POPSRegressionEllipse(random_state=0, pac_bayes=True).fit(
+        X_train, y_train
+    )
+
+    assert pac.pac_bayes is True
+    assert_allclose(pac.coef_, reference.coef_)
+    assert_allclose(pac.bound_, reference.bound_)
+    assert_allclose(pac.kl_, reference.kl_)
+    for kwargs in ({"return_std": True}, {"return_bounds": True}):
+        got = pac.predict(X_test, **kwargs)
+        expected = reference.predict(X_test, **kwargs)
+        assert_allclose(np.asarray(got), np.asarray(expected))
+
+
+def test_pac_class_does_not_expose_pac_bayes():
+    """pac_bayes is fixed, so it must not be a tunable parameter."""
+    model = POPSRegressionPAC()
+    assert "pac_bayes" not in model.get_params()
+    assert "rank" in model.get_params()
+    with pytest.raises(ValueError, match="Invalid parameter"):
+        model.set_params(pac_bayes=False)
+
+
+def test_pac_class_clones_with_the_layer_fixed():
+    model = POPSRegressionPAC(random_state=0, rank=4)
+    cloned = clone(model)
+    assert cloned.get_params() == model.get_params()
+    assert cloned.pac_bayes is True
+
+
+def test_pac_class_broadens_the_bare_ellipsoid():
+    """The PAC layer only ever widens the predictive."""
+    X_train, y_train, X_test, _ = _make_misspecified_data(40)
+    bare = POPSRegression(posterior="ellipsoid", random_state=0).fit(X_train, y_train)
+    pac = POPSRegressionPAC(random_state=0).fit(X_train, y_train)
+
+    _, bare_std = bare.predict(X_test, return_std=True)
+    _, pac_std = pac.predict(X_test, return_std=True)
+    assert_array_less(bare_std, pac_std * (1.0 + 1e-12))
+
+
+@parametrize_with_checks([POPSRegressionPAC()])
+def test_pac_sklearn_compatible(estimator, check):
+    """Check the compatibility with the scikit-learn API."""
+    check(estimator)
