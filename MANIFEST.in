@@ -1,0 +1,24 @@
+# What ships to PyPI.
+#
+# setuptools_scm hands the sdist every git-tracked file, so without these rules
+# `pip install popsregression` from source would also download the example
+# scripts, their bundled ACE data and every figure. Those belong on GitHub
+# only; the sdist keeps just what is needed to build, install and test.
+
+include LICENSE
+include README.md
+include pyproject.toml
+
+prune examples
+prune docs
+
+exclude MERGE_NOTES.md
+exclude SimpleExample.ipynb
+exclude example_image.png
+exclude mkdocs.yml
+exclude uv.lock
+
+# Belt and braces: never ship bulk data or figures, wherever they are added.
+global-exclude *.npz *.npy *.pkl *.pickle
+global-exclude *.png *.pdf *.ipynb
+global-exclude __pycache__/* *.py[cod]

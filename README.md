@@ -30,7 +30,7 @@ The misspecified, near-deterministic regression problem that `POPSRegression` ad
 ## Example
 Fitting a quartic polynomial (P=5 parameters) to a complex oscillatory function with N=10, 50, 500 training points. Top row: BayesianRidge epistemic uncertainty vanishes with more data. Bottom rows: POPS correctly maintains uncertainty where the polynomial deviates from the truth.
 
-![Example comparison of BayesianRidge vs POPS uncertainty](example_image.png)
+![Example comparison of BayesianRidge vs POPS uncertainty](https://raw.githubusercontent.com/POPS-UQ/popsregression/main/example_image.png)
 
 See the [SimpleExample.ipynb](SimpleExample.ipynb) notebook for a runnable version.
 
