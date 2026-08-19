@@ -13,7 +13,7 @@ from scipy.special import gammaln
 from scipy.stats import beta
 from sklearn.linear_model import BayesianRidge
 
-from popsregression import POPSRegression, POPSRegressionPAC
+from popsregression import POPSRegression
 
 SEED = 1
 NU_RANGE = (0.012, 0.08)
@@ -107,18 +107,9 @@ def projected_ball_fraction(dim, half_percentile=0.33):
     return 2.0 * beta.ppf(0.5 + half_percentile, a, a) - 1.0
 
 
-def as_ellipsoid(model):
-    """The fitted ellipsoid behind either spelling of the POPS ellipsoid.
-
-    ``POPSRegression(posterior="ellipsoid")`` exposes it as ``ellipsoid_``;
-    ``POPSRegressionPAC`` is the ellipsoid estimator itself.
-    """
-    return getattr(model, "ellipsoid_", model)
-
-
 def bare_percentile_interval(model, X, half_percentile=0.5 - 0.023):
     mean = model.predict(X)
-    ellipsoid = as_ellipsoid(model)
+    ellipsoid = model.ellipsoid_
     Xc, Z = ellipsoid._whitened_design(np.asarray(X, dtype=float))
     v = ellipsoid._squared_widths(Xc, Z) + ellipsoid.delta**2
     q = projected_ball_fraction(ellipsoid._ball_dim, half_percentile)
@@ -129,7 +120,7 @@ def bare_percentile_interval(model, X, half_percentile=0.5 - 0.023):
 def pac_percentile_interval(model, X, half_percentile=0.5 - 0.023):
     """Central interval with same 2-sigma hyperposterior envelope as max/min."""
     mean = model.predict(X)
-    ellipsoid = as_ellipsoid(model)
+    ellipsoid = model.ellipsoid_
     Xc, Z = ellipsoid._whitened_design(np.asarray(X, dtype=float))
     v = ellipsoid._squared_widths(Xc, Z) + ellipsoid.delta**2
     q = projected_ball_fraction(ellipsoid._ball_dim, half_percentile)
@@ -185,7 +176,9 @@ def run(
         ellipse = POPSRegression(posterior="ellipsoid", random_state=seed).fit(
             X_train, y_train
         )
-        pac = POPSRegressionPAC(random_state=seed).fit(X_train, y_train)
+        pac = POPSRegression(
+            posterior="ellipsoid", pac_bayes=True, random_state=seed
+        ).fit(X_train, y_train)
 
         b_mean = bayes.predict(X_test)
         b_std = epistemic_bayes_std(bayes, X_test)
@@ -197,8 +190,8 @@ def run(
             e_mean,
             e_lo,
             e_hi,
-            as_ellipsoid(ellipse)._ball_dim,
-            as_ellipsoid(ellipse).delta,
+            ellipse.ellipsoid_._ball_dim,
+            ellipse.ellipsoid_.delta,
         )
         _, p_hi, p_lo, p_bstd = pac.predict(
             X_test, return_bounds=True, return_bound_std=True

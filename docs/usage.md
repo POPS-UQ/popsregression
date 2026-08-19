@@ -179,14 +179,29 @@ model = POPSRegression(
 )
 ```
 
-`posterior_options` is forwarded to
-[`POPSRegressionEllipse`][popsregression.POPSRegressionEllipse], which is
-exposed after fitting as `ellipsoid_`. It rejects `fit_intercept`, `weights`
-and `random_state`, which this estimator controls, and `pac_bayes`: for the
-PAC-Bayes layer use
-[`POPSRegressionPAC`][popsregression.POPSRegressionPAC], which takes every
-ellipsoid and PAC-Bayes parameter as a named argument. See
-[Ellipsoid posteriors](ellipse.md).
+`posterior_options` carries the ellipsoid's own tuning parameters and is
+rejected for the other posteriors. `pac_bayes`, `fit_intercept` and
+`random_state` are set on the estimator itself and cannot be passed there;
+sample weights go to `fit`. The fitted ellipsoid is exposed as `ellipsoid_`.
+See [Ellipsoid posteriors](ellipse.md) for every accepted key.
+
+### The PAC-Bayes layer
+
+`pac_bayes=True` adds the hierarchical PAC-Bayes layer on top of the
+ellipsoid, in closed form. It requires `posterior='ellipsoid'`.
+
+```python
+model = POPSRegression(posterior="ellipsoid", pac_bayes=True, random_state=0)
+model.fit(X_train, y_train)
+model.bound_        # PAC-Bayes bound on the generalization error
+```
+
+Predictions then average over the hyperposterior, so `return_std` and
+`return_bounds` are strictly wider than the bare ellipsoid's, and the
+certificate attributes `bound_`, `empirical_H_`, `kl_` and `gamma_` are set.
+`predict` also accepts `return_bound_std=True` — the hyperposterior standard
+deviation of the support bounds, appended last, and identically zero for a
+bare ellipsoid. It requires `posterior='ellipsoid'`.
 
 ## Fitted attributes
 
@@ -198,6 +213,8 @@ ellipsoid and PAC-Bayes parameter as a named argument. See
 | `misspecification_sigma_` | Misspecification variance-covariance matrix from POPS |
 | `posterior_samples_` | POPS posterior samples, shape `(n_features, n_posterior_samples)` |
 | `ellipsoid_` | The fitted ellipsoid; only with `posterior='ellipsoid'` |
+| `coverage_fraction_`, `objective_`, `rank_` | Ellipsoid fit diagnostics; only with `posterior='ellipsoid'` |
+| `bound_`, `empirical_H_`, `kl_`, `gamma_` | PAC-Bayes certificate; only with `pac_bayes=True` |
 | `alpha_` | Estimated noise precision — fitted, but not used for prediction |
 | `lambda_` | Estimated weight precision |
 | `scores_` | Log marginal likelihood per iteration; requires `compute_score=True` |

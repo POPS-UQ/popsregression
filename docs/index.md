@@ -36,16 +36,16 @@ model.fit(X_train, y_train)
 y_pred, y_std = model.predict(X_test, return_std=True)
 ```
 
-The posterior form is a parameter, and the PAC-Bayes ellipsoid is its own
+The posterior form and the PAC-Bayes layer are both parameters of the one
 estimator:
 
 ```python
-from popsregression import POPSRegression, POPSRegressionPAC
+from popsregression import POPSRegression
 
 POPSRegression(posterior="hypercube")   # default
 POPSRegression(posterior="ensemble")
 POPSRegression(posterior="ellipsoid")
-POPSRegressionPAC()                     # ellipsoid + PAC-Bayes layer
+POPSRegression(posterior="ellipsoid", pac_bayes=True)   # + PAC-Bayes layer
 ```
 
 - [Usage](usage.md) — fitting, prediction, parameter choice

@@ -155,8 +155,17 @@ def _ellipse_nll_hess_diag(psi, Z, y, b0, weights, delta, rho):
     return np.concatenate([hd_c, hd_U.ravel()])
 
 
-class POPSRegressionEllipse(RegressorMixin, BaseEstimator):
-    """Misspecification-aware regression with a uniform-ellipsoid posterior.
+class _EllipsoidPosterior(RegressorMixin, BaseEstimator):
+    """Uniform-ellipsoid POPS posterior (internal engine).
+
+    This class implements the ellipsoid posterior and its PAC-Bayes layer.
+    It is not part of the public API: reach it through
+    :class:`~popsregression.POPSRegression` with ``posterior='ellipsoid'``,
+    which fits one of these, copies its centre into ``coef_`` and forwards
+    the ellipsoid attributes. Its parameters are the keys accepted by
+    ``POPSRegression.posterior_options`` (plus ``pac_bayes``,
+    ``fit_intercept``, ``weights`` and ``random_state``, which
+    ``POPSRegression`` supplies itself).
 
     Fits a linear model whose parameter posterior is uniform on an
     ellipsoid, ``theta = mu + L z`` with ``z`` uniform on the unit ball and
@@ -394,9 +403,9 @@ class POPSRegressionEllipse(RegressorMixin, BaseEstimator):
 
     See Also
     --------
-    POPSRegression : The POPS estimator; ``posterior='ellipsoid'`` fits this
-        ellipsoid without the PAC-Bayes layer.
-    POPSRegressionPAC : This estimator with ``pac_bayes`` fixed to True.
+    popsregression.POPSRegression : The public estimator;
+        ``posterior='ellipsoid'`` fits one of these, and ``pac_bayes=True``
+        adds the PAC-Bayes layer.
 
     References
     ----------
@@ -413,13 +422,13 @@ class POPSRegressionEllipse(RegressorMixin, BaseEstimator):
     Examples
     --------
     >>> import numpy as np
-    >>> from popsregression import POPSRegressionEllipse
+    >>> from popsregression import POPSRegression
     >>> rng = np.random.RandomState(0)
     >>> X = rng.randn(30, 3)
     >>> y = X @ np.array([1.0, -1.0, 0.5]) + 0.1 * np.tanh(3 * X[:, 0])
-    >>> model = POPSRegressionEllipse(random_state=0)
+    >>> model = POPSRegression(posterior="ellipsoid", random_state=0)
     >>> model.fit(X, y)
-    POPSRegressionEllipse(random_state=0)
+    POPSRegression(posterior='ellipsoid', random_state=0)
     >>> y_pred, y_std = model.predict(X[:2], return_std=True)
     """
 
@@ -979,99 +988,3 @@ class POPSRegressionEllipse(RegressorMixin, BaseEstimator):
             theta_i = theta_t[-1] + self._y_offset - self._x_offset @ theta_f
             return np.vstack([theta_f, theta_i])
         return self._whiten_W @ theta_t
-
-
-class POPSRegressionPAC(POPSRegressionEllipse):
-    """Uniform-ellipsoid POPS posterior with the PAC-Bayes layer.
-
-    A :class:`POPSRegressionEllipse` with ``pac_bayes`` fixed to True: the
-    hierarchical PAC-Bayes layer is always fitted, in closed form, so
-    ``bound_``, ``kl_`` and the hyperposterior attributes are always
-    available and predictions always average over the hyperposterior. Every
-    other parameter is inherited unchanged; see
-    :class:`POPSRegressionEllipse` for their meaning and for the attributes
-    set by :meth:`fit`.
-
-    This is the PAC-Bayes member of the POPS family. The three posteriors
-    without a PAC layer are reached through
-    :class:`POPSRegression` — ``posterior`` in ``{'hypercube', 'ensemble',
-    'ellipsoid'}`` — which is why ``pac_bayes`` is not a parameter here or
-    of ``POPSRegression.posterior_options``.
-
-    See Also
-    --------
-    POPSRegression : The three posteriors without a PAC-Bayes layer.
-    POPSRegressionEllipse : The ellipsoid posterior this class specializes.
-
-    References
-    ----------
-    .. [1] Swinburne, T.D. et al. (2026). Hierarchical PAC-Bayes
-           ellipsoid posteriors for misspecified surrogate models.
-           NeurIPS Sim2Science workshop.
-
-    Examples
-    --------
-    >>> import numpy as np
-    >>> from popsregression import POPSRegressionPAC
-    >>> rng = np.random.RandomState(0)
-    >>> X = rng.randn(30, 3)
-    >>> y = X @ np.array([1.0, -1.0, 0.5]) + 0.1 * np.tanh(3 * X[:, 0])
-    >>> model = POPSRegressionPAC(random_state=0)
-    >>> model.fit(X, y)
-    POPSRegressionPAC(random_state=0)
-    >>> y_pred, y_std = model.predict(X[:2], return_std=True)
-    >>> bool(model.bound_ > model.empirical_H_)  # the KL and confidence terms
-    True
-    """
-
-    def __init__(
-        self,
-        *,
-        rank=32,
-        delta=1e-3,
-        baseline="pops",
-        baseline_ridge=1e-6,
-        whiten_ridge=1e-8,
-        mode_threshold=1e-8,
-        rho_schedule=(1e-1, 1e-2, 1e-3, 1e-4),
-        tol=1e-8,
-        max_iter=500,
-        fit_intercept=False,
-        weights=None,
-        optimize_center=False,
-        random_state=None,
-        hyperprior_center="phase1",
-        hyperprior_scale=1.0,
-        update_hyperprior=False,
-        hh_lambda_1=1e-6,
-        hh_lambda_2=1e-6,
-        n_outer=5,
-        hess_floor=1e-12,
-        bound_xi=0.05,
-        subgamma_const=0.0,
-    ):
-        super().__init__(
-            rank=rank,
-            delta=delta,
-            baseline=baseline,
-            baseline_ridge=baseline_ridge,
-            whiten_ridge=whiten_ridge,
-            mode_threshold=mode_threshold,
-            rho_schedule=rho_schedule,
-            tol=tol,
-            max_iter=max_iter,
-            fit_intercept=fit_intercept,
-            weights=weights,
-            optimize_center=optimize_center,
-            random_state=random_state,
-            pac_bayes=True,
-            hyperprior_center=hyperprior_center,
-            hyperprior_scale=hyperprior_scale,
-            update_hyperprior=update_hyperprior,
-            hh_lambda_1=hh_lambda_1,
-            hh_lambda_2=hh_lambda_2,
-            n_outer=n_outer,
-            hess_floor=hess_floor,
-            bound_xi=bound_xi,
-            subgamma_const=subgamma_const,
-        )

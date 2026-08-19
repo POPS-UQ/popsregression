@@ -1,4 +1,4 @@
-"""Tests for POPSRegressionEllipse."""
+"""Tests for _EllipsoidPosterior."""
 
 # Authors: Thomas D Swinburne <tswin@umich.edu>
 #          Danny Perez <danny_perez@lanl.gov>
@@ -15,15 +15,12 @@ from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import PolynomialFeatures
 from sklearn.utils.estimator_checks import parametrize_with_checks
 
-from popsregression import (
-    POPSRegression,
-    POPSRegressionEllipse,
-    POPSRegressionPAC,
-)
+from popsregression import POPSRegression
+from popsregression._ellipse import _EllipsoidPosterior
 
 
 def _target_function(x):
-    """Oscillatory target from SimpleExample.ipynb (misspecified setup)."""
+    """Oscillatory target of the polynomial example (misspecified setup)."""
     return (x**3 + 0.01 * x**4) * 0.1 + np.sin(x) * x * 10.0
 
 
@@ -52,13 +49,13 @@ def _make_well_specified_data(n_samples=60, n_features=5, seed=1):
 
 def test_fit_returns_self():
     X, y, _ = _make_well_specified_data()
-    model = POPSRegressionEllipse(random_state=0)
+    model = _EllipsoidPosterior(random_state=0)
     assert model.fit(X, y) is model
 
 
 def test_fitted_attributes():
     X, y, _ = _make_well_specified_data()
-    model = POPSRegressionEllipse(random_state=0).fit(X, y)
+    model = _EllipsoidPosterior(random_state=0).fit(X, y)
 
     n_features = X.shape[1]
     assert model.coef_.shape == (n_features,)
@@ -74,7 +71,7 @@ def test_fitted_attributes():
 
 def test_predict_shapes():
     X, y, _ = _make_well_specified_data()
-    model = POPSRegressionEllipse(random_state=0).fit(X, y)
+    model = _EllipsoidPosterior(random_state=0).fit(X, y)
 
     y_pred = model.predict(X)
     assert y_pred.shape == (X.shape[0],)
@@ -93,7 +90,7 @@ def test_predict_shapes():
 def test_std_is_pushforward_std_not_half_width():
     """std = sqrt(v/(P+2)); bounds = mean +/- sqrt(v)."""
     X, y, _ = _make_well_specified_data()
-    model = POPSRegressionEllipse(random_state=0).fit(X, y)
+    model = _EllipsoidPosterior(random_state=0).fit(X, y)
     y_pred, y_std, y_max, y_min = model.predict(X, return_std=True, return_bounds=True)
     half_width = 0.5 * (y_max - y_min)
     n_dim = X.shape[1]
@@ -104,7 +101,7 @@ def test_ellipsoid_B_consistent_with_predict():
     """x^T B x + delta^2 must equal the squared predictive half-width."""
     X, y, _ = _make_well_specified_data()
     for fit_intercept in [False, True]:
-        model = POPSRegressionEllipse(random_state=0, fit_intercept=fit_intercept).fit(
+        model = _EllipsoidPosterior(random_state=0, fit_intercept=fit_intercept).fit(
             X, y
         )
         y_pred, y_max, y_min = model.predict(X, return_bounds=True)
@@ -124,7 +121,7 @@ def test_ellipsoid_B_consistent_with_predict():
 @pytest.mark.parametrize("optimize_center", [False, True])
 def test_well_specified_limit(optimize_center):
     X, y, theta = _make_well_specified_data()
-    model = POPSRegressionEllipse(
+    model = _EllipsoidPosterior(
         random_state=0, tol=1e-12, optimize_center=optimize_center
     ).fit(X, y)
 
@@ -143,7 +140,7 @@ def test_well_specified_limit(optimize_center):
 @pytest.mark.parametrize("fit_intercept", [False, True])
 def test_baselines_well_specified(baseline, fit_intercept):
     X, y, _ = _make_well_specified_data()
-    model = POPSRegressionEllipse(
+    model = _EllipsoidPosterior(
         random_state=0, baseline=baseline, fit_intercept=fit_intercept
     ).fit(X, y)
     assert model.coverage_fraction_ == 1.0
@@ -170,7 +167,7 @@ def test_misspecified_coverage_and_width_retention():
     widths = {}
     for n_samples in [50, 500]:
         X_train, y_train, X_dense, y_dense = _make_misspecified_data(n_samples)
-        model = POPSRegressionEllipse(random_state=0).fit(X_train, y_train)
+        model = _EllipsoidPosterior(random_state=0).fit(X_train, y_train)
 
         # (a) every training point is covered at the final rho
         assert model.coverage_fraction_ == 1.0
@@ -191,7 +188,7 @@ def test_misspecified_coverage_and_width_retention():
 
 def test_predictive_std_anchored_to_pops():
     X_train, y_train, X_dense, _ = _make_misspecified_data(50)
-    ellipse = POPSRegressionEllipse(random_state=0).fit(X_train, y_train)
+    ellipse = _EllipsoidPosterior(random_state=0).fit(X_train, y_train)
     pops = POPSRegression().fit(X_train, y_train)
 
     _, ellipse_std = ellipse.predict(X_dense, return_std=True)
@@ -203,7 +200,7 @@ def test_predictive_std_anchored_to_pops():
 # --- sklearn compliance (test 6) ---
 
 
-@parametrize_with_checks([POPSRegressionEllipse()])
+@parametrize_with_checks([_EllipsoidPosterior()])
 def test_sklearn_compatible(estimator, check):
     check(estimator)
 
@@ -213,7 +210,7 @@ def test_pipeline_polynomial_features():
     y = np.sin(2 * x) * x
     pipe = make_pipeline(
         PolynomialFeatures(degree=3),
-        POPSRegressionEllipse(random_state=0),
+        _EllipsoidPosterior(random_state=0),
     )
     pipe.fit(x.reshape(-1, 1), y)
     y_pred = pipe.predict(x.reshape(-1, 1))
@@ -225,7 +222,7 @@ def test_fit_intercept(fit_intercept):
     rng = np.random.RandomState(42)
     X = rng.randn(50, 3)
     y = X @ np.array([1.0, 2.0, 3.0]) + 5.0 * fit_intercept
-    model = POPSRegressionEllipse(random_state=0, fit_intercept=fit_intercept).fit(X, y)
+    model = _EllipsoidPosterior(random_state=0, fit_intercept=fit_intercept).fit(X, y)
     assert model.score(X, y) > 0.999
     if fit_intercept:
         assert model.intercept_ == pytest.approx(5.0, abs=1e-3)
@@ -242,8 +239,8 @@ def test_weights_zero_drop_coverage_requirement():
 
     weights = np.ones(X.shape[0])
     weights[0] = 0.0
-    dropped = POPSRegressionEllipse(random_state=0, weights=weights).fit(X, y_outlier)
-    kept = POPSRegressionEllipse(random_state=0).fit(X, y_outlier)
+    dropped = _EllipsoidPosterior(random_state=0, weights=weights).fit(X, y_outlier)
+    kept = _EllipsoidPosterior(random_state=0).fit(X, y_outlier)
 
     _, std_dropped = dropped.predict(X, return_std=True)
     _, std_kept = kept.predict(X, return_std=True)
@@ -259,23 +256,21 @@ def test_weights_zero_drop_coverage_requirement():
 def test_invalid_rho_schedule():
     X, y, _ = _make_well_specified_data()
     with pytest.raises(ValueError, match="rho_schedule"):
-        POPSRegressionEllipse(rho_schedule=(0.1, -0.1)).fit(X, y)
+        _EllipsoidPosterior(rho_schedule=(0.1, -0.1)).fit(X, y)
     with pytest.raises(ValueError, match="rho_schedule"):
-        POPSRegressionEllipse(rho_schedule=()).fit(X, y)
+        _EllipsoidPosterior(rho_schedule=()).fit(X, y)
 
 
 def test_delta_zero_with_tiny_rho_warns():
     X, y, _ = _make_well_specified_data()
     with pytest.warns(UserWarning, match="delta=0"):
-        POPSRegressionEllipse(delta=0.0, rho_schedule=(1e-1, 1e-9), max_iter=5).fit(
-            X, y
-        )
+        _EllipsoidPosterior(delta=0.0, rho_schedule=(1e-1, 1e-9), max_iter=5).fit(X, y)
 
 
 def test_invalid_baseline():
     X, y, _ = _make_well_specified_data()
     with pytest.raises(ValueError):
-        POPSRegressionEllipse(baseline="invalid").fit(X, y)
+        _EllipsoidPosterior(baseline="invalid").fit(X, y)
 
 
 # --- Determinism (test 7) ---
@@ -283,8 +278,8 @@ def test_invalid_baseline():
 
 def test_determinism():
     X_train, y_train, _, _ = _make_misspecified_data(50)
-    model_a = POPSRegressionEllipse(random_state=3).fit(X_train, y_train)
-    model_b = POPSRegressionEllipse(random_state=3).fit(X_train, y_train)
+    model_a = _EllipsoidPosterior(random_state=3).fit(X_train, y_train)
+    model_b = _EllipsoidPosterior(random_state=3).fit(X_train, y_train)
     assert np.array_equal(model_a.coef_, model_b.coef_)
     assert np.array_equal(model_a.U_, model_b.U_)
 
@@ -294,7 +289,7 @@ def test_determinism():
 
 def test_sample_semantics():
     X, y, _ = _make_well_specified_data()
-    model = POPSRegressionEllipse(random_state=0).fit(X, y)
+    model = _EllipsoidPosterior(random_state=0).fit(X, y)
     samples = model.sample(2000, random_state=0)
     assert samples.shape == (X.shape[1], 2000)
 
@@ -304,7 +299,7 @@ def test_sample_semantics():
     assert np.all(y_samples <= y_max[:, None] + 1e-10)
     assert np.all(y_samples >= y_min[:, None] - 1e-10)
 
-    model_i = POPSRegressionEllipse(random_state=0, fit_intercept=True).fit(X, y + 3.0)
+    model_i = _EllipsoidPosterior(random_state=0, fit_intercept=True).fit(X, y + 3.0)
     samples_i = model_i.sample(100, random_state=0)
     assert samples_i.shape == (X.shape[1] + 1, 100)
 
@@ -314,7 +309,7 @@ def test_sample_semantics():
 
 def test_pac_bayes_finite_components():
     X_train, y_train, _, _ = _make_misspecified_data(50)
-    model = POPSRegressionEllipse(random_state=0, pac_bayes=True).fit(X_train, y_train)
+    model = _EllipsoidPosterior(random_state=0, pac_bayes=True).fit(X_train, y_train)
     assert np.isfinite(model.kl_) and model.kl_ >= 0.0
     assert np.isfinite(model.bound_)
     assert np.isfinite(model.empirical_H_)
@@ -335,7 +330,7 @@ def test_pac_bayes_finite_components():
 def test_pac_bayes_predictive_spread_added():
     """predict follows the documented Gaussian-moment formulas exactly."""
     X_train, y_train, X_dense, _ = _make_misspecified_data(50)
-    pac = POPSRegressionEllipse(random_state=0, pac_bayes=True).fit(X_train, y_train)
+    pac = _EllipsoidPosterior(random_state=0, pac_bayes=True).fit(X_train, y_train)
     _, std_pac, max_pac, min_pac, bstd = pac.predict(
         X_dense, return_std=True, return_bounds=True, return_bound_std=True
     )
@@ -366,7 +361,7 @@ def test_pac_bayes_predictive_spread_added():
     assert np.all(d_v > 0) and np.all(bstd > 0)
 
     # A model fitted without pac_bayes has zero bound spread.
-    bare = POPSRegressionEllipse(random_state=0).fit(X_train, y_train)
+    bare = _EllipsoidPosterior(random_state=0).fit(X_train, y_train)
     _, bstd_bare = bare.predict(X_dense, return_bound_std=True)
     assert_allclose(bstd_bare, 0.0, atol=1e-15)
 
@@ -374,11 +369,11 @@ def test_pac_bayes_predictive_spread_added():
 def test_pac_bayes_infinite_tau2_recovers_phase1():
     """tau2 -> inf is exactly the pac_bayes=False optimum (test 8c)."""
     X_train, y_train, _, _ = _make_misspecified_data(50)
-    plain = POPSRegressionEllipse(random_state=0).fit(X_train, y_train)
+    plain = _EllipsoidPosterior(random_state=0).fit(X_train, y_train)
     with warnings.catch_warnings():
         # The improper tau2=inf limit may trip the Hessian-floor warning.
         warnings.simplefilter("ignore", UserWarning)
-        infinite = POPSRegressionEllipse(
+        infinite = _EllipsoidPosterior(
             random_state=0, pac_bayes=True, hyperprior_scale=np.inf
         ).fit(X_train, y_train)
     assert_allclose(infinite.coef_, plain.coef_, atol=1e-8)
@@ -397,10 +392,10 @@ def test_pac_bayes_never_narrower_than_bare():
     rel_broadening = {}
     for n_samples in [10, 500]:
         X_train, y_train, X_dense, _ = _make_misspecified_data(n_samples)
-        bare = POPSRegressionEllipse(random_state=0).fit(X_train, y_train)
+        bare = _EllipsoidPosterior(random_state=0).fit(X_train, y_train)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", UserWarning)
-            pac = POPSRegressionEllipse(random_state=0, pac_bayes=True).fit(
+            pac = _EllipsoidPosterior(random_state=0, pac_bayes=True).fit(
                 X_train, y_train
             )
         assert np.array_equal(bare.coef_, pac.coef_)
@@ -428,7 +423,7 @@ def test_pac_bayes_never_narrower_than_bare():
 
 def test_pac_bayes_update_hyperprior_converges():
     X_train, y_train, _, _ = _make_misspecified_data(50)
-    model = POPSRegressionEllipse(
+    model = _EllipsoidPosterior(
         random_state=0,
         pac_bayes=True,
         hyperprior_center="warm_start",
@@ -443,7 +438,7 @@ def test_pac_bayes_update_hyperprior_converges():
 def test_update_hyperprior_ignored_with_phase1_centering():
     X_train, y_train, _, _ = _make_misspecified_data(50)
     with pytest.warns(UserWarning, match="ill-posed"):
-        model = POPSRegressionEllipse(
+        model = _EllipsoidPosterior(
             random_state=0, pac_bayes=True, update_hyperprior=True
         ).fit(X_train, y_train)
     assert model.n_outer_iter_ == 1
@@ -458,7 +453,7 @@ def test_pac_bayes_low_data_regime():
             # The exact Hessian need not be PSD at a barrier-active
             # optimum; the floor warning is expected at tiny N.
             warnings.simplefilter("ignore", UserWarning)
-            pac = POPSRegressionEllipse(random_state=0, pac_bayes=True).fit(
+            pac = _EllipsoidPosterior(random_state=0, pac_bayes=True).fit(
                 X_train, y_train
             )
         assert pac.coverage_fraction_ == 1.0
@@ -475,7 +470,7 @@ def test_pac_bayes_low_data_regime():
 def test_pac_bayes_gamma_effective_dof():
     """0 < gamma < d on well-specified data (test 8e)."""
     X, y, _ = _make_well_specified_data()
-    model = POPSRegressionEllipse(random_state=0, pac_bayes=True).fit(X, y)
+    model = _EllipsoidPosterior(random_state=0, pac_bayes=True).fit(X, y)
     d = model.hyper_sigma_diag_.size
     assert 0.0 < model.gamma_ < d
 
@@ -486,7 +481,7 @@ def test_pac_bayes_gamma_effective_dof():
 def test_optimize_center_false_keeps_pops_mean():
     """Frozen center reproduces the POPS pre-fit mean exactly."""
     X_train, y_train, X_dense, y_dense = _make_misspecified_data(50)
-    frozen = POPSRegressionEllipse(random_state=0, optimize_center=False).fit(
+    frozen = _EllipsoidPosterior(random_state=0, optimize_center=False).fit(
         X_train, y_train
     )
     pops = POPSRegression(fit_intercept=False).fit(X_train, y_train)
@@ -503,7 +498,7 @@ def test_optimize_center_false_pac_bayes():
     X_train, y_train, _, _ = _make_misspecified_data(50)
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", UserWarning)
-        model = POPSRegressionEllipse(
+        model = _EllipsoidPosterior(
             random_state=0, optimize_center=False, pac_bayes=True
         ).fit(X_train, y_train)
     n_dim = model.center_whitened_.size
@@ -527,10 +522,10 @@ def test_low_n_conservatism_recipe():
     x_dense = X_dense[:, 1]
     interp = np.abs(x_dense) <= 10.0
 
-    bare = POPSRegressionEllipse(random_state=0).fit(X_train, y_train)
+    bare = _EllipsoidPosterior(random_state=0).fit(X_train, y_train)
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", UserWarning)
-        recipe = POPSRegressionEllipse(
+        recipe = _EllipsoidPosterior(
             random_state=0, optimize_center=False, pac_bayes=True
         ).fit(X_train, y_train)
     hypercube = POPSRegression(minimum_relative_error=0.0).fit(X_train, y_train)
@@ -556,7 +551,7 @@ def test_low_n_conservatism_recipe():
 
 
 def test_clone_and_get_set_params():
-    model = POPSRegressionEllipse(rank=4, baseline="ridge", pac_bayes=True)
+    model = _EllipsoidPosterior(rank=4, baseline="ridge", pac_bayes=True)
     cloned = clone(model)
     assert cloned.get_params() == model.get_params()
     model.set_params(rank=8, delta=1e-2)
@@ -586,7 +581,7 @@ def test_large_problem_memory_and_time():
     X = rng.randn(n_samples, n_features)
     y = X @ rng.randn(n_features) + 0.1 * np.sin(X[:, 0] * 3)
 
-    model = POPSRegressionEllipse(
+    model = _EllipsoidPosterior(
         rank=32,
         baseline="ridge",
         rho_schedule=(1e-1,),
@@ -606,55 +601,47 @@ def test_large_problem_memory_and_time():
     assert model.U_.shape == (n_features, 32)
 
 
-# --- POPSRegressionPAC ---
+# --- The PAC-Bayes layer through the public API ---
 
 
-def test_pac_class_matches_the_pac_bayes_flag():
-    """POPSRegressionPAC is POPSRegressionEllipse(pac_bayes=True)."""
+def test_pac_bayes_flag_matches_the_engine():
+    """POPSRegression(pac_bayes=True) must reproduce the engine exactly."""
     X_train, y_train, X_test, _ = _make_misspecified_data(40)
-    pac = POPSRegressionPAC(random_state=0).fit(X_train, y_train)
-    reference = POPSRegressionEllipse(random_state=0, pac_bayes=True).fit(
+    model = POPSRegression(posterior="ellipsoid", pac_bayes=True, random_state=0).fit(
+        X_train, y_train
+    )
+    reference = _EllipsoidPosterior(random_state=0, pac_bayes=True).fit(
         X_train, y_train
     )
 
-    assert pac.pac_bayes is True
-    assert_allclose(pac.coef_, reference.coef_)
-    assert_allclose(pac.bound_, reference.bound_)
-    assert_allclose(pac.kl_, reference.kl_)
+    assert_allclose(model.coef_, reference.coef_)
+    assert_allclose(model.bound_, reference.bound_)
+    assert_allclose(model.kl_, reference.kl_)
+    assert_allclose(model.empirical_H_, reference.empirical_H_)
+    assert_allclose(model.gamma_, reference.gamma_)
     for kwargs in ({"return_std": True}, {"return_bounds": True}):
-        got = pac.predict(X_test, **kwargs)
+        got = model.predict(X_test, **kwargs)
         expected = reference.predict(X_test, **kwargs)
         assert_allclose(np.asarray(got), np.asarray(expected))
 
 
-def test_pac_class_does_not_expose_pac_bayes():
-    """pac_bayes is fixed, so it must not be a tunable parameter."""
-    model = POPSRegressionPAC()
-    assert "pac_bayes" not in model.get_params()
-    assert "rank" in model.get_params()
-    with pytest.raises(ValueError, match="Invalid parameter"):
-        model.set_params(pac_bayes=False)
-
-
-def test_pac_class_clones_with_the_layer_fixed():
-    model = POPSRegressionPAC(random_state=0, rank=4)
-    cloned = clone(model)
-    assert cloned.get_params() == model.get_params()
-    assert cloned.pac_bayes is True
-
-
-def test_pac_class_broadens_the_bare_ellipsoid():
+def test_pac_bayes_broadens_the_bare_ellipsoid():
     """The PAC layer only ever widens the predictive."""
     X_train, y_train, X_test, _ = _make_misspecified_data(40)
     bare = POPSRegression(posterior="ellipsoid", random_state=0).fit(X_train, y_train)
-    pac = POPSRegressionPAC(random_state=0).fit(X_train, y_train)
+    pac = POPSRegression(posterior="ellipsoid", pac_bayes=True, random_state=0).fit(
+        X_train, y_train
+    )
 
     _, bare_std = bare.predict(X_test, return_std=True)
     _, pac_std = pac.predict(X_test, return_std=True)
     assert_array_less(bare_std, pac_std * (1.0 + 1e-12))
 
 
-@parametrize_with_checks([POPSRegressionPAC()])
-def test_pac_sklearn_compatible(estimator, check):
-    """Check the compatibility with the scikit-learn API."""
-    check(estimator)
+def test_pac_bayes_is_a_tunable_parameter():
+    """pac_bayes is an ordinary parameter: cloned, settable, introspectable."""
+    model = POPSRegression(posterior="ellipsoid", pac_bayes=True, random_state=0)
+    assert model.get_params()["pac_bayes"] is True
+    assert clone(model).get_params() == model.get_params()
+    model.set_params(pac_bayes=False)
+    assert model.pac_bayes is False

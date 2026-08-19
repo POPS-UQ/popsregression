@@ -1,7 +1,8 @@
 # Example: POPS vs BayesianRidge
 
-A runnable comparison of [`POPSRegression`][popsregression.POPSRegression],
-[`POPSRegressionPAC`][popsregression.POPSRegressionPAC] and
+A runnable comparison of the three
+[`POPSRegression`][popsregression.POPSRegression] posteriors, its PAC-Bayes
+layer, and
 [`BayesianRidge`](https://scikit-learn.org/stable/modules/generated/sklearn.linear_model.BayesianRidge.html)
 on a misspecified, low-noise fit. For why the two differ, see
 [Concepts](https://pops-uq.github.io/method/concepts/) on the POPS site; for
@@ -49,7 +50,7 @@ persists because the polynomial is fundamentally unable to fit the target.
 ```python
 from sklearn.linear_model import BayesianRidge
 
-from popsregression import POPSRegression, POPSRegressionPAC
+from popsregression import POPSRegression
 
 for n_samples in (10, 100):
     X_train, y_train, X_dense, y_dense = generate_data(rng, n_samples)
@@ -63,7 +64,7 @@ for n_samples in (10, 100):
     for model in (
         POPSRegression(minimum_relative_error=0.0, posterior="hypercube"),
         POPSRegression(posterior="ellipsoid", random_state=0),
-        POPSRegressionPAC(random_state=0),
+        POPSRegression(posterior="ellipsoid", pac_bayes=True, random_state=0),
     ):
         model.fit(X_train, y_train)
         mean, std, upper, lower = model.predict(
@@ -107,7 +108,7 @@ corrections, all selected with the same `posterior` parameter:
 - `'ellipsoid'`: fits a uniform ellipsoid by direct optimization, and
   predicts through its exact pushforward rather than through samples (see
   [Ellipsoid posteriors](ellipse.md)). Add the PAC-Bayes layer with
-  [`POPSRegressionPAC`][popsregression.POPSRegressionPAC].
+  `pac_bayes=True`.
 
 `minimum_relative_error=0.0` below keeps every training point in the posterior
 estimate rather than only those the model fits poorly.

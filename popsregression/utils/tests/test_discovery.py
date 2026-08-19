@@ -8,11 +8,13 @@ from popsregression.utils.discovery import all_displays, all_estimators, all_fun
 
 
 def test_all_estimators():
+    # POPSRegression is the only public estimator: the ellipsoid posterior is
+    # an internal engine reached through posterior='ellipsoid'.
     estimators = all_estimators()
-    assert len(estimators) == 3
+    assert len(estimators) == 1
 
     estimators = all_estimators(type_filter="regressor")
-    assert len(estimators) == 3
+    assert len(estimators) == 1
 
     estimators = all_estimators(type_filter="classifier")
     assert len(estimators) == 0

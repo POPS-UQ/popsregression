@@ -122,19 +122,28 @@ class POPSRegression(BayesianRidge):
 
         - ``'hypercube'``: fit an axis-aligned box in PCA space (default).
         - ``'ensemble'``: use raw pointwise corrections directly.
-        - ``'ellipsoid'``: fit a uniform ellipsoid by direct minimization of
-          the projected-ball generalization error, delegating to
-          :class:`POPSRegressionEllipse`. Predictions then use the exact
-          pushforward rather than the posterior samples. For the PAC-Bayes
-          layer on top of this posterior, use :class:`POPSRegressionPAC`.
+        - ``'ellipsoid'``: fit a uniform ellipsoid by direct minimization
+          of the projected-ball generalization error, an interior-point
+          method for the POPS covering condition. Predictions then use the
+          exact pushforward rather than the posterior samples, and
+          ``pac_bayes=True`` adds the PAC-Bayes layer.
+
+    pac_bayes : bool, default=False
+        If True, add the hierarchical PAC-Bayes layer to the ``'ellipsoid'``
+        posterior. The Catoni/Gibbs hyperposterior is followed in closed form
+        (no sampling anywhere) via its Laplace approximation, giving the
+        certificate attributes ``bound_``, ``kl_`` and ``empirical_H_`` and
+        widening the predictive to average over the hyperposterior. Requires
+        ``posterior='ellipsoid'``.
 
     posterior_options : dict, default=None
-        Extra keyword arguments for the ``'ellipsoid'`` posterior, passed to
-        :class:`POPSRegressionEllipse` (for example ``rank``, ``delta``,
-        ``baseline`` or ``rho_schedule``). Must be None for the other
-        posteriors. ``fit_intercept``, ``weights`` and ``random_state`` are
-        controlled by this estimator and cannot be set here, and ``pac_bayes``
-        is rejected: use :class:`POPSRegressionPAC` instead.
+        Extra tuning parameters for the ``'ellipsoid'`` posterior, for
+        example ``rank``, ``delta``, ``baseline``, ``rho_schedule``,
+        ``optimize_center``, or the PAC-Bayes settings ``hyperprior_center``,
+        ``hyperprior_scale`` and ``bound_xi``. Must be None for the other
+        posteriors. ``pac_bayes``, ``fit_intercept``, ``weights`` and
+        ``random_state`` are controlled by this estimator and cannot be set
+        here.
 
     random_state : int, RandomState instance or None, default=None
         Seed for the posterior resampling. ``None`` uses the global NumPy
@@ -176,8 +185,37 @@ class POPSRegression(BayesianRidge):
         Samples from the POPS posterior, representing plausible weight
         perturbations.
 
-    ellipsoid_ : POPSRegressionEllipse
-        The fitted ellipsoid posterior. Only present when
+    coverage_fraction_ : float
+        Fraction of training points covered by the fitted ellipsoid
+        pushforward. Only set when ``posterior='ellipsoid'``.
+
+    objective_ : float
+        Final per-sample value of the ellipsoid objective. Only set when
+        ``posterior='ellipsoid'``.
+
+    rank_ : int
+        Effective rank of the fitted ellipsoid update. Only set when
+        ``posterior='ellipsoid'``.
+
+    bound_ : float
+        PAC-Bayes bound on the generalization error. Only set when
+        ``pac_bayes=True``.
+
+    empirical_H_ : float
+        Hyperposterior-averaged empirical risk entering ``bound_``. Only set
+        when ``pac_bayes=True``.
+
+    kl_ : float
+        KL divergence of the Laplace hyperposterior from the hyperprior.
+        Only set when ``pac_bayes=True``.
+
+    gamma_ : float
+        Effective number of hyperposterior degrees of freedom. Only set when
+        ``pac_bayes=True``.
+
+    ellipsoid_ : estimator
+        The fitted internal ellipsoid engine, exposing ``ellipsoid_B_``,
+        ``baseline_B0_`` and ``sample``. Only set when
         ``posterior='ellipsoid'``.
 
     scores_ : ndarray of shape (n_iter_,)
@@ -196,9 +234,6 @@ class POPSRegression(BayesianRidge):
 
     See Also
     --------
-    POPSRegressionEllipse : Uniform-ellipsoid posterior, used by
-        ``posterior='ellipsoid'``.
-    POPSRegressionPAC : The ellipsoid posterior with the PAC-Bayes layer.
     sklearn.linear_model.BayesianRidge : Bayesian ridge regression without
         misspecification correction.
     sklearn.linear_model.ARDRegression : Bayesian ARD regression.
@@ -233,6 +268,7 @@ class POPSRegression(BayesianRidge):
         "percentile_clipping": [Interval(Real, 0, 50.0, closed="both")],
         "minimum_relative_error": [Interval(Real, 0.0, None, closed="left")],
         "posterior": [StrOptions({"hypercube", "ensemble", "ellipsoid"})],
+        "pac_bayes": ["boolean"],
         "posterior_options": [dict, None],
         "random_state": ["random_state"],
         "leverage_percentile": [
@@ -262,6 +298,7 @@ class POPSRegression(BayesianRidge):
         percentile_clipping=0.0,
         minimum_relative_error=1.0e-2,
         posterior="hypercube",
+        pac_bayes=False,
         posterior_options=None,
         random_state=None,
         leverage_percentile="deprecated",
@@ -286,6 +323,7 @@ class POPSRegression(BayesianRidge):
         self.percentile_clipping = percentile_clipping
         self.minimum_relative_error = minimum_relative_error
         self.posterior = posterior
+        self.pac_bayes = pac_bayes
         self.posterior_options = posterior_options
         self.random_state = random_state
         self.leverage_percentile = leverage_percentile
@@ -403,11 +441,17 @@ class POPSRegression(BayesianRidge):
         sigma : ndarray of shape (n_features, n_features)
             Misspecification covariance matrix.
         """
-        if self.posterior != "ellipsoid" and self.posterior_options is not None:
-            raise ValueError(
-                "'posterior_options' only applies to posterior='ellipsoid', "
-                f"got posterior={self.posterior!r}."
-            )
+        if self.posterior != "ellipsoid":
+            if self.posterior_options is not None:
+                raise ValueError(
+                    "'posterior_options' only applies to posterior='ellipsoid', "
+                    f"got posterior={self.posterior!r}."
+                )
+            if self.pac_bayes:
+                raise ValueError(
+                    "'pac_bayes=True' requires posterior='ellipsoid', "
+                    f"got posterior={self.posterior!r}."
+                )
 
         pc = self._pointwise_correction[self._filtering_mask]
 
@@ -428,20 +472,20 @@ class POPSRegression(BayesianRidge):
     def _fit_ellipsoid(self, X, y, sample_weight):
         """Fit the uniform-ellipsoid posterior and sample it.
 
-        The ellipsoid is fitted by :class:`POPSRegressionEllipse`, whose
-        default ``baseline='pops'`` starts from the hypercube posterior of
-        this same estimator, so the two posteriors share a centre. The
-        centre is copied back into ``coef_`` because the ellipsoid may
-        optimize it (``posterior_options={'optimize_center': True}``).
+        The engine's default ``baseline='pops'`` starts from the hypercube
+        posterior of this same estimator, so the two posteriors share a
+        centre. The centre is copied back into ``coef_`` because the
+        ellipsoid may optimize it
+        (``posterior_options={'optimize_center': True}``).
         """
         # Imported lazily: _ellipse builds its baseline from POPSRegression.
-        from ._ellipse import POPSRegressionEllipse
+        from ._ellipse import _EllipsoidPosterior
 
         options = dict(self.posterior_options or {})
         reserved = {
             "pac_bayes": (
-                "'pac_bayes' cannot be set through 'posterior_options'; use "
-                "POPSRegressionPAC for the PAC-Bayes ellipsoid posterior."
+                "'pac_bayes' cannot be set through 'posterior_options'; "
+                "set it on POPSRegression itself."
             ),
             "fit_intercept": (
                 "'fit_intercept' cannot be set through 'posterior_options'; "
@@ -461,10 +505,11 @@ class POPSRegression(BayesianRidge):
                 raise ValueError(message)
 
         options.setdefault("mode_threshold", self.mode_threshold)
-        ellipsoid = POPSRegressionEllipse(
+        ellipsoid = _EllipsoidPosterior(
             fit_intercept=False,
             random_state=self.random_state,
             weights=sample_weight,
+            pac_bayes=self.pac_bayes,
             **options,
         )
         ellipsoid.fit(X, y)
@@ -472,6 +517,14 @@ class POPSRegression(BayesianRidge):
 
         # The ellipsoid owns the posterior centre from here on.
         self.coef_ = ellipsoid.coef_
+        self.coverage_fraction_ = ellipsoid.coverage_fraction_
+        self.objective_ = ellipsoid.objective_
+        self.rank_ = ellipsoid.rank_
+        if self.pac_bayes:
+            self.bound_ = ellipsoid.bound_
+            self.empirical_H_ = ellipsoid.empirical_H_
+            self.kl_ = ellipsoid.kl_
+            self.gamma_ = ellipsoid.gamma_
 
         samples = ellipsoid.sample(self._n_resample(), random_state=self.random_state)
         sigma = ellipsoid.ellipsoid_B_ / (ellipsoid._ball_dim + 2.0)
@@ -562,7 +615,12 @@ class POPSRegression(BayesianRidge):
         return hypercube_samples, hypercube_sigma
 
     def predict(
-        self, X, return_std=False, return_bounds=False, return_epistemic_std=False
+        self,
+        X,
+        return_std=False,
+        return_bounds=False,
+        return_epistemic_std=False,
+        return_bound_std=False,
     ):
         """Predict using the POPS regression model.
 
@@ -586,6 +644,11 @@ class POPSRegression(BayesianRidge):
             posterior samples. With ``posterior='ellipsoid'`` these are the
             exact support bounds of the pushforward rather than sample
             extrema.
+
+        return_bound_std : bool, default=False
+            If True, return the hyperposterior standard deviation of the
+            support bounds. Requires ``posterior='ellipsoid'``, and is
+            identically zero unless ``pac_bayes=True``.
 
         return_epistemic_std : bool, default=False
             If True, return the epistemic-only standard deviation
@@ -611,6 +674,10 @@ class POPSRegression(BayesianRidge):
         y_epistemic_std : ndarray of shape (n_samples,)
             Epistemic-only standard deviation. Only returned if
             ``return_epistemic_std=True``.
+
+        y_bound_std : ndarray of shape (n_samples,)
+            Hyperposterior standard deviation of the support bounds. Only
+            returned if ``return_bound_std=True``.
         """
         check_is_fitted(self)
 
@@ -620,7 +687,13 @@ class POPSRegression(BayesianRidge):
 
         if self.posterior == "ellipsoid":
             return self._predict_ellipsoid(
-                X, return_std, return_bounds, return_epistemic_std
+                X, return_std, return_bounds, return_epistemic_std, return_bound_std
+            )
+
+        if return_bound_std:
+            raise ValueError(
+                "'return_bound_std' requires posterior='ellipsoid', "
+                f"got posterior={self.posterior!r}."
             )
 
         y_mean = self._decision_function(X)
@@ -648,22 +721,34 @@ class POPSRegression(BayesianRidge):
             return result[0]
         return tuple(result)
 
-    def _predict_ellipsoid(self, X, return_std, return_bounds, return_epistemic_std):
+    def _predict_ellipsoid(
+        self, X, return_std, return_bounds, return_epistemic_std, return_bound_std
+    ):
         """Predict through the fitted ellipsoid's exact pushforward.
 
         ``X`` already carries the intercept column when the model was fitted
         with ``fit_intercept=True``, matching the design the ellipsoid saw.
+        ``y_bound_std`` is appended last, after the epistemic deviation, so
+        the leading outputs keep the order of the other posteriors.
         """
         ellipsoid = self.ellipsoid_.predict(
-            X, return_std=return_std, return_bounds=return_bounds
+            X,
+            return_std=return_std,
+            return_bounds=return_bounds,
+            return_bound_std=return_bound_std,
         )
-        if not (return_std or return_bounds):
+        if not (return_std or return_bounds or return_bound_std):
             ellipsoid = (ellipsoid,)
 
         result = list(ellipsoid)
+        if return_bound_std:
+            # The engine returns it before the epistemic deviation below.
+            bound_std = result.pop()
         if return_epistemic_std:
             y_epistemic_var = (np.dot(X, self.sigma_) * X).sum(axis=1)
             result.append(np.sqrt(y_epistemic_var))
+        if return_bound_std:
+            result.append(bound_std)
 
         if len(result) == 1:
             return result[0]

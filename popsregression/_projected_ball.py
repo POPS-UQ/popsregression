@@ -12,7 +12,8 @@ with ``m = phi @ mu``, ``a^2 = phi^T B phi``, ``k = (P - 1) / 2`` and
 normalization ``C_P = Gamma(P/2 + 1) / (sqrt(pi) * Gamma((P + 1)/2))``.
 
 Also provides the smooth continuation ``L_rho`` of ``log`` used as a
-log-barrier in :class:`~popsregression.POPSRegressionEllipse`.
+log-barrier of the ellipsoid posterior fitted by
+:class:`~popsregression.POPSRegression` with ``posterior='ellipsoid'``.
 """
 
 # Authors: Thomas D Swinburne <tswin@umich.edu>

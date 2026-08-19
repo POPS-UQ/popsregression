@@ -33,7 +33,7 @@ nav:
   - Usage: usage.md
   - API reference: api.md
   - "Example: POPS vs BayesianRidge": example.md
-  - "Ellipsoid posteriors: POPSRegressionEllipse": ellipse.md
+  - "Ellipsoid posteriors": ellipse.md
   - POPS method site: https://pops-uq.github.io/
 
 plugins:

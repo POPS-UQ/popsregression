@@ -1,12 +1,12 @@
-# Ellipsoid posteriors: POPSRegressionEllipse
+# Ellipsoid posteriors
 
-[`POPSRegressionEllipse`][popsregression.POPSRegressionEllipse] fits a linear
-model whose parameter posterior is **uniform on an ellipsoid**, obtained by
-directly minimizing the empirical generalization error of the exact predictive
-pushforward. It extends [`POPSRegression`][popsregression.POPSRegression]: the
-POPS covering condition becomes a log-barrier inside a smooth objective, so
-the ellipsoid is found by optimization rather than sampling, and an optional
-hierarchical PAC-Bayes layer is available entirely in closed form.
+[`POPSRegression(posterior="ellipsoid")`][popsregression.POPSRegression] fits a
+linear model whose parameter posterior is **uniform on an ellipsoid**, obtained
+by directly minimizing the empirical generalization error of the exact
+predictive pushforward. The POPS covering condition becomes a log-barrier
+inside a smooth objective, so the ellipsoid is found by optimization rather
+than sampling, and `pac_bayes=True` adds a hierarchical PAC-Bayes layer
+entirely in closed form.
 
 ## Model
 
@@ -114,31 +114,33 @@ than the fitted ellipse's own support (recovered as
 `bounds ∓ 2·y_bound_std`), reverting to it at rate $N$.
 
 For conservative uncertainty in the scarce-data regime (N/P of order
-one), simply use `POPSRegressionPAC()` on the default (frozen-center)
+one), simply use `pac_bayes=True` on the default (frozen-center)
 configuration: it keeps the mean at the POPS pre-fit and takes the bounds
 over the 2σ hyperposterior ensemble of optimized-width ellipses.
 
-## Two entry points
+## Reaching it
 
-The ellipsoid is reached in two ways, and they fit the same estimator:
+The ellipsoid is one of the three `posterior` choices on the single
+[`POPSRegression`][popsregression.POPSRegression] estimator, so it composes
+with everything else on that estimator:
 
-| Spelling | Layer |
-|---|---|
-| [`POPSRegression(posterior="ellipsoid")`][popsregression.POPSRegression] | the ellipsoid, no PAC-Bayes layer |
-| [`POPSRegressionPAC()`][popsregression.POPSRegressionPAC] | the ellipsoid with the PAC-Bayes layer |
+```python
+POPSRegression(posterior="ellipsoid")                   # bare ellipsoid
+POPSRegression(posterior="ellipsoid", pac_bayes=True)   # + PAC-Bayes layer
+```
 
-The first keeps the ellipsoid alongside the other POPS posteriors, on one
-estimator with one `posterior` parameter; settings such as `rank` or
-`baseline` go through its `posterior_options` dict, and the fitted ellipsoid
-is exposed as `ellipsoid_`. The second is the ellipsoid estimator itself with
-`pac_bayes` fixed to True, so every ellipsoid and PAC-Bayes parameter is a
-named argument. `POPSRegressionEllipse` below is the shared implementation;
-the two spellings above are the supported way to reach it.
+Its own tuning parameters — `rank`, `delta`, `baseline`, `rho_schedule`,
+`optimize_center`, and the PAC-Bayes settings — go through the
+`posterior_options` dict, listed in full under
+[Ellipsoid parameters](#ellipsoid-parameters) below. `pac_bayes`,
+`fit_intercept` and `random_state` are set on the estimator itself, and
+sample weights are passed to `fit`. After fitting, the ellipsoid is exposed
+as `ellipsoid_`.
 
 ## Quick start
 
 ```python
-from popsregression import POPSRegression, POPSRegressionPAC
+from popsregression import POPSRegression
 
 X_train, X_test, y_train, y_test = ...
 
@@ -166,10 +168,14 @@ y_pred, y_max, y_min, y_bound_std = model.predict(
 # available as model.posterior_samples_ (perturbations about the mean)
 theta_samples = model.ellipsoid_.sample(1000)
 
-# Closed-form PAC-Bayes layer, with every ellipsoid parameter named
-model = POPSRegressionPAC(update_hyperprior=True)
+# Closed-form PAC-Bayes layer
+model = POPSRegression(
+    posterior="ellipsoid",
+    pac_bayes=True,
+    posterior_options={"update_hyperprior": True, "hyperprior_center": "warm_start"},
+)
 model.fit(X_train, y_train)
-print(model.bound_, model.kl_, model.tau2_)
+print(model.bound_, model.kl_, model.ellipsoid_.tau2_)
 ```
 
 !!! note "std vs bounds convention"
@@ -182,40 +188,35 @@ print(model.bound_, model.kl_, model.tau2_)
 ## Example: bounds that do not shrink
 
 The misspecified oscillatory example (see
-[`examples/EllipseExample.ipynb`](https://github.com/POPS-UQ/popsregression/blob/main/examples/EllipseExample.ipynb))
-fits a quartic polynomial to an oscillatory target at $N = 10, 50, 500$
-training points. `BayesianRidge` epistemic uncertainty vanishes as $N$
-grows; the ellipsoid bounds track the `POPSRegression` hypercube
-bounds — but are obtained by direct optimization of the generalization-error
-objective, retaining the misspecification uncertainty at any $N$.
+[`examples/example_polynomial.py`](https://github.com/POPS-UQ/popsregression/blob/main/examples/example_polynomial.py),
+rendered on the [Example](example.md) page) fits a quartic polynomial to an
+oscillatory target at $N = 10$ and $N = 100$ training points. `BayesianRidge`
+epistemic uncertainty vanishes as $N$ grows; the ellipsoid bounds track the
+`POPSRegression` hypercube bounds — but are obtained by direct optimization of
+the generalization-error objective, retaining the misspecification uncertainty
+at any $N$.
 
-## API
+## Ellipsoid parameters
 
-::: popsregression.POPSRegressionEllipse
+The ellipsoid is implemented by an internal engine that
+[`POPSRegression`][popsregression.POPSRegression] fits, exposes as
+`ellipsoid_`, and forwards `posterior_options` to. Its parameters below are
+exactly the keys `posterior_options` accepts, and its fitted attributes are
+reachable through `ellipsoid_` (the headline ones — `coverage_fraction_`,
+`objective_`, `rank_`, and `bound_`, `empirical_H_`, `kl_`, `gamma_` under
+`pac_bayes=True` — are copied onto the estimator itself).
+
+Fitting and prediction are documented on the
+[API reference](api.md) page: call `POPSRegression.fit` and
+`POPSRegression.predict`, not the engine's own methods.
+
+::: popsregression._ellipse._EllipsoidPosterior
     options:
       members: false
-
-::: popsregression.POPSRegressionPAC
-    options:
-      members: false
-
-### Fitting
-
-::: popsregression.POPSRegressionEllipse.fit
-    options:
-      show_root_heading: true
-      show_root_full_path: false
-
-### Prediction
-
-::: popsregression.POPSRegressionEllipse.predict
-    options:
-      show_root_heading: true
-      show_root_full_path: false
 
 ### Sampling
 
-::: popsregression.POPSRegressionEllipse.sample
+::: popsregression._ellipse._EllipsoidPosterior.sample
     options:
       show_root_heading: true
       show_root_full_path: false

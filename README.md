@@ -32,7 +32,7 @@ Fitting a quartic polynomial (P=5 parameters) to a complex oscillatory function 
 
 ![Example comparison of BayesianRidge vs POPS uncertainty](https://raw.githubusercontent.com/POPS-UQ/popsregression/main/examples/example_polynomial.png)
 
-The figure is produced by [examples/example_polynomial.py](examples/example_polynomial.py); see [SimpleExample.ipynb](SimpleExample.ipynb) for a step-by-step notebook.
+The figure is produced by [examples/example_polynomial.py](examples/example_polynomial.py).
 
 ## Installation
 
@@ -76,6 +76,7 @@ y_pred, y_std, y_max, y_min, y_epistemic_std = model.predict(
 | Parameter | Default | Description |
 |---|---|---|
 | `posterior` | `'hypercube'` | Posterior form: `'hypercube'` (PCA-aligned box), `'ensemble'` (raw corrections) or `'ellipsoid'` (uniform ellipsoid, see below) |
+| `pac_bayes` | `False` | Add the closed-form PAC-Bayes layer; requires `posterior='ellipsoid'` |
 | `posterior_options` | `None` | Settings for the `'ellipsoid'` posterior, e.g. `{'rank': 16}` |
 | `random_state` | `None` | Seed for the posterior resampling; `None` uses the global NumPy state |
 | `resampling_method` | `'uniform'` | Sampling method: `'uniform'`, `'sobol'`, `'latin'`, `'halton'` |
@@ -102,23 +103,30 @@ All `BayesianRidge` parameters (`max_iter`, `tol`, `alpha_1`, `alpha_2`,
 | `sigma_` | Epistemic variance-covariance matrix |
 | `misspecification_sigma_` | Misspecification variance-covariance matrix from POPS |
 | `posterior_samples_` | Samples from the POPS posterior |
+| `ellipsoid_` | The fitted ellipsoid; only with `posterior='ellipsoid'` |
+| `bound_`, `kl_`, `empirical_H_`, `gamma_` | PAC-Bayes certificate; only with `pac_bayes=True` |
 | `alpha_` | Estimated noise precision (not used for prediction) |
 
-## Ellipsoid posteriors: `posterior='ellipsoid'` and `POPSRegressionPAC`
+## Ellipsoid posteriors and the PAC-Bayes layer
 
 The **uniform-ellipsoid** posterior is fitted by directly optimizing the
 empirical generalization error of the exact projected-ball predictive
 pushforward. The POPS covering condition enters as a log-barrier, so the fit is
-an interior-point method for POPS coverage. `POPSRegressionPAC` adds a
+an interior-point method for POPS coverage. `pac_bayes=True` adds a
 hierarchical PAC-Bayes layer on top, giving closed-form KL and bound components
 via a Laplace hyperposterior — no sampling anywhere.
 
 ```python
-from popsregression import POPSRegression, POPSRegressionPAC
+from popsregression import POPSRegression
 
 # Defaults: baseline='pops', optimize_center=False (mean = POPS pre-fit)
 model = POPSRegression(posterior="ellipsoid")
 model.fit(X_train, y_train)
+
+# The PAC-Bayes layer is a flag on the same estimator
+certified = POPSRegression(posterior="ellipsoid", pac_bayes=True)
+certified.fit(X_train, y_train)
+certified.bound_, certified.kl_    # closed-form PAC-Bayes certificate
 
 # std = pushforward std sqrt(v/(P+2)); bounds = ellipse support
 # mean +/- sqrt(v) (with pac_bayes=True: the max/min over the 2-sigma
@@ -136,14 +144,15 @@ y_pred, y_std, y_max, y_min = model.predict(
 | `optimize_center` | `False` | Freeze the mean at the POPS pre-fit; `True` optimizes it jointly |
 | `rho_schedule` | `(1e-1, ..., 1e-4)` | Continuation schedule of the log-barrier |
 
-These are named arguments of `POPSRegressionPAC`, and go through
-`POPSRegression(posterior='ellipsoid', posterior_options={...})` for the
-no-PAC spelling. The PAC-Bayes layer is what separates the two, so it is not
-a parameter of either: use `POPSRegressionPAC` to get `kl_`, `bound_` and the
-2σ-ensemble bounds.
+These, and the PAC-Bayes settings (`hyperprior_center`, `hyperprior_scale`,
+`update_hyperprior`, `bound_xi`, ...), go through
+`POPSRegression(posterior='ellipsoid', posterior_options={...})`. `pac_bayes`,
+`fit_intercept` and `random_state` are set on the estimator itself, and sample
+weights are passed to `fit`.
 
-See the [documentation](https://POPS-UQ.github.io/popsregression) and
-[examples/EllipseExample.ipynb](examples/EllipseExample.ipynb) for details.
+See [Ellipsoid posteriors](https://POPS-UQ.github.io/popsregression/ellipse/)
+in the documentation, and
+[examples/example_polynomial.py](examples/example_polynomial.py), for details.
 
 ## Pipeline compatibility
 

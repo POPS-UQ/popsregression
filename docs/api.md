@@ -1,46 +1,43 @@
 # API reference
 
-The package exposes two estimators for everyday use, plus the ellipsoid
-implementation they share.
+The package exposes a single estimator.
 
 ```python
-from popsregression import POPSRegression, POPSRegressionPAC
+from popsregression import POPSRegression
 ```
 
 | Object | Description |
 |---|---|
-| [`POPSRegression`](#popsregression.POPSRegression) | Bayesian regression with misspecification uncertainty; `posterior` selects `'hypercube'`, `'ensemble'` or `'ellipsoid'` |
-| [`POPSRegressionPAC`][popsregression.POPSRegressionPAC] | The ellipsoid posterior with the PAC-Bayes layer (see [Ellipsoid posteriors](ellipse.md)) |
-| [`POPSRegressionEllipse`][popsregression.POPSRegressionEllipse] | The ellipsoid estimator itself, used by both of the above |
+| [`POPSRegression`](#popsregression.POPSRegression) | Bayesian regression with misspecification uncertainty; `posterior` selects `'hypercube'`, `'ensemble'` or `'ellipsoid'`, and `pac_bayes` adds the PAC-Bayes layer |
 | `popsregression.__version__` | Installed package version |
 
-## Choosing an estimator
+## Choosing a posterior
 
-Every POPS posterior without a PAC-Bayes layer is a `posterior` choice on the
-one estimator:
+Every POPS posterior is a `posterior` choice on the one estimator:
 
 ```python
 POPSRegression(posterior="hypercube")   # default: axis-aligned box in PCA space
 POPSRegression(posterior="ensemble")    # raw pointwise corrections
 POPSRegression(posterior="ellipsoid")   # uniform ellipsoid, exact pushforward
-POPSRegressionPAC()                     # the ellipsoid, plus the PAC-Bayes layer
+POPSRegression(posterior="ellipsoid", pac_bayes=True)   # plus the PAC-Bayes layer
 ```
 
-`posterior='ellipsoid'` delegates to
-[`POPSRegressionEllipse`][popsregression.POPSRegressionEllipse]; extra settings
-for it go through `posterior_options`, and `predict` then uses the exact
-projected-ball pushforward rather than the posterior samples:
+With `posterior='ellipsoid'`, `predict` uses the exact projected-ball
+pushforward rather than the posterior samples, and the ellipsoid's own tuning
+parameters go through `posterior_options`:
 
 ```python
 POPSRegression(
     posterior="ellipsoid",
+    pac_bayes=True,
     random_state=0,
-    posterior_options={"rank": 16, "baseline": "ridge"},
+    posterior_options={"rank": 16, "baseline": "ridge", "hyperprior_scale": 1.0},
 )
 ```
 
-`pac_bayes` is not accepted there: use `POPSRegressionPAC`, which exposes every
-ellipsoid and PAC-Bayes parameter directly.
+`pac_bayes`, `fit_intercept` and `random_state` are set on the estimator
+itself, not through `posterior_options`; sample weights are passed to `fit`.
+`pac_bayes=True` requires `posterior='ellipsoid'`.
 
 ## POPSRegression
 
@@ -80,10 +77,10 @@ and inherits the standard scikit-learn estimator methods unchanged:
 `score` uses the mean prediction only; uncertainty outputs are available
 through [`predict`](#predict).
 
-## POPSRegressionEllipse and POPSRegressionPAC
+## The ellipsoid posterior
 
-The full ellipsoid reference — mathematical background, the PAC-Bayes layer and
-the `fit`/`predict`/`sample` methods — lives on the
+The full ellipsoid reference — mathematical background, the PAC-Bayes layer,
+and every key accepted by `posterior_options` — lives on the
 [Ellipsoid posteriors](ellipse.md) page.
 
 ## Deprecated parameters

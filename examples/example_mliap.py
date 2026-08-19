@@ -26,11 +26,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from sklearn.linear_model import BayesianRidge
 
-from popsregression import (
-    POPSRegression,
-    POPSRegressionEllipse,
-    POPSRegressionPAC,
-)
+from popsregression import POPSRegression
 
 SEED = 0
 POSTERIOR_SAMPLE_COUNT = 1024
@@ -146,11 +142,15 @@ def fit_models(X_train, y_train):
 
     # PAC-Bayes variant: phase-1 hyperprior centre with a tight scale, and a
     # short rho schedule for faster convergence.
-    pops_ellipse_pac = POPSRegressionPAC(
+    pops_ellipse_pac = POPSRegression(
+        posterior="ellipsoid",
+        pac_bayes=True,
         random_state=SEED,
-        hyperprior_center="phase1",
-        hyperprior_scale=1.0,
-        rho_schedule=[1.0, 0.1, 0.01],
+        posterior_options={
+            "hyperprior_center": "phase1",
+            "hyperprior_scale": 1.0,
+            "rho_schedule": [1.0, 0.1, 0.01],
+        },
     )
     pops_ellipse_pac.fit(X_train, y_train)
 
@@ -224,14 +224,10 @@ def sample_posterior_errors(model, X, rng):
     """Return posterior prediction errors about the model's point prediction.
 
     Ellipsoid posteriors are sampled from their exact marginal pushforward
-    rather than from the stored draws, whether they were fitted through
-    ``POPSRegression(posterior="ellipsoid")``, which exposes the fitted
-    ellipsoid as ``ellipsoid_``, or directly as a ``POPSRegressionPAC``.
+    rather than from the stored draws. ``POPSRegression`` exposes the fitted
+    ellipsoid as ``ellipsoid_`` when ``posterior="ellipsoid"``.
     """
-    if isinstance(model, POPSRegressionEllipse):
-        ellipsoid = model
-    else:
-        ellipsoid = getattr(model, "ellipsoid_", None)
+    ellipsoid = getattr(model, "ellipsoid_", None)
     if ellipsoid is not None:
         return sample_ellipse_errors(ellipsoid, X, rng, POSTERIOR_SAMPLE_COUNT)
     if isinstance(model, POPSRegression):

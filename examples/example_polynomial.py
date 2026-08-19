@@ -13,7 +13,7 @@ import numpy as np
 from sklearn.linear_model import BayesianRidge
 from sklearn.preprocessing import PolynomialFeatures
 
-from popsregression import POPSRegression, POPSRegressionPAC
+from popsregression import POPSRegression
 
 SEED = 1042
 
@@ -93,7 +93,9 @@ def main():
         ell = POPSRegression(posterior="ellipsoid", random_state=0).fit(
             X_train, y_train
         )
-        pac = POPSRegressionPAC(random_state=0).fit(X_train, y_train)
+        pac = POPSRegression(posterior="ellipsoid", pac_bayes=True, random_state=0).fit(
+            X_train, y_train
+        )
 
         # BayesianRidge: +/-4 sigma outer, +/-2 sigma inner.
         mean = bay.predict(X_dense)
