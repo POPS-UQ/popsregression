@@ -101,9 +101,9 @@ def run_one(task):
                 row["pac_test_risk"] = harness.evaluate(
                     pred, problem.y_test, problem.y_bounds, floor_beta=beta
                 )["nll_floor"]
-            if "pvi_lam" in pred.info:
-                row["pvi_lam"] = pred.info["pvi_lam"]
-                row["converged"] = pred.info["converged"]
+            for key in ("pvi_lam", "converged", "n_nonfinite"):
+                if key in pred.info:
+                    row[key] = pred.info[key]
         except Exception:  # record failures instead of dropping them
             row["failed"] = True
             row["error"] = traceback.format_exc(limit=1).strip().splitlines()[-1]
@@ -389,16 +389,28 @@ def main():
     )
     parser.add_argument("--problems", default="quartic,burgers,ace")
     parser.add_argument("--plot-only", action="store_true")
+    parser.add_argument(
+        "--methods", default=None, help="comma-separated subset of methods to run"
+    )
+    parser.add_argument(
+        "--merge",
+        action="store_true",
+        help="replace only the rows of --methods in the saved CSV",
+    )
     args = parser.parse_args()
     if args.plot_only:
         frame = pd.read_csv(OUT / "repeated_splits.csv")
     else:
-        frame = run(
-            args.seeds,
-            args.workers,
-            args.problems.split(","),
-            harness.METHODS + harness.EXTRA_METHODS,
-        )
+        methods = harness.METHODS + harness.EXTRA_METHODS
+        if args.methods:
+            methods = tuple(args.methods.split(","))
+        old = pd.read_csv(OUT / "repeated_splits.csv") if args.merge else None
+        frame = run(args.seeds, args.workers, args.problems.split(","), methods)
+        if old is not None:
+            frame = pd.concat(
+                [old[~old.method.isin(methods)], frame], ignore_index=True
+            )
+            frame.to_csv(OUT / "repeated_splits.csv", index=False)
     summarize(frame)
     headline(frame)
     plot(frame, HERE / "repeated_splits.png")

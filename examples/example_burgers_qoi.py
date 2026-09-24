@@ -187,16 +187,24 @@ def main():
         "--workers", type=int, default=max(1, (os.cpu_count() or 2) - 2)
     )
     parser.add_argument("--plot-only", action="store_true")
+    parser.add_argument("--methods", default=None)
+    parser.add_argument("--merge", action="store_true")
     args = parser.parse_args()
     if args.plot_only:
         frame = pd.read_csv(OUT / "burgers_qoi.csv")
     else:
-        tasks = [(c, s, harness.METHODS) for c in CASES for s in range(args.seeds)]
+        methods = tuple(args.methods.split(",")) if args.methods else harness.METHODS
+        tasks = [(c, s, methods) for c in CASES for s in range(args.seeds)]
         rows = []
         with ProcessPoolExecutor(max_workers=args.workers) as pool:
             for r in pool.map(run_one, tasks, chunksize=1):
                 rows.extend(r)
         frame = pd.DataFrame(rows)
+        if args.merge:
+            old = pd.read_csv(OUT / "burgers_qoi.csv")
+            frame = pd.concat(
+                [old[~old.method.isin(methods)], frame], ignore_index=True
+            )
         OUT.mkdir(exist_ok=True)
         frame.to_csv(OUT / "burgers_qoi.csv", index=False)
     summarize(frame)

@@ -91,8 +91,12 @@ def run_one(task):
     X, y = problem.X_train, problem.y_train
     base = dict(N=n_train, repeat=repeat)
     rows = []
+    log_std = np.log(y.std())
     for method in REFERENCES:
         pred = harness.fit_predictive(method, problem, repeat)
+        model = pred.info.get("model")
+        # Zero-noise training objective per datum, in target-std units.
+        train = getattr(model, "objective_", np.nan) - log_std
         rows.append(
             {
                 **base,
@@ -101,6 +105,7 @@ def run_one(task):
                 "n_samples": np.nan,
                 "converged": True,
                 "n_nonfinite": 0,
+                "train_objective": train,
                 **harness.evaluate(pred, problem.y_test, problem.y_bounds),
             }
         )
@@ -111,11 +116,16 @@ def run_one(task):
                 settings = dict(harness.PVI_SETTINGS, sigma=sigma, s=n_samples)
                 model = PredictiveVI(random_state=repeat, **settings).fit(X, y)
                 info = dict(converged=model.converged_, n_nonfinite=model.n_skipped_)
+                # Negative mean log score of the last steps (lamb = 0), per datum.
+                per_datum = -np.mean(model.values_[-200:]) / y.size
             else:
                 model = LowNoiseObjective(
                     objective, sigma=sigma, n_samples=n_samples, random_state=repeat
                 ).fit(X, y)
                 info = dict(converged=model.converged_, n_nonfinite=model.n_nonfinite_)
+                per_datum = model.objective_value_
+            # Both are per datum in RMS-scaled target units; convert to std units.
+            info["train_objective"] = per_datum + np.log(model.y_scale_) - log_std
             pred = _predictive(
                 objective, model, problem.X_test, time.perf_counter() - start, info
             )
@@ -205,7 +215,7 @@ def plot(frame, output):
 
     sizes = sorted(frame.N.unique())
     fig, axes = plt.subplots(
-        len(sizes), 3, figsize=(10.5, 2.7 * len(sizes)), squeeze=False
+        len(sizes), 4, figsize=(13.5, 2.7 * len(sizes)), squeeze=False
     )
     styles = {"pacm": "-", "pac2t": "--", "pac2t_ensemble": ":", "pvi": "-."}
     colors = {
@@ -225,6 +235,11 @@ def plot(frame, output):
         "Bayesian stacking": "C3",
     }
     keys = (
+        (
+            "train_objective",
+            r"Training objective [nats/datum], dotted $\propto\sigma^{-2}$",
+            "symlog",
+        ),
         ("nll_floor", "Floored test NLL [nats]", "linear"),
         ("coverage_95.45", "Coverage of 95.45% interval", "linear"),
         ("interval_score", "Interval score (95.45%)", "log"),
@@ -248,6 +263,8 @@ def plot(frame, output):
                 )
             for method in REFERENCES:
                 value = sub[sub.method == method][key].median()
+                if not np.isfinite(value):
+                    continue
                 ax.axhline(
                     value,
                     color=ref_colors[method],
@@ -257,7 +274,20 @@ def plot(frame, output):
                 )
             ax.set_xscale("log")
             ax.invert_xaxis()
-            ax.set_yscale(scale)
+            if scale == "symlog":
+                ax.set_yscale("symlog", linthresh=10.0)
+                sig = np.asarray(SIGMAS)
+                ax.plot(
+                    sig,
+                    0.5 * sig[-3] ** 2 * 1e2 / sig**2,
+                    color="k",
+                    ls=":",
+                    lw=0.9,
+                    label=r"$\propto\sigma^{-2}$",
+                )
+                ax.set_ylim(bottom=-2.0)
+            else:
+                ax.set_yscale(scale)
             if scale == "log":
                 ax.yaxis.set_major_formatter(FuncFormatter(lambda v, _: f"{v:g}"))
                 ax.yaxis.set_minor_formatter(NullFormatter())
@@ -273,7 +303,7 @@ def plot(frame, output):
             if c == 0:
                 ax.set_ylabel(f"N = {n}", fontsize=9)
             ax.tick_params(labelsize=7)
-    handles, labels = axes[0, 0].get_legend_handles_labels()
+    handles, labels = axes[0, 1].get_legend_handles_labels()
     fig.legend(
         handles,
         labels,

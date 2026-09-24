@@ -201,7 +201,7 @@ class LowNoiseObjective:
         n_groups=32,
         prior_scale=10.0,
         beta=1.0,
-        max_iter=2000,
+        max_iter=20000,
         tol=1e-9,
         standardize=True,
         random_state=0,
