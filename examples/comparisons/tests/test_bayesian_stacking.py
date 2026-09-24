@@ -133,8 +133,10 @@ def test_leave_one_out_is_fold_isolated():
     assert full.oof_log_density_[i, k] != pytest.approx(stack.oof_log_density_[i, k])
     # Preprocessing is fold-internal: the held-out row did not enter the
     # standardization of the component that scored it.
-    assert manual.y_mean_ == pytest.approx(y[keep].mean())
-    assert manual.y_mean_ != pytest.approx(y.mean())
+    assert manual.y_scale_ == pytest.approx(np.sqrt(np.mean(y[keep] ** 2)))
+    assert manual.y_scale_ != pytest.approx(np.sqrt(np.mean(y**2)))
+    # Scale only: no implicit intercept is added to the shared design.
+    assert manual.y_mean_ == 0.0 and np.all(manual.x_mean_ == 0.0)
 
 
 def test_grouped_folds_keep_cases_indivisible():

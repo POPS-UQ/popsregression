@@ -6,13 +6,15 @@ decreasing width ``sigma`` (in units of the training-target standard
 deviation), at several Monte Carlo sample, pair or particle counts, over
 paired training draws:
 
-- PACm-Bayes (Morningstar et al. 2022) with ``m`` samples. With KL weight 1
-  this is also predictive variational inference (Lai, Linero and Yao) with the
-  Monte Carlo estimate ``log (1/m) sum_j p(y | theta_j)`` of its log score.
+- PACm-Bayes (Morningstar et al. 2022) with ``m`` samples, full-rank
+  Gaussian, KL weight 1, L-BFGS on a fixed sample average.
 - PAC^2_T (Masegosa 2020), variational (``S`` pairs) and ensemble (``E``
   particles).
-- PVI with the exact Gaussian predictive integral (``m -> infinity``) and
-  KL weight 1.
+- Predictive variational inference as published (Lai, Linero and Yao;
+  ``comparisons.pvi``): the same Monte Carlo log score
+  ``log (1/s) sum_j p(y | theta_j)`` with fresh draws at every step, a
+  mean-field Gaussian, no KL term (the published default) and stochastic
+  optimization, for ``s = 1`` and ``s = 16``.
 
 The POPS ellipse, Ellipse+EB and Ellipse+PAC use the analytic zero-noise
 pushforward and do not depend on ``sigma``; Bayesian stacking of degree 1-4
@@ -56,13 +58,14 @@ CONFIGS = (
     ("pacm", 64),
     ("pac2t", 16),
     ("pac2t_ensemble", 16),
-    ("pvi_exact", 0),
+    ("pvi", 1),
+    ("pvi", 16),
 )
 LABEL = {
-    "pacm": "PACm / PVI-MC (m={})",
+    "pacm": "PACm (m={})",
     "pac2t": "PAC$^2_T$ var. (S={})",
     "pac2t_ensemble": "PAC$^2_T$ ens. (E={})",
-    "pvi_exact": "PVI, exact predictive",
+    "pvi": "PVI, published (s={})",
 }
 REFERENCES = ("POPS ellipse", "Ellipse+EB", "Ellipse+PAC", "Bayesian stacking")
 
@@ -104,9 +107,10 @@ def run_one(task):
     for objective, n_samples in CONFIGS:
         for sigma in SIGMAS:
             start = time.perf_counter()
-            if objective == "pvi_exact":
-                model = PredictiveVI(sigma=sigma, lam=1.0).fit(X, y)
-                info = dict(converged=model.converged_, n_nonfinite=0)
+            if objective == "pvi":
+                settings = dict(harness.PVI_SETTINGS, sigma=sigma, s=n_samples)
+                model = PredictiveVI(random_state=repeat, **settings).fit(X, y)
+                info = dict(converged=model.converged_, n_nonfinite=model.n_skipped_)
             else:
                 model = LowNoiseObjective(
                     objective, sigma=sigma, n_samples=n_samples, random_state=repeat
@@ -203,15 +207,16 @@ def plot(frame, output):
     fig, axes = plt.subplots(
         len(sizes), 3, figsize=(10.5, 2.7 * len(sizes)), squeeze=False
     )
-    styles = {"pacm": "-", "pac2t": "--", "pac2t_ensemble": ":", "pvi_exact": "-"}
+    styles = {"pacm": "-", "pac2t": "--", "pac2t_ensemble": ":", "pvi": "-."}
     colors = {
-        ("pacm", 1): "C0",
-        ("pacm", 4): "C1",
-        ("pacm", 16): "C2",
-        ("pacm", 64): "C3",
+        ("pacm", 1): "#c6dbef",
+        ("pacm", 4): "#6baed6",
+        ("pacm", 16): "#2171b5",
+        ("pacm", 64): "#08306b",
         ("pac2t", 16): "C4",
         ("pac2t_ensemble", 16): "C5",
-        ("pvi_exact", 0): "C9",
+        ("pvi", 1): "C8",
+        ("pvi", 16): "C9",
     }
     ref_colors = {
         "POPS ellipse": "C2",

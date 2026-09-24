@@ -60,7 +60,7 @@ CURVE_SIZES = {"quartic": (20, 300), "burgers": (8, 80), "ace": (1.5, 20.0)}
 TITLES = {
     "quartic": "Quartic ($P=5$)",
     "burgers": "Burgers ($P=8$)",
-    "ace": "ACE ($P=35$)",
+    "ace": "ACE ($P=36$)",
 }
 
 
@@ -235,7 +235,7 @@ def summarize(frame):
     ]
     for name in SIZES:
         ref = fl.calibrated_projected_ball_gap(
-            {"quartic": 5, "burgers": 8, "ace": 35}[name]
+            {"quartic": 5, "burgers": 8, "ace": 36}[name]
         )
         lines.append(
             f"\n## {name} (calibrated projected-ball reference J = {ref:.3f})\n"

@@ -84,7 +84,7 @@ def test_pacm_matches_the_multisample_identity():
     model, Z, ys, eps, params = _prepared("pacm", n_samples=6, n_groups=3)
     value, _ = model._objective(params, Z, ys, eps)
     mu, L = model._family.unpack(params)
-    sigma = model.sigma
+    sigma = model.sigma * model._sigma_unit
     kl = model._family.kl(mu, L, model.prior_scale**2)[0]
     per_group = []
     for k in range(3):
@@ -139,7 +139,7 @@ def test_pac2t_variance_term_matches_source():
     value, _ = model._objective(params, Z, ys, eps)
     mu, L = model._family.unpack(params)
     Theta = mu[:, None] + L @ eps.reshape(Z.shape[1], -1)
-    a, _ = model._loglik(Z, ys, Theta, model.sigma)
+    a, _ = model._loglik(Z, ys, Theta, model.sigma * model._sigma_unit)
     A, B = a[:, : eps.shape[2]], a[:, eps.shape[2] :]
     M = np.maximum(A, B) + _M_OFFSET
     p_a, p_b, p_max = np.exp(A), np.exp(B), np.exp(M)
@@ -165,7 +165,7 @@ def test_ensemble_with_one_particle_is_map():
     model, Z, ys, eps, params = _prepared("pac2t_ensemble", n_samples=1)
     value, _ = model._objective(params, Z, ys, eps)
     theta = params[: Z.shape[1]]
-    a, _ = model._loglik(Z, ys, theta[:, None], model.sigma)
+    a, _ = model._loglik(Z, ys, theta[:, None], model.sigma * model._sigma_unit)
     prior = 0.5 * theta @ theta / model.prior_scale**2 / Z.shape[0]
     assert value == pytest.approx(-a.mean() + prior, rel=1e-10)
 
@@ -178,7 +178,8 @@ def test_fit_predict_and_bookkeeping(objective, include_sigma):
     assert model.converged_ or model.n_iter_ > 0
     assert model.n_nonfinite_ == 0 and model.n_evaluations_ > 0
     assert model.fit_time_ > 0 and np.isfinite(model.objective_value_)
-    assert model.sigma_ == pytest.approx(0.3 * model.y_scale_)
+    # sigma is in units of the training-target standard deviation.
+    assert model.sigma_ == pytest.approx(0.3 * y.std())
     discrete = objective == "pac2t_ensemble" and not include_sigma
     if discrete:
         with pytest.raises(ValueError, match="no density"):
@@ -224,7 +225,7 @@ def test_fitted_sigma_stays_positive_on_deterministic_data():
     X, y = _data(40, seed=3)
     model = LowNoiseObjective("pacm", sigma=0.3, n_samples=8, fit_sigma=True).fit(X, y)
     assert model.sigma_ > 0 and np.isfinite(model.sigma_)
-    assert model.sigma_ != pytest.approx(0.3 * model.y_scale_)
+    assert model.sigma_ != pytest.approx(0.3 * y.std())
 
 
 def test_narrow_likelihood_raises_the_objective():

@@ -48,7 +48,7 @@ SIZES = {
 PROBLEM_TITLES = {
     "quartic": "Quartic surrogate ($P=5$)",
     "burgers": "Burgers POD emulator ($P=8$)",
-    "ace": "ACE energies ($P=35$)",
+    "ace": "ACE energies ($P=36$)",
 }
 BOUND_KEYS = (
     "bound",
@@ -304,7 +304,8 @@ STYLE = {
     "Ellipse+PAC": dict(color="C1", ls="-", lw=2.2),
     "Bayesian stacking": dict(color="C3", ls="--"),
     "PVI": dict(color="C4", ls="--"),
-    "PVI (no KL)": dict(color="C4", ls=":"),
+    "PACm": dict(color="C5", ls="--"),
+    "PAC2-T": dict(color="C6", ls="--"),
 }
 
 
@@ -370,7 +371,7 @@ def plot(frame, output):
         handles,
         labels,
         loc="lower center",
-        ncol=len(labels),
+        ncol=5,
         fontsize=7.5,
         frameon=False,
         bbox_to_anchor=(0.5, -0.01),

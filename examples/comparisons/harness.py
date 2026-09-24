@@ -21,6 +21,10 @@ Metrics (all on an independent test set, see :func:`evaluate`):
   ``b = FLOOR_BETA`` on the problem's declared output interval, the bounded
   loss certified by ``POPSEllipseRegression(regularization='PAC')``;
 - ``rmse``: of the predictive mean.
+
+Every method sees the same design matrix: the comparison methods rescale
+features and target but never center them, so none of them gains an
+implicit intercept (the ACE design carries an explicit constant column).
 """
 
 import time
@@ -34,6 +38,7 @@ from sklearn.linear_model import BayesianRidge
 from popsregression import POPSEllipseRegression, POPSRegression
 
 from .bayesian_stacking import BayesianStacking
+from .low_noise_objectives import LowNoiseObjective
 from .pvi import PredictiveVI
 
 EXAMPLES = Path(__file__).resolve().parents[1]
@@ -49,10 +54,79 @@ METHODS = (
     "Ellipse+PAC",
     "Bayesian stacking",
     "PVI",
+    "PACm",
+    "PAC2-T",
 )
 POPS_METHODS = METHODS[:5]
 # Supplementary variants, run alongside METHODS in the repeated-split study.
-EXTRA_METHODS = ("PVI (no KL)",)
+EXTRA_METHODS = (
+    "PVI (lamb=1)",
+    "POPS ellipse (free center)",
+    "Ellipse+EB (free center)",
+    "Ellipse+PAC (free center)",
+)
+ELLIPSE_METHODS = {
+    "POPS ellipse": None,
+    "Ellipse+EB": "empirical-bayes",
+    "Ellipse+PAC": "PAC",
+}
+# Published PVI (Lai, Linero and Yao; github.com/lll6924/pvi): code defaults
+# (mean-field Gaussian, lamb = 0, learning rate 1e-3), except the published
+# 'rmsprop' option with 20000 iterations, since plain SGD at that learning
+# rate does not converge within any practical budget, and s = 16 draws.
+PVI_SETTINGS = dict(
+    sigma=1e-2,
+    s=16,
+    lamb=0.0,
+    optimizer="rmsprop",
+    iterations=20000,
+    learning_rate=1e-3,
+)
+# PACm (Morningstar et al. 2022) and PAC^2_T (Masegosa 2020), variational,
+# full-rank Gaussian; likelihood width 1% of the target standard deviation
+# (the near-deterministic regime; the width sweep is in the low-noise study).
+LOW_NOISE_SETTINGS = {
+    "PACm": dict(objective="pacm", sigma=1e-2, n_samples=16),
+    "PAC2-T": dict(objective="pac2t", sigma=1e-2, n_samples=16),
+}
+
+
+def _low_noise_model(method, problem, seed):
+    settings = dict(LOW_NOISE_SETTINGS[method])
+    objective = settings.pop("objective")
+    return LowNoiseObjective(objective, random_state=seed, **settings).fit(
+        problem.X_train, problem.y_train
+    )
+
+
+def _ellipse_model(method, problem, seed):
+    """Fit an ellipse-family method; '(free center)' optimizes the center."""
+    base = method.replace(" (free center)", "")
+    regularization = ELLIPSE_METHODS[base]
+    kwargs = {
+        "regularization": regularization,
+        "random_state": seed,
+        "optimize_center": method.endswith("(free center)"),
+    }
+    fit_kwargs = {}
+    if regularization == "PAC":
+        kwargs["y_bounds"] = problem.y_bounds
+        fit_kwargs["groups"] = problem.groups
+    return (
+        POPSEllipseRegression(**kwargs).fit(
+            problem.X_train, problem.y_train, **fit_kwargs
+        ),
+        regularization,
+    )
+
+
+def _pvi_model(method, problem, seed):
+    settings = dict(PVI_SETTINGS)
+    if method == "PVI (lamb=1)":
+        settings["lamb"] = 1.0
+    return PredictiveVI(random_state=seed, **settings).fit(
+        problem.X_train, problem.y_train
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -214,26 +288,35 @@ def ace_pca_basis(A, rank=ACE_RANK):
 
 
 def ace_problem(ratio, seed, basis="subset"):
-    """Linear ACE energies, 267 features projected onto 35 PCA modes.
+    """Linear ACE energies: 267 features projected onto 35 PCA modes, plus a
+    constant column, so every method fits the same affine model (P = 36).
 
     ``basis='subset'`` builds the PCA basis from the training subset only
     (no information from the other training structures); ``'pool'`` uses the
     unlabelled descriptors of all 700 training structures, as in the
-    workshop version.
+    workshop version. ``ratio`` is the number of training structures per
+    PCA mode.
     """
     data = _ace_data()
     A, y = data["A_train_E"], data["y_train_E"]
     n = min(int(round(ratio * ACE_RANK)), y.size)
     idx = np.random.RandomState(seed).choice(y.size, n, replace=False)
     V = ace_pca_basis(A[idx] if basis == "subset" else A)
+
+    def design(M):
+        return np.hstack([M @ V, np.ones((M.shape[0], 1))])
+
+    constant = [ACE_RANK]
     return Problem(
         name="ace",
-        X_train=A[idx] @ V,
+        X_train=design(A[idx]),
         y_train=y[idx],
-        X_test=data["A_test_E"] @ V,
+        X_test=design(data["A_test_E"]),
         y_test=data["y_test_E"],
         y_bounds=ACE_Y_BOUNDS,
-        stacking_components=[np.arange(k) for k in (5, 10, 20, ACE_RANK)],
+        stacking_components=[
+            np.concatenate([np.arange(k), constant]) for k in (5, 10, 20, ACE_RANK)
+        ],
         meta={"basis": basis, "indices": idx},
     )
 
@@ -299,18 +382,8 @@ def fit_predictive(method, problem, seed, X_eval=None):
             {"n_draws": draws.shape[1]},
         )
 
-    if method in ("POPS ellipse", "Ellipse+EB", "Ellipse+PAC"):
-        regularization = {
-            "POPS ellipse": None,
-            "Ellipse+EB": "empirical-bayes",
-            "Ellipse+PAC": "PAC",
-        }[method]
-        kwargs = {"regularization": regularization, "random_state": seed}
-        fit_kwargs = {}
-        if regularization == "PAC":
-            kwargs["y_bounds"] = problem.y_bounds
-            fit_kwargs["groups"] = problem.groups
-        model = POPSEllipseRegression(**kwargs).fit(X, y, **fit_kwargs)
+    if method.replace(" (free center)", "") in ELLIPSE_METHODS:
+        model, regularization = _ellipse_model(method, problem, seed)
         fit_time = time.perf_counter() - start
         mean = model.predict(X_eval)
         intervals = {level: model.predict_interval(X_eval, level) for level in LEVELS}
@@ -354,16 +427,26 @@ def fit_predictive(method, problem, seed, X_eval=None):
             {"weights": model.weights_},
         )
 
-    if method in ("PVI", "PVI (no KL)"):
-        lam = "cv" if method == "PVI" else 0.0
-        model = PredictiveVI(lam=lam, random_state=seed).fit(X, y)
+    if method in ("PVI", "PVI (lamb=1)"):
+        model = _pvi_model(method, problem, seed)
         loc, scale = model.predict(X_eval, return_std=True)
         return _gaussian(
             method,
             loc,
             scale,
             time.perf_counter() - start,
-            {"pvi_lam": model.lam_, "converged": model.converged_},
+            {"pvi_lam": model.lamb, "converged": model.converged_},
+        )
+
+    if method in LOW_NOISE_SETTINGS:
+        model = _low_noise_model(method, problem, seed)
+        loc, scale = model.predict(X_eval, return_std=True)
+        return _gaussian(
+            method,
+            loc,
+            scale,
+            time.perf_counter() - start,
+            {"converged": model.converged_, "n_nonfinite": model.n_nonfinite_},
         )
 
     raise ValueError(f"unknown method {method!r}")
@@ -423,18 +506,8 @@ def parameter_draws(method, problem, seed, n_draws=2000):
         return model.coef_[:, None] + model.posterior_samples_, np.zeros(
             model.posterior_samples_.shape[1]
         )
-    if method in ("POPS ellipse", "Ellipse+EB", "Ellipse+PAC"):
-        regularization = {
-            "POPS ellipse": None,
-            "Ellipse+EB": "empirical-bayes",
-            "Ellipse+PAC": "PAC",
-        }[method]
-        kwargs = {"y_bounds": problem.y_bounds} if regularization == "PAC" else {}
-        model = POPSEllipseRegression(
-            regularization=regularization, random_state=seed, **kwargs
-        )
-        fit_kwargs = {"groups": problem.groups} if regularization == "PAC" else {}
-        model.fit(X, y, **fit_kwargs)
+    if method.replace(" (free center)", "") in ELLIPSE_METHODS:
+        model, _ = _ellipse_model(method, problem, seed)
         return model.sample(n_draws, random_state=seed), zeros
     if method == "Bayesian stacking":
         model = BayesianStacking(
@@ -442,8 +515,12 @@ def parameter_draws(method, problem, seed, n_draws=2000):
         ).fit(X, y, group_ids=problem.groups)
         coef, intercept, _, _ = model.sample_parameters(n_draws, random_state=seed)
         return coef, intercept
-    if method in ("PVI", "PVI (no KL)"):
-        lam = "cv" if method == "PVI" else 0.0
-        model = PredictiveVI(lam=lam, random_state=seed).fit(X, y)
-        return model.sample_parameters(n_draws, random_state=seed)
+    if method in ("PVI", "PVI (lamb=1)"):
+        return _pvi_model(method, problem, seed).sample_parameters(
+            n_draws, random_state=seed
+        )
+    if method in LOW_NOISE_SETTINGS:
+        model = _low_noise_model(method, problem, seed)
+        theta = model.mu_[:, None] + model.L_ @ rng.randn(model.mu_.size, n_draws)
+        return model.y_scale_ * theta / model.x_scale_[:, None], zeros
     raise ValueError(f"unknown method {method!r}")

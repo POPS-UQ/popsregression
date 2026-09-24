@@ -139,9 +139,10 @@ class LowNoiseObjective:
         ``'elbo'`` is PACm with ``m = 1`` (ordinary variational Bayes).
 
     sigma : float, default=0.1
-        Likelihood width in standardized target units (the target is
-        centered and scaled by its standard deviation on the training data
-        when ``standardize=True``). ``sigma_`` records the original-unit
+        Likelihood width in units of the training-target standard deviation
+        (with ``standardize=True`` features and target are divided by their
+        root-mean-square, never centered, so no implicit intercept is added
+        to the shared design matrix). ``sigma_`` records the original-unit
         value.
 
     fit_sigma : bool, default=False
@@ -225,16 +226,20 @@ class LowNoiseObjective:
         X = np.asarray(X, dtype=float)
         y = np.asarray(y, dtype=float).ravel()
         if self.standardize:
-            self.x_mean_ = X.mean(axis=0)
-            self.x_scale_ = X.std(axis=0)
-            constant = self.x_scale_ <= 1e-12 * np.maximum(np.abs(self.x_mean_), 1.0)
-            self.x_mean_[constant] = 0.0
-            self.x_scale_[constant] = 1.0
-            self.y_mean_ = float(y.mean())
-            self.y_scale_ = float(y.std()) if y.std() > 0 else 1.0
+            # Scale by the root-mean-square, never center: centering would add
+            # an implicit intercept that the other methods, fitted on the same
+            # design matrix, do not have.
+            rms = np.sqrt(np.mean(X * X, axis=0))
+            self.x_scale_ = np.where(rms > 0, rms, 1.0)
+            self.x_mean_ = np.zeros_like(self.x_scale_)
+            self.y_mean_ = 0.0
+            self.y_scale_ = float(np.sqrt(np.mean(y * y))) or 1.0
+            # ``sigma`` is specified in units of the target standard deviation.
+            self._sigma_unit = float(y.std()) / self.y_scale_ if y.std() > 0 else 1.0
         else:
             self.x_mean_, self.x_scale_ = np.zeros(X.shape[1]), np.ones(X.shape[1])
             self.y_mean_, self.y_scale_ = 0.0, 1.0
+            self._sigma_unit = 1.0
         return (X - self.x_mean_) / self.x_scale_, (y - self.y_mean_) / self.y_scale_
 
     def _transform(self, X):
@@ -313,7 +318,11 @@ class LowNoiseObjective:
         if kind == "pac2t_ensemble":
             E = self.n_samples
             Theta = params[: p * E].reshape(p, E)
-            log_sigma = params[p * E] if self.fit_sigma else np.log(self.sigma)
+            log_sigma = (
+                params[p * E]
+                if self.fit_sigma
+                else np.log(self.sigma * self._sigma_unit)
+            )
             sigma = np.exp(log_sigma)
             a, R = self._loglik(Z, ys, Theta, sigma)
             value, dF = self._per_datum(a, kind)
@@ -327,7 +336,11 @@ class LowNoiseObjective:
 
         fam = self._family
         mu, L = fam.unpack(params[: fam.size])
-        log_sigma = params[fam.size] if self.fit_sigma else np.log(self.sigma)
+        log_sigma = (
+            params[fam.size]
+            if self.fit_sigma
+            else np.log(self.sigma * self._sigma_unit)
+        )
         sigma = np.exp(log_sigma)
         if eps is None:
             # Closed-form E_q[-ln p] for the Gaussian likelihood: the
@@ -397,7 +410,7 @@ class LowNoiseObjective:
                 )
             ]
         if self.fit_sigma:
-            x0.append(np.array([np.log(self.sigma)]))
+            x0.append(np.array([np.log(self.sigma * self._sigma_unit)]))
         x0 = np.concatenate(x0)
 
         self.n_evaluations_ = 0
@@ -427,11 +440,17 @@ class LowNoiseObjective:
         if kind == "pac2t_ensemble":
             E = self.n_samples
             self.particles_ = params[: p * E].reshape(p, E)
-            log_sigma = params[p * E] if self.fit_sigma else np.log(self.sigma)
+            log_sigma = (
+                params[p * E]
+                if self.fit_sigma
+                else np.log(self.sigma * self._sigma_unit)
+            )
         else:
             self.mu_, self.L_ = self._family.unpack(params[: self._family.size])
             log_sigma = (
-                params[self._family.size] if self.fit_sigma else np.log(self.sigma)
+                params[self._family.size]
+                if self.fit_sigma
+                else np.log(self.sigma * self._sigma_unit)
             )
         self.sigma_standardized_ = float(np.exp(log_sigma))
         self.sigma_ = self.y_scale_ * self.sigma_standardized_

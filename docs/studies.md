@@ -9,7 +9,7 @@ They are baselines, not POPS models, and live in `examples/comparisons/`:
 |---|---|
 | `bayesian_stacking.py`, `stacking_weights.py` | [Bayesian stacking](glossary.md#bayesian-stacking) of normal–inverse-gamma linear regressions (Yao et al. 2018) |
 | `low_noise_objectives.py` | [PACm and PAC²-T](glossary.md#pacm-pac2-t) with a Gaussian parameter distribution or particle ensemble |
-| `pvi.py` | [Predictive variational inference](glossary.md#pvi) with the exact Gaussian predictive and cross-validated KL weight |
+| `pvi.py` | [Predictive variational inference](glossary.md#pvi) as published (Monte Carlo log score, mean-field Gaussian) |
 | `pops_dictionary.py` | The [finite POPS dictionary](glossary.md#finite-pops-dictionary-pops-dictionary-stacking) weighting ablation |
 | `harness.py` | The quartic, Burgers and ACE problems, every method behind one interface, and the common metrics |
 | `fluctuations.py` | Estimators of the [one-sided moment](glossary.md#one-sided-moment-cgf) and [J(Ψ)](glossary.md#j-the-jensen-moment-term) |
@@ -19,6 +19,8 @@ They are baselines, not POPS models, and live in `examples/comparisons/`:
 - No reported interval, density or score includes a residual-noise term, for
   any method; see
   [parameter-only predictive](glossary.md#parameter-only-predictive-no-aleatoric-term).
+- Every method sees the same design matrix
+  ([shared design](glossary.md#shared-design-matrix)).
 - Intervals are [exact central intervals](glossary.md#exact-central-interval-coverage)
   at 95.45% and 99.9% for every method.
 - Scores:

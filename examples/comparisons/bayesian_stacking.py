@@ -58,9 +58,10 @@ class BayesianLinearRegression:
     freedom, location ``x.T m_n`` and squared scale ``(b_n / a_n) x.T
     solve(Lambda_n, x)``; the full posterior predictive adds the residual
     variance, ``(b_n / a_n) (1 + x.T solve(Lambda_n, x))``, and is only
-    used when ``include_residual=True``. Features (non-constant columns)
-    and targets are standardized on the fitting data when
-    ``standardize=True``; predictive densities in original units include
+    used when ``include_residual=True``. With ``standardize=True`` features
+    and targets are divided by their root-mean-square on the fitting data,
+    never centered, so no implicit intercept is added to the design shared
+    with the other methods; predictive densities in original units include
     the target Jacobian.
 
     Parameters
@@ -108,13 +109,14 @@ class BayesianLinearRegression:
         if n == 0 or y.shape[0] != n:
             raise ValueError("X and y must be non-empty with matching rows.")
         if self.standardize:
-            self.x_mean_ = Xs.mean(axis=0)
-            self.x_scale_ = Xs.std(axis=0)
-            constant = self.x_scale_ <= 1e-12 * np.maximum(np.abs(self.x_mean_), 1.0)
-            self.x_mean_[constant] = 0.0
-            self.x_scale_[constant] = 1.0
-            self.y_mean_ = float(y.mean())
-            self.y_scale_ = float(y.std()) if n > 1 and y.std() > 0 else 1.0
+            # Scale by the root-mean-square, never center: centering would add
+            # an implicit intercept that the other methods, fitted on the same
+            # design matrix, do not have.
+            rms = np.sqrt(np.mean(Xs * Xs, axis=0))
+            self.x_scale_ = np.where(rms > 0, rms, 1.0)
+            self.x_mean_ = np.zeros_like(self.x_scale_)
+            self.y_mean_ = 0.0
+            self.y_scale_ = float(np.sqrt(np.mean(y * y))) or 1.0
         else:
             self.x_mean_ = np.zeros(p)
             self.x_scale_ = np.ones(p)

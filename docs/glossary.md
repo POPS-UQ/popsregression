@@ -218,7 +218,7 @@ smallest possible loss. Heavy upper tails of the loss do not enter `c`.
 ### Exact central interval, coverage
 The interval between the `(1 - level) / 2` and `(1 + level) / 2` quantiles of a
 predictive distribution: computed from the mixture CDF for the ellipse family,
-from Gaussian quantiles for Bayesian ridge and PVI, and from parameter draws
+from Gaussian quantiles for Bayesian ridge, PVI, PACm and PAC²-T, and from parameter draws
 for the hypercube. *Coverage* is the fraction of held-out targets inside it.
 The same levels (95.45% and 99.9%) are used for every method.
 
@@ -227,6 +227,13 @@ The Gneiting–Raftery score of a central interval:
 `width + (2 / α) × (distance by which the target falls outside)`, with
 `α = 1 - level`. It is a proper score that rewards narrow intervals that still
 cover, and is finite for every method. Lower is better.
+
+### Shared design matrix
+Every method is fitted on the same design matrix. The comparison methods
+rescale features and target but never center them, since centering would
+quietly add an intercept that the POPS methods and Bayesian ridge do not
+have. Where an intercept is wanted (ACE), it is an explicit constant column
+of the design, so every method treats it the same way.
 
 ### Floored NLL
 The test log loss of `(1 - b) p + b / R_y` for a common small `b`. It is finite
@@ -255,9 +262,16 @@ Both become singular as the likelihood width goes to zero. Implemented in
 `examples/comparisons/low_noise_objectives.py`.
 
 ### PVI
-Predictive variational inference (Lai, Linero and Yao). It maximizes the
-training log score of the predictive `log ∫ p(y | θ) q(θ) dθ` minus
-`λ KL(q ‖ prior)`, i.e. it minimizes `Ĝ_N` with a parameter-level KL
-penalty. With the Monte Carlo estimate of the predictive integral it coincides
-with PACm. `examples/comparisons/pvi.py` uses the exact Gaussian predictive
-(the `m → ∞` limit) and chooses `λ` by cross-validation.
+Predictive variational inference (Lai, Linero and Yao, ICML 2026). It
+maximizes the training log score of the predictive,
+`log ∫ p(y | θ) q(θ) dθ`, optionally minus `λ KL(q ‖ prior)`: it minimizes
+`Ĝ_N` with a parameter-level penalty. The published code estimates the
+predictive integral with `s` fresh Monte Carlo draws per step,
+`log (1/s) Σ_j p(y | θ_j)`, which is the PACm objective; its class is even
+named `PACMVIBasic`.
+
+`examples/comparisons/pvi.py` ports that code:
+- a mean-field Gaussian `q`;
+- `λ = 0`, the published default;
+- the published RMSprop option with learning rate 1e-3, run for 20000 steps;
+- `s = 16` draws per step.

@@ -82,5 +82,5 @@ labels give the held-out coverage of both intervals on a dense grid.
   it is comparable to Ellipse+EB, with a non-vacuous bound of 7.0 nats against
   a trivial ceiling of 9.7.
 
-Repeated-split versions of this comparison, including Bayesian stacking and
-PVI, are in [Studies](studies.md).
+Repeated-split versions of this comparison, including Bayesian stacking,
+PVI, PACm and PAC²-T, are in [Studies](studies.md).

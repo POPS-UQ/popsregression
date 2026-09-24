@@ -170,7 +170,7 @@ def plot(frame, output):
         handles,
         labels,
         loc="lower center",
-        ncol=7,
+        ncol=5,
         fontsize=7,
         frameon=False,
         bbox_to_anchor=(0.5, -0.02),
