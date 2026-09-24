@@ -114,4 +114,5 @@ doctest_optionflags = "NORMALIZE_WHITESPACE"
 [project.optional-dependencies]
 examples = [
     "matplotlib",
+    "pandas>=2.3.3",
 ]

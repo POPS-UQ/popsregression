@@ -4,7 +4,14 @@ POPS ellipsoid regression.
 Misspecification-aware regression with a uniform-ellipsoid parameter
 posterior, fit by direct minimization of the empirical generalization error
 of the exact projected-ball pushforward, with an optional closed-form
-PAC-Bayes (Laplace) hyperposterior layer.
+empirical-Bayes (Laplace) hyperposterior layer ("Ellipse+EB").
+
+This module holds the internal fitting engine. The public estimator is
+:class:`~popsregression.POPSEllipseRegression`, whose ``regularization``
+parameter selects the bare fit, the empirical-Bayes layer or the pilot-split
+PAC-Bayes construction. The Laplace layer here is a *diagnostic*: its
+whitening, baseline, center and hyperprior are all estimated from the one
+sample it is evaluated on, so its ``bound_`` is not a PAC bound.
 """
 
 # Authors: Thomas D Swinburne <tswin@umich.edu>
@@ -28,6 +35,10 @@ from sklearn.utils.validation import (
 
 from ._pops import POPSRegression
 from ._projected_ball import log_norm_constant, smooth_log
+
+
+class DiagnosticBoundWarning(UserWarning):
+    """The empirical-Bayes ``bound_`` is a diagnostic, not a certificate."""
 
 
 def _unpack(psi, n_dim):
@@ -158,14 +169,11 @@ def _ellipse_nll_hess_diag(psi, Z, y, b0, weights, delta, rho):
 class _EllipsoidPosterior(RegressorMixin, BaseEstimator):
     """Uniform-ellipsoid POPS posterior (internal engine).
 
-    This class implements the ellipsoid posterior and its PAC-Bayes layer.
-    It is not part of the public API: reach it through
-    :class:`~popsregression.POPSRegression` with ``posterior='ellipsoid'``,
-    which fits one of these, copies its centre into ``coef_`` and forwards
-    the ellipsoid attributes. Its parameters are the keys accepted by
-    ``POPSRegression.posterior_options`` (plus ``pac_bayes``,
-    ``fit_intercept``, ``weights`` and ``random_state``, which
-    ``POPSRegression`` supplies itself).
+    This class implements the ellipsoid posterior and its Ellipse+EB layer.
+    It is not part of the public API: use
+    :class:`~popsregression.POPSEllipseRegression`, which drives one engine
+    for ``regularization=None`` or ``'empirical-bayes'`` and one engine per
+    pilot split for ``regularization='PAC'``.
 
     Fits a linear model whose parameter posterior is uniform on an
     ellipsoid, ``theta = mu + L z`` with ``z`` uniform on the unit ball and
@@ -181,14 +189,20 @@ class _EllipsoidPosterior(RegressorMixin, BaseEstimator):
     ``B_t = B0_t + U U^T`` with a fixed baseline ``B0_t`` and a low-rank
     factor ``U``; all fit operations are O(n_samples * n_features * rank).
 
-    With ``pac_bayes=True`` a hierarchical PAC-Bayes layer is added in
-    closed form (no sampling anywhere): the Catoni/Gibbs hyperposterior is
-    followed via its Laplace approximation, a diagonal Gaussian whose mode
-    is the ridge-regularized optimum and whose covariance is a
-    ridge-regularized inverse Hessian diagonal. The PAC bound holds for
-    all hyperposteriors simultaneously, so evaluating its right-hand side
-    at the Laplace Gaussian gives a rigorous bound for that Gaussian: the
-    Laplace step costs tightness, never validity.
+    With ``pac_bayes=True`` a hierarchical empirical-Bayes layer
+    ("Ellipse+EB") is added in closed form (no sampling anywhere): the
+    Catoni/Gibbs hyperposterior is followed via its Laplace approximation,
+    a diagonal Gaussian whose mode is the ridge-regularized optimum and
+    whose covariance is a ridge-regularized inverse Hessian diagonal. The
+    layer is PAC-motivated but its ``bound_`` is a **diagnostic, not a
+    certificate**: the whitening, the POPS baseline, the frozen center and
+    the hyperprior center are all estimated from the same sample the bound
+    is evaluated on, ``empirical_H_`` is a second-order approximation
+    rather than an exact hyperposterior expectation, the smooth barrier is
+    not the exact compact-support log loss, and ``subgamma_const=0`` is not
+    a proved moment constant. ``certificate_status_`` records this. A
+    PAC bound requires the pilot-split protocol of
+    ``POPSEllipseRegression(regularization='PAC')``.
 
     Parameters
     ----------
@@ -262,7 +276,7 @@ class _EllipsoidPosterior(RegressorMixin, BaseEstimator):
         deterministic.
 
     pac_bayes : bool, default=False
-        Enable the closed-form PAC-Bayes layer: diagonal Laplace
+        Enable the closed-form Ellipse+EB layer: diagonal Laplace
         hyperposterior covariance, KL and bound components, and analytic
         hyperposterior spread in prediction. ``pac_bayes=False`` is the
         ``tau2 -> inf`` limit and leaves phase-1 results unchanged.
@@ -276,8 +290,8 @@ class _EllipsoidPosterior(RegressorMixin, BaseEstimator):
           hyperposterior spread strictly broadens the predictive
           uncertainty, concentrating on the phase-1 values at rate N:
           strictly broader at low N, never narrower than the bare fit.
-          Note the prior center is chosen after seeing the data, which
-          weakens the formal reading of ``bound_``.
+          The prior center is chosen after seeing the data (empirical
+          Bayes), so ``bound_`` is a diagnostic, not a certificate.
         - ``'warm_start'``: the POPS warm start with a zero low-rank
           block (the handoff construction). The MAP is then ridge-shrunk
           toward the baseline ellipsoid, which can make the fit
@@ -325,9 +339,12 @@ class _EllipsoidPosterior(RegressorMixin, BaseEstimator):
 
     subgamma_const : float, default=0.0
         Optional user-supplied sub-gamma (variance/tail) constant added to
-        ``bound_``. The default 0 corresponds to the near-deterministic
-        (bounded-loss) idealization; supply the appropriate constant for
-        your noise model to make the bound fully rigorous.
+        ``bound_``. Zero is **not** a proved moment constant: deterministic
+        outputs do not make the loss fluctuations vanish, and compact
+        support can make the unmodified loss infinite. With the default a
+        :class:`DiagnosticBoundWarning` is raised and the value is a
+        diagnostic offset only. A supplied constant does not repair the
+        data-dependence of the kernel and hyperprior either.
 
     Attributes
     ----------
@@ -383,12 +400,23 @@ class _EllipsoidPosterior(RegressorMixin, BaseEstimator):
         ``KL(pi_H || pi_0H)`` in closed form (only if ``pac_bayes=True``).
 
     empirical_H_ : float
-        Second-order estimate of the hyperposterior-averaged empirical
-        error ``H[pi_H]`` (only if ``pac_bayes=True``).
+        Second-order (delta-method) approximation of the
+        hyperposterior-averaged empirical error ``H[pi_H]``; not an exact
+        hyperposterior expectation (only if ``pac_bayes=True``).
 
     bound_ : float
-        PAC-Bayes bound ``empirical_H_ + kl_/N - log(bound_xi)/N +
-        subgamma_const`` (only if ``pac_bayes=True``).
+        Empirical-Bayes diagnostic ``empirical_H_ + kl_/N -
+        log(bound_xi)/N + subgamma_const`` (only if ``pac_bayes=True``).
+        It has the form of a PAC-Bayes right side but is **not** a
+        certificate (see the class description); ``diagnostic_bound_`` is
+        the same value under its honest name.
+
+    diagnostic_bound_ : float
+        Alias of ``bound_`` (only if ``pac_bayes=True``).
+
+    certificate_status_ : str
+        ``'diagnostic_empirical_bayes'`` (only if ``pac_bayes=True``).
+        This estimator never produces a certified result.
 
     gamma_ : float
         Effective number of well-determined parameters
@@ -403,9 +431,7 @@ class _EllipsoidPosterior(RegressorMixin, BaseEstimator):
 
     See Also
     --------
-    popsregression.POPSRegression : The public estimator;
-        ``posterior='ellipsoid'`` fits one of these, and ``pac_bayes=True``
-        adds the PAC-Bayes layer.
+    popsregression.POPSEllipseRegression : The public estimator.
 
     References
     ----------
@@ -418,18 +444,6 @@ class _EllipsoidPosterior(RegressorMixin, BaseEstimator):
            low-noise regime."
            Machine Learning: Science and Technology, 6, 015008.
            :doi:`10.1088/2632-2153/ad9fce`
-
-    Examples
-    --------
-    >>> import numpy as np
-    >>> from popsregression import POPSRegression
-    >>> rng = np.random.RandomState(0)
-    >>> X = rng.randn(30, 3)
-    >>> y = X @ np.array([1.0, -1.0, 0.5]) + 0.1 * np.tanh(3 * X[:, 0])
-    >>> model = POPSRegression(posterior="ellipsoid", random_state=0)
-    >>> model.fit(X, y)
-    POPSRegression(posterior='ellipsoid', random_state=0)
-    >>> y_pred, y_std = model.predict(X[:2], return_std=True)
     """
 
     _parameter_constraints: dict = {
@@ -781,6 +795,19 @@ class _EllipsoidPosterior(RegressorMixin, BaseEstimator):
             - np.log(self.bound_xi) / n_samples
             + self.subgamma_const
         )
+        self.diagnostic_bound_ = self.bound_
+        self.certificate_status_ = "diagnostic_empirical_bayes"
+        if self.subgamma_const == 0.0:
+            warnings.warn(
+                (
+                    "bound_ is an empirical-Bayes diagnostic (Ellipse+EB), not a "
+                    "PAC certificate: subgamma_const=0.0 is a diagnostic offset, "
+                    "not a proved moment constant, and the kernel and hyperprior "
+                    "were estimated from the evaluation sample. Use "
+                    "POPSEllipseRegression(regularization='PAC') for a PAC bound."
+                ),
+                DiagnosticBoundWarning,
+            )
         self._sigma_c = sigma[:n_dim]
         self._sigma_U = sigma[n_dim:].reshape(n_dim, -1)
 
@@ -792,18 +819,21 @@ class _EllipsoidPosterior(RegressorMixin, BaseEstimator):
             Z = np.hstack([Z, np.ones((Z.shape[0], 1))])
         return Xc, Z
 
-    def _squared_widths(self, Xc, Z):
-        """Pushforward squared widths ``s(x) = z^T (B0 + U U^T) z``."""
-        s = np.sum((Z @ self.U_) ** 2, axis=1)
+    def _baseline_widths(self, Xc, Z):
+        """Baseline squared widths ``b0(x) = z^T B0 z``."""
         if self.baseline == "pops":
             D = Xc
             if self._with_intercept:
                 D = np.hstack([Xc, np.ones((Xc.shape[0], 1))])
             DF = D @ self._baseline_factor
-            s = s + np.einsum("ij,ij->i", DF, DF)
-        elif self.baseline == "ridge":
-            s = s + self.baseline_ridge * np.einsum("ij,ij->i", Z, Z)
-        return s
+            return np.einsum("ij,ij->i", DF, DF)
+        if self.baseline == "ridge":
+            return self.baseline_ridge * np.einsum("ij,ij->i", Z, Z)
+        return np.zeros(Z.shape[0])
+
+    def _squared_widths(self, Xc, Z):
+        """Pushforward squared widths ``s(x) = z^T (B0 + U U^T) z``."""
+        return np.sum((Z @ self.U_) ** 2, axis=1) + self._baseline_widths(Xc, Z)
 
     def predict(self, X, return_std=False, return_bounds=False, return_bound_std=False):
         """Predict using the ellipsoid pushforward.

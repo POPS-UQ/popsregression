@@ -1,222 +1,172 @@
-# Ellipsoid posteriors
+# Ellipse posteriors
 
-[`POPSRegression(posterior="ellipsoid")`][popsregression.POPSRegression] fits a
-linear model whose parameter posterior is **uniform on an ellipsoid**, obtained
-by directly minimizing the empirical generalization error of the exact
-predictive pushforward. The POPS covering condition becomes a log-barrier
-inside a smooth objective, so the ellipsoid is found by optimization rather
-than sampling, and `pac_bayes=True` adds a hierarchical PAC-Bayes layer
-entirely in closed form.
-
-## Model
-
-The posterior over weights is uniform on an ellipsoid,
-
-$$
-\pi_\Psi(\theta) = \mathrm{Unif}\{\theta :
-(\theta-\mu)^\top B^{-1} (\theta-\mu) \le 1\},
-\qquad \Psi = (\mu, B),\ B \succeq 0,
-$$
-
-equivalently $\theta = \mu + Lz$ with $z$ uniform on the unit $P$-ball and
-$B = LL^\top$. For a feature vector $\phi_i$, the pushforward of
-$\pi_\Psi$ under $\theta \mapsto \phi_i \cdot \theta$ is the exact
-**projected-ball density** with mean $m_i = \phi_i \cdot \mu$ and squared
-half-width $s_i = \phi_i^\top B \phi_i$:
-
-$$
-p(t) = \frac{C_P}{a}\Big(1 - \tfrac{(t-m)^2}{a^2}\Big)^{k},
-\qquad k = \tfrac{P-1}{2},\quad
-C_P = \frac{\Gamma(P/2+1)}{\sqrt{\pi}\,\Gamma((P+1)/2)}.
-$$
-
-With residual $r_i = y_i - m_i$, width floor $v_i = s_i + \delta^2$ and
-$q_i = 1 - r_i^2 / v_i$, the per-datum loss (negative log predictive) is
-
-$$
-\ell_i(\Psi) = \tfrac{1}{2}\log v_i - \log C_P - k\, L_\rho(q_i),
-$$
-
-where $L_\rho$ is a smooth continuation of $\log$ (exact for
-$q \ge \rho$, quadratic below). The term $\tfrac12 \log v_i$ penalizes
-ellipsoid width while $-k\,L_\rho(q_i)$ is a log-barrier enforcing the POPS
-covering condition $|r_i| < \sqrt{v_i}$ — the scalar image of "the ellipsoid
-intersects every pointwise optimal parameter set". Minimizing the empirical
-generalization error $\hat G(\Psi) = \tfrac1N \sum_i w_i \ell_i(\Psi)$ over a
-decreasing schedule of $\rho$ is therefore an **interior-point method for
-POPS coverage**.
-
-## Whitened low-rank parameterization
-
-The ellipsoid is never represented as a dense $P \times P$ matrix during
-fitting. Features are whitened with
-$W = (\Phi^\top\Phi/N + \lambda_w I)^{-1/2}$ and the shape matrix is
-parameterized in whitened coordinates as
-
-$$
-B_t = B_{0,t} + U U^\top, \qquad U \in \mathbb{R}^{P \times r},
-$$
-
-with a fixed baseline $B_{0,t}$ (`baseline='pops'` uses the whitened
-covariance of a `POPSRegression` hypercube pre-fit, which also provides the
-warm start and the hyperprior center). All fit operations are
-$O(N P r)$; gradients are closed form (no autodiff, no sampling). When
-`fit_intercept=True` the intercept coordinate is appended **after**
-whitening and recovered by the corresponding affine correction.
-
-By default (`optimize_center=False`) the center $\mu$ is frozen at the
-POPS pre-fit coefficients — `coef_` is the familiar
-`BayesianRidge`-style mean — and only the widths are optimized. With
-`optimize_center=True` the center is optimized jointly with the widths;
-its stationarity condition is then a heteroscedastic weighted least
-squares under the fitted widths (per-point precision $1/(q_i v_i)$):
-the mean is pinned where the ellipsoid pinches and relaxed where the
-misspecification width is large, so it deliberately differs from an
-OLS/`BayesianRidge` mean and the fit is tighter but less conservative
-at small $N$.
-
-## PAC-Bayes layer
-
-With `pac_bayes=True` the Catoni/Gibbs hyperposterior
-$\pi_H^*(\Psi) \propto \pi_{0H}(\Psi)\, e^{-N \hat G(\Psi)}$ is followed via
-its Laplace approximation:
-
-- the **hyperprior** is $\mathcal{N}(\psi_0, \tau^2 I)$;
-  `hyperprior_scale` sets $\tau^2$ *relative* to the center scale
-  ($\tau^2 =$ `hyperprior_scale` $\cdot\, \|\psi_0\|^2/d$), so the
-  default is independent of the units of $y$. With the default
-  `hyperprior_center='phase1'`, $\psi_0$ is the phase-1 optimum itself:
-  the MAP coincides with the bare fit, and the hyperposterior spread
-  **strictly broadens** the predictive bounds, concentrating on the bare
-  values at rate $N$ — never narrower than the bare ellipse;
-- with `hyperprior_center='warm_start'` (the POPS warm start with zero
-  low-rank block), the **MAP** adds a ridge
-  $\|\psi-\psi_0\|^2 / (2N\tau^2)$ to the phase-1 objective and is
-  shrunk toward the baseline ellipsoid (`hyperprior_scale=np.inf`
-  recovers the unregularized fit exactly);
-- the **covariance** is the diagonal
-  $\Sigma_H^{-1} = N\,\mathrm{Hess}[\hat G](\psi^*) + I/\tau^2$, using the
-  exact per-datum Hessian diagonal;
-- the **KL**, averaged empirical error and PAC bound (`kl_`,
-  `empirical_H_`, `bound_`) are closed form. The bound holds for *all*
-  hyperposteriors simultaneously, so evaluating it at the Laplace Gaussian
-  is rigorous — the Laplace step costs tightness, never validity;
-- optionally (`update_hyperprior=True`, requires
-  `hyperprior_center='warm_start'`) $\tau^2$ is updated by a
-  Tipping/MacKay evidence iteration following the conventions of
-  `sklearn.linear_model.BayesianRidge`.
-
-The hyperposterior enters prediction in two documented ways: `y_std`
-averages the pushforward over it, and `return_bounds` returns the
-max/min over the ensemble of ellipses within the 2σ range of the
-hyperposterior, `mean ± (sqrt(v) + 2·y_bound_std)` — strictly broader
-than the fitted ellipse's own support (recovered as
-`bounds ∓ 2·y_bound_std`), reverting to it at rate $N$.
-
-For conservative uncertainty in the scarce-data regime (N/P of order
-one), simply use `pac_bayes=True` on the default (frozen-center)
-configuration: it keeps the mean at the POPS pre-fit and takes the bounds
-over the 2σ hyperposterior ensemble of optimized-width ellipses.
-
-## Reaching it
-
-The ellipsoid is one of the three `posterior` choices on the single
-[`POPSRegression`][popsregression.POPSRegression] estimator, so it composes
-with everything else on that estimator:
+[`POPSEllipseRegression`][popsregression.POPSEllipseRegression] fits a linear
+surrogate whose parameters are uniformly distributed on an ellipsoid. For a
+linear model the [pushforward](glossary.md#pushforward-density) of that
+distribution at an input `x` has a closed form. This gives the exact
+zero-noise [generalization error](glossary.md#generalization-error), which the
+fit minimizes directly, and exact predictive densities, quantiles and
+parameter draws.
 
 ```python
-POPSRegression(posterior="ellipsoid")                   # bare ellipsoid
-POPSRegression(posterior="ellipsoid", pac_bayes=True)   # + PAC-Bayes layer
+from popsregression import POPSEllipseRegression
+
+bare = POPSEllipseRegression().fit(X, y)
+eb = POPSEllipseRegression(regularization="empirical-bayes").fit(X, y)
+pac = POPSEllipseRegression(regularization="PAC", y_bounds=(y_lo, y_hi)).fit(X, y)
 ```
 
-Its own tuning parameters — `rank`, `delta`, `baseline`, `rho_schedule`,
-`optimize_center`, and the PAC-Bayes settings — go through the
-`posterior_options` dict, listed in full under
-[Ellipsoid parameters](#ellipsoid-parameters) below. `pac_bayes`,
-`fit_intercept` and `random_state` are set on the estimator itself, and
-sample weights are passed to `fit`. After fitting, the ellipsoid is exposed
-as `ellipsoid_`.
+The three settings share the same ellipse fit. They differ in how the
+finite-data uncertainty in the ellipse itself is handled.
 
-## Quick start
+| `regularization` | Hierarchical layer | Bound | When to use |
+|---|---|---|---|
+| `None` | none: the fitted ellipse | none | large N, or as a reference |
+| `"empirical-bayes"` | [Laplace](glossary.md#laplace-approximation) hyperposterior over center and shape, prior centered on the fit | `diagnostic_bound_`, **not** a PAC bound | a cheap finite-data broadening |
+| `"PAC"` | Gaussian hyperposterior over the [axis scales](glossary.md#axis-scale-hyperparameters) of a [pilot](glossary.md#pilot-split) ellipse | `certificate_`, a [PAC-Bayes bound](glossary.md#pac-bayes-bound) | when a finite-sample guarantee is needed |
+
+## The fit
+
+The ellipse is `{θ : (θ - μ)ᵀ B⁻¹ (θ - μ) ≤ 1}`. Its pushforward at `x` is
+supported on `μ · F(x) ± a(x)`, with `a(x)² = F(x)ᵀ B F(x) + δ²`, and has the
+density
+
+```text
+p(y | x) = C_P / a(x) · (1 - (y - μ·F(x))² / a(x)²)^((P-1)/2)
+```
+
+The training objective is the mean of `-log p(y_i | x_i)`. It combines a width
+penalty `log a(x_i)` with a barrier that diverges when a training point
+reaches the edge of the support. The optimization therefore enforces
+[sample covering](glossary.md#covering-sample-and-population).
+
+- The shape is `B = B0 + U Uᵀ` in whitened feature coordinates. `B0` is a
+  fixed baseline from a [`POPSRegression`][popsregression.POPSRegression]
+  hypercube pre-fit, and `U` has rank `r` (`rank`, default 32). Each
+  objective and gradient evaluation costs `O(N P r)`.
+- The barrier is approached by continuation (`rho_schedule`), with L-BFGS at
+  each stage.
+- `optimize_center=False` (default) keeps the center at the POPS/Bayesian
+  ridge mean and fits the shape only.
+- `delta` is the [width floor](glossary.md#width-floor).
+
+Covering the training data does not imply covering new data. At small N a
+bare ellipse typically misses a few percent of held-out targets, where its
+density is zero. The two hierarchical layers address this.
+
+## Predictions
+
+All outputs refer to the [parameter-only predictive](glossary.md#parameter-only-predictive-no-aleatoric-term).
+With a hierarchical layer this is the mixture of ellipse pushforwards over
+the stored hyperparameter draws (`n_hyper_samples` per fold).
 
 ```python
-from popsregression import POPSRegression
-
-X_train, X_test, y_train, y_test = ...
-
-# Defaults: baseline='pops', optimize_center=False (mean = POPS pre-fit)
-model = POPSRegression(posterior="ellipsoid")
-model.fit(X_train, y_train)
-
-# Predictive std of the pushforward: sqrt(v / (P + 2))
-y_pred, y_std = model.predict(X_test, return_std=True)
-
-# Support bounds: mean +/- sqrt(v) for a bare fit; with pac_bayes=True
-# the max/min over the 2-sigma hyperposterior ensemble of ellipses,
-# mean +/- (sqrt(v) + 2 * y_bound_std) -- strictly broader than bare
-y_pred, y_std, y_max, y_min = model.predict(
-    X_test, return_std=True, return_bounds=True
-)
-
-# Hyperposterior std of the bound curves (zero for a bare fit); the
-# fitted ellipse's own support is bounds -/+ 2 * y_bound_std
-y_pred, y_max, y_min, y_bound_std = model.predict(
-    X_test, return_bounds=True, return_bound_std=True
-)
-
-# Posterior parameter draws (affine map of uniform ball samples), also
-# available as model.posterior_samples_ (perturbations about the mean)
-theta_samples = model.ellipsoid_.sample(1000)
-
-# Closed-form PAC-Bayes layer
-model = POPSRegression(
-    posterior="ellipsoid",
-    pac_bayes=True,
-    posterior_options={"update_hyperprior": True, "hyperprior_center": "warm_start"},
-)
-model.fit(X_train, y_train)
-print(model.bound_, model.kl_, model.ellipsoid_.tau2_)
+mean = model.predict(X)
+mean, std = model.predict(X, return_std=True)
+mean, y_max, y_min = model.predict(X, return_bounds=True)   # support envelope
+lo, hi = model.predict_interval(X, level=0.9545)           # exact central interval
+logp = model.predict_logpdf(X, y)                          # -inf outside the support
+cdf = model.predict_cdf(X, y)
+theta = model.sample(1000, random_state=0)                 # (n_features, 1000)
 ```
 
-!!! note "std vs bounds convention"
-    `return_std` returns the predictive standard deviation of the
-    projected-ball pushforward, $\sqrt{v/(P+2)}$ — *not* the half-width.
-    `return_bounds` returns the support, $\text{mean} \pm \sqrt{v}$. The
-    ellipsoid shape matrix `ellipsoid_B_` relates to the parameter
-    covariance as $\mathrm{Cov} = B/(P+2)$.
+For [propagation](glossary.md#propagation-qoi), use one column of `theta` for
+every input of a field.
 
-## Example: bounds that do not shrink
+## `regularization="empirical-bayes"`
 
-The misspecified oscillatory example (see
-[`examples/example_polynomial.py`](https://github.com/POPS-UQ/popsregression/blob/main/examples/example_polynomial.py),
-rendered on the [Example](example.md) page) fits a quartic polynomial to an
-oscillatory target at $N = 10$ and $N = 100$ training points. `BayesianRidge`
-epistemic uncertainty vanishes as $N$ grows; the ellipsoid bounds track the
-`POPSRegression` hypercube bounds — but are obtained by direct optimization of
-the generalization-error objective, retaining the misspecification uncertainty
-at any $N$.
+A diagonal [Laplace](glossary.md#laplace-approximation) approximation of the
+[Gibbs hyperposterior](glossary.md#gibbs-hyperposterior-and-temperature)
+at temperature `N`, over the center and `U`. The hyperprior is centered on the
+fitted optimum, with variance `hyperprior_scale · |Ψ̂|² / d`. The predictive is
+therefore never narrower than the bare fit, and it converges to it as N grows.
 
-## Ellipsoid parameters
+The whitening, the baseline and the hyperprior all come from the same sample.
+So `diagnostic_bound_` has the form of a PAC-Bayes right side but is **not** a
+bound, and `certificate_status_` is `"diagnostic_empirical_bayes"`.
 
-The ellipsoid is implemented by an internal engine that
-[`POPSRegression`][popsregression.POPSRegression] fits, exposes as
-`ellipsoid_`, and forwards `posterior_options` to. Its parameters below are
-exactly the keys `posterior_options` accepts, and its fitted attributes are
-reachable through `ellipsoid_` (the headline ones — `coverage_fraction_`,
-`objective_`, `rank_`, and `bound_`, `empirical_H_`, `kl_`, `gamma_` under
-`pac_bayes=True` — are copied onto the estimator itself).
+## `regularization="PAC"`
 
-Fitting and prediction are documented on the
-[API reference](api.md) page: call `POPSRegression.fit` and
-`POPSRegression.predict`, not the engine's own methods.
+This path computes an actual PAC-Bayes bound on the population log risk of its
+own predictive. It follows Theorem 1 of the paper. The theorem requires the
+hyperprior, and every transformation entering the loss, to be fixed
+independently of the data the bound is evaluated on.
 
-::: popsregression._ellipse._EllipsoidPosterior
-    options:
-      members: false
+1. The independent units are split at random into two halves. See
+   [pilot split](glossary.md#pilot-split) and
+   [independent units](glossary.md#independent-units-groups); pass
+   `groups=` when several rows come from one simulator case.
+2. On the pilot half an ellipse is fitted. It fixes the centering, the
+   whitening, the pilot shape `V diag(λ₀) Vᵀ` and the width floor
+   `a_min`.
+3. The hyperparameters are the log multipliers `ω` of the pilot semi-axes,
+   with a Gaussian hyperprior `N(0, τ²)`. `τ` is chosen from the predeclared
+   grid `pac_log_scale_std`.
+4. On the certification half, for each temperature of a predeclared grid,
+   the hyperposterior is the Laplace approximation of the
+   [Gibbs hyperposterior](glossary.md#gibbs-hyperposterior-and-temperature).
+   The bound is evaluated for each one, and the smallest is kept, with the
+   [union correction](glossary.md#union-bound-over-a-grid).
+5. The bound is evaluated with:
+   - the exact Gaussian KL;
+   - a [Monte Carlo term](glossary.md#monte-carlo-term-empirical-bernstein)
+     for the hyperposterior-averaged loss;
+   - either the Seeger–Maurer [kl inequality](glossary.md#linear-theorem-1-and-kl-forms)
+     (default) or the paper's linear Theorem 1 with a Hoeffding moment bound.
+6. With `cross_fit=True` (default) the halves are swapped, the predictive is
+   the equal mixture of both folds, and the reported bound is the average of
+   the fold bounds. See [cross-fitting](glossary.md#cross-fitting).
 
-### Sampling
+The certified quantity is the population log risk of the
+[floor-contaminated](glossary.md#floor-contamination-floor-weight) predictive,
+`(1 - β) p(y | x) + β / R_y`, on the
+[declared output interval](glossary.md#declared-output-interval) `y_bounds`.
+It holds with probability at least `1 - failure_probability -
+mc_failure_probability` over the training draw, if:
 
-::: popsregression._ellipse._EllipsoidPosterior.sample
-    options:
-      show_root_heading: true
-      show_root_full_path: false
+- the units are i.i.d. draws from the deployment distribution, and
+- `y_bounds` contains every possible output.
+
+The software checks that the training outputs lie in `y_bounds`, and refuses
+to fit otherwise. It cannot verify either assumption.
+
+```python
+pac = POPSEllipseRegression(regularization="PAC", y_bounds=(-2.6, 2.6))
+pac.fit(X, y, groups=case_id)
+cert = pac.certificate_
+cert.raw_bound, cert.trivial_bound, cert.is_nonvacuous
+for fold in cert.folds:
+    fold.empirical, fold.monte_carlo, fold.kl, fold.complexity, fold.lam
+```
+
+What the bound does **not** say:
+
+- It is not a coverage guarantee for `predict_interval`.
+- It says nothing about the unfloored compact-support loss, which is infinite
+  at uncovered points.
+- It does not cover a test distribution that differs from the training one.
+
+Coverage and width are reported separately in the
+[studies](studies.md).
+
+### Protocol constants
+
+Every PAC parameter must be fixed before the data are seen:
+
+- `y_bounds`, `floor_weight` (`β`, default 0.02);
+- `min_half_width` (default 1% of the width of `y_bounds`);
+- `pilot_fraction`, `cross_fit`;
+- `lambda_fractions` (the temperature grid, as fractions of `N₁`);
+- `pac_log_scale_std` (the hyperprior grid);
+- `pac_inequality`;
+- `failure_probability`, `mc_failure_probability`, `n_bound_samples`.
+
+A smaller `β` or `min_half_width` widens the loss range and loosens the bound.
+
+### Cost of the guarantee
+
+With few certification units the bound prefers a small temperature, so the
+hyperposterior stays close to its prior and the predictive is broad. On the
+quartic example with 10 training points, the 95.45% interval of Ellipse+PAC is
+several times wider than that of Ellipse+EB. From a few tens of units onwards,
+the two are comparable.

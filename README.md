@@ -28,11 +28,17 @@ The result is wider, more honest uncertainty estimates that properly cover the t
 The misspecified, near-deterministic regression problem that `POPSRegression` addresses is particularly relevant to the fitting of surrogate simulation models in computational science, i.e. interatomic potentials,where by construction the optimal surrogate model is structurally unable to capture the target function exactly.
 
 ## Example
-Fitting a quartic polynomial (P=5 parameters) to a complex oscillatory function with N=10 (top row) and N=100 (bottom row) training points. Columns are BayesianRidge, the POPS hypercube, the POPS ellipse, and the PAC-Bayes POPS ellipse; the orange band is the 95.45% interval, the grey band the max/min posterior envelope, and each panel reports the fraction of the truth covered by the outer band. BayesianRidge epistemic uncertainty vanishes with more data, while POPS maintains uncertainty where the polynomial deviates from the truth.
+Fitting a quartic polynomial (P=5 parameters) to a complex oscillatory function with N=10 (top row) and N=100 (bottom row) training points. Columns are BayesianRidge, the POPS hypercube, the POPS ellipse, the POPS ellipse with its empirical-Bayes Laplace layer (Ellipse+EB), and standalone Bayesian stacking (a leave-one-out stacked mixture of ordinary Bayesian linear regressions of degree 1 to 4). No band includes an aleatoric term: every method shows the pushforward of its parameter distribution alone (BayesianRidge uses `sigma_` only and its fitted `alpha_` is never used; Bayesian stacking uses the parameter-only Student-t predictive and its fitted residual scales are never used). The orange band is the 95.45% interval, the grey band the max/min posterior envelope (`±4σ` for BayesianRidge, the exact 99.9% interval for Bayesian stacking), and each panel reports the fraction of the truth covered by the outer band. BayesianRidge epistemic uncertainty vanishes with more data, while POPS maintains uncertainty where the polynomial deviates from the truth.
 
 ![Example comparison of BayesianRidge vs POPS uncertainty](https://raw.githubusercontent.com/POPS-UQ/popsregression/main/examples/example_polynomial.png)
 
-The figure is produced by [examples/example_polynomial.py](examples/example_polynomial.py).
+The figure is produced by [examples/example_polynomial.py](examples/example_polynomial.py);
+[examples/example_bayesian_stacking.py](examples/example_bayesian_stacking.py)
+repeats the comparison over independent training draws (test log loss,
+coverage and width of exact predictive intervals), and
+[examples/example_low_noise_objectives.py](examples/example_low_noise_objectives.py)
+compares POPS with the PACm-Bayes and PAC²-T objectives as the likelihood
+width vanishes. See [Baselines](https://POPS-UQ.github.io/popsregression/comparisons/).
 
 ## Installation
 
@@ -75,9 +81,7 @@ y_pred, y_std, y_max, y_min, y_epistemic_std = model.predict(
 
 | Parameter | Default | Description |
 |---|---|---|
-| `posterior` | `'hypercube'` | Posterior form: `'hypercube'` (PCA-aligned box), `'ensemble'` (raw corrections) or `'ellipsoid'` (uniform ellipsoid, see below) |
-| `pac_bayes` | `False` | Add the closed-form PAC-Bayes layer; requires `posterior='ellipsoid'` |
-| `posterior_options` | `None` | Settings for the `'ellipsoid'` posterior, e.g. `{'rank': 16}` |
+| `posterior` | `'hypercube'` | Posterior form: `'hypercube'` (PCA-aligned box) or `'ensemble'` (raw corrections); the ellipsoid is `POPSEllipseRegression` (below) |
 | `random_state` | `None` | Seed for the posterior resampling; `None` uses the global NumPy state |
 | `resampling_method` | `'uniform'` | Sampling method: `'uniform'`, `'sobol'`, `'latin'`, `'halton'` |
 | `resample_density` | `1.0` | Number of posterior samples per training point |
@@ -103,56 +107,53 @@ All `BayesianRidge` parameters (`max_iter`, `tol`, `alpha_1`, `alpha_2`,
 | `sigma_` | Epistemic variance-covariance matrix |
 | `misspecification_sigma_` | Misspecification variance-covariance matrix from POPS |
 | `posterior_samples_` | Samples from the POPS posterior |
-| `ellipsoid_` | The fitted ellipsoid; only with `posterior='ellipsoid'` |
-| `bound_`, `kl_`, `empirical_H_`, `gamma_` | PAC-Bayes certificate; only with `pac_bayes=True` |
 | `alpha_` | Estimated noise precision (not used for prediction) |
 
-## Ellipsoid posteriors and the PAC-Bayes layer
+## Ellipsoid posteriors: `POPSEllipseRegression`
 
-The **uniform-ellipsoid** posterior is fitted by directly optimizing the
-empirical generalization error of the exact projected-ball predictive
-pushforward. The POPS covering condition enters as a log-barrier, so the fit is
-an interior-point method for POPS coverage. `pac_bayes=True` adds a
-hierarchical PAC-Bayes layer on top, giving closed-form KL and bound components
-via a Laplace hyperposterior — no sampling anywhere.
+`POPSEllipseRegression` fits a parameter distribution that is uniform on an
+ellipsoid. For a linear model its predictive density at `x` has a closed form,
+so the zero-noise generalization error is minimized directly. Predictive
+densities, exact quantiles and parameter draws come out without sampling
+error. The `regularization` parameter chooses how the finite-data uncertainty
+of the ellipsoid itself is handled:
 
 ```python
-from popsregression import POPSRegression
+from popsregression import POPSEllipseRegression
 
-# Defaults: baseline='pops', optimize_center=False (mean = POPS pre-fit)
-model = POPSRegression(posterior="ellipsoid")
-model.fit(X_train, y_train)
+bare = POPSEllipseRegression().fit(X_train, y_train)
 
-# The PAC-Bayes layer is a flag on the same estimator
-certified = POPSRegression(posterior="ellipsoid", pac_bayes=True)
-certified.fit(X_train, y_train)
-certified.bound_, certified.kl_    # closed-form PAC-Bayes certificate
+# Empirical-Bayes layer (Ellipse+EB): a Laplace hyperposterior over the
+# ellipsoid, with its prior centered on the fit. Cheap; its diagnostic_bound_
+# is not a PAC bound.
+eb = POPSEllipseRegression(regularization="empirical-bayes").fit(X_train, y_train)
 
-# std = pushforward std sqrt(v/(P+2)); bounds = ellipse support
-# mean +/- sqrt(v) (with pac_bayes=True: the max/min over the 2-sigma
-# hyperposterior ensemble of ellipses, strictly broader)
-y_pred, y_std, y_max, y_min = model.predict(
-    X_test, return_std=True, return_bounds=True
-)
+# PAC layer (Ellipse+PAC): the prior over the ellipsoid is fixed on a random
+# half of the data, and a PAC-Bayes bound on the population log risk is
+# evaluated on the other half (and vice versa). y_bounds must be known in
+# advance (e.g. from a maximum principle), not read off the data.
+pac = POPSEllipseRegression(regularization="PAC", y_bounds=(y_lower, y_upper))
+pac.fit(X_train, y_train, groups=case_id)   # groups: rows of one simulator case
+pac.certificate_.raw_bound, pac.certificate_.trivial_bound
+
+lo, hi = eb.predict_interval(X_test, level=0.9545)   # exact central interval
+logp = eb.predict_logpdf(X_test, y_test)
+theta = eb.sample(1000)                               # draws for propagation
 ```
 
-| Parameter | Default | Description |
-|---|---|---|
-| `rank` | `32` | Rank of the low-rank ellipsoid update `B = B0 + U U^T` |
-| `delta` | `1e-3` | Aleatoric width floor added (squared) to predictive widths |
-| `baseline` | `'pops'` | Fixed baseline `B0`: `'pops'`, `'ridge'`, or `'zero'` |
-| `optimize_center` | `False` | Freeze the mean at the POPS pre-fit; `True` optimizes it jointly |
-| `rho_schedule` | `(1e-1, ..., 1e-4)` | Continuation schedule of the log-barrier |
+All predictions refer to parameter uncertainty only; no noise term is added.
+The PAC bound certifies the log risk of the predictive density, not interval
+coverage. See the
+[ellipse documentation](https://POPS-UQ.github.io/popsregression/ellipse/)
+and the [glossary](https://POPS-UQ.github.io/popsregression/glossary/) for the
+terms used above.
 
-These, and the PAC-Bayes settings (`hyperprior_center`, `hyperprior_scale`,
-`update_hyperprior`, `bound_xi`, ...), go through
-`POPSRegression(posterior='ellipsoid', posterior_options={...})`. `pac_bayes`,
-`fit_intercept` and `random_state` are set on the estimator itself, and sample
-weights are passed to `fit`.
+## Comparison methods and paper studies
 
-See [Ellipsoid posteriors](https://POPS-UQ.github.io/popsregression/ellipse/)
-in the documentation, and
-[examples/example_polynomial.py](examples/example_polynomial.py), for details.
+Bayesian stacking, PACm, PAC²-T, predictive variational inference and a finite
+POPS-dictionary weighting ablation are implemented in `examples/comparisons/`,
+outside the package. The scripts in `examples/` produce every figure and table
+of the accompanying paper; see [examples/README.md](examples/README.md).
 
 ## Pipeline compatibility
 
@@ -180,11 +181,11 @@ The repository is managed with [uv](https://docs.astral.sh/uv/); `uv run`
 resolves the pinned environment from `uv.lock` on first use.
 
 ```bash
-uv run --group test pytest -vsl popsregression        # tests
-uv run --group lint ruff check popsregression examples  # linter
+uv run --group test pytest -vsl popsregression examples/comparisons  # tests
+uv run --group lint ruff check popsregression examples               # linter
 uv run --group lint black --check popsregression examples
-uv run --group doc mkdocs serve                       # docs at localhost:8000
-uv run --extra examples examples/example_polynomial.py  # example figures
+uv run --group doc mkdocs serve                    # docs at localhost:8000
+cd examples && uv run --extra examples python example_polynomial.py  # a figure
 ```
 
 Without uv, `pip install -e ".[examples]"` and run the tools directly.

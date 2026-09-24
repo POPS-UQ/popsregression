@@ -1,9 +1,14 @@
 # Usage
 
 How to fit, predict and configure
-[`POPSRegression`][popsregression.POPSRegression]. Exact signatures are in the
+[`POPSRegression`][popsregression.POPSRegression], the hypercube and ensemble
+POPS posteriors. The ellipsoid posterior, with its empirical-Bayes and PAC
+options, is a separate estimator,
+[`POPSEllipseRegression`][popsregression.POPSEllipseRegression], described in
+[Ellipse posteriors](ellipse.md). Exact signatures are in the
 [API reference](api.md); the method itself is documented at
-[pops-uq.github.io](https://pops-uq.github.io).
+[pops-uq.github.io](https://pops-uq.github.io). Unfamiliar terms are defined in
+the [glossary](glossary.md).
 
 ## Fitting
 
@@ -95,8 +100,7 @@ POPS-specific parameters are:
 
 | Parameter | Default | Notes |
 |---|---|---|
-| `posterior` | `'hypercube'` | `'hypercube'` fits a PCA-aligned box to the pointwise corrections and resamples it; `'ensemble'` uses the raw corrections as samples; `'ellipsoid'` fits a uniform ellipsoid (see below) |
-| `posterior_options` | `None` | Extra settings for the `'ellipsoid'` posterior; must be `None` otherwise |
+| `posterior` | `'hypercube'` | `'hypercube'` fits a PCA-aligned box to the pointwise corrections and resamples it; `'ensemble'` uses the raw corrections as samples |
 | `random_state` | `None` | Seed for the posterior resampling; `None` keeps the global NumPy state |
 | `minimum_relative_error` | `0.01` | Relative residual threshold for selecting training points (see below) |
 | `resampling_method` | `'uniform'` | `'uniform'`, `'sobol'`, `'latin'` or `'halton'`; hypercube posterior only |
@@ -161,47 +165,19 @@ random state, so either pass `random_state=...` or seed with
 posterior ignores both sampling parameters — it uses the pointwise corrections
 directly.
 
-### The `'ellipsoid'` posterior
+### Ellipsoid posteriors
 
-`posterior='ellipsoid'` replaces the resampled box with a uniform ellipsoid,
-fitted by directly optimizing the generalization error of its exact
-projected-ball pushforward. `predict` then uses that pushforward rather than
-the posterior samples: `return_std` is the predictive standard deviation of
-the pushforward and `return_bounds` its exact support, not sample extrema.
-`return_epistemic_std` is unchanged, and `posterior_samples_` still holds
-draws for downstream use.
+The uniform-ellipsoid posterior has an exact predictive density and is a
+separate estimator:
 
 ```python
-model = POPSRegression(
-    posterior="ellipsoid",
-    random_state=0,
-    posterior_options={"rank": 16, "baseline": "ridge"},
-)
+from popsregression import POPSEllipseRegression
+
+model = POPSEllipseRegression(regularization="empirical-bayes").fit(X_train, y_train)
+lo, hi = model.predict_interval(X_test, level=0.9545)
 ```
 
-`posterior_options` carries the ellipsoid's own tuning parameters and is
-rejected for the other posteriors. `pac_bayes`, `fit_intercept` and
-`random_state` are set on the estimator itself and cannot be passed there;
-sample weights go to `fit`. The fitted ellipsoid is exposed as `ellipsoid_`.
-See [Ellipsoid posteriors](ellipse.md) for every accepted key.
-
-### The PAC-Bayes layer
-
-`pac_bayes=True` adds the hierarchical PAC-Bayes layer on top of the
-ellipsoid, in closed form. It requires `posterior='ellipsoid'`.
-
-```python
-model = POPSRegression(posterior="ellipsoid", pac_bayes=True, random_state=0)
-model.fit(X_train, y_train)
-model.bound_        # PAC-Bayes bound on the generalization error
-```
-
-Predictions then average over the hyperposterior, so `return_std` and
-`return_bounds` are strictly wider than the bare ellipsoid's, and the
-certificate attributes `bound_`, `empirical_H_`, `kl_` and `gamma_` are set.
-`predict` also accepts `return_bound_std=True` — the hyperposterior standard
-deviation of the support bounds, appended last, and identically zero for a
-bare ellipsoid. It requires `posterior='ellipsoid'`.
+See [Ellipse posteriors](ellipse.md).
 
 ## Fitted attributes
 
@@ -212,9 +188,6 @@ bare ellipsoid. It requires `posterior='ellipsoid'`.
 | `sigma_` | Epistemic variance-covariance matrix of the weights |
 | `misspecification_sigma_` | Misspecification variance-covariance matrix from POPS |
 | `posterior_samples_` | POPS posterior samples, shape `(n_features, n_posterior_samples)` |
-| `ellipsoid_` | The fitted ellipsoid; only with `posterior='ellipsoid'` |
-| `coverage_fraction_`, `objective_`, `rank_` | Ellipsoid fit diagnostics; only with `posterior='ellipsoid'` |
-| `bound_`, `empirical_H_`, `kl_`, `gamma_` | PAC-Bayes certificate; only with `pac_bayes=True` |
 | `alpha_` | Estimated noise precision — fitted, but not used for prediction |
 | `lambda_` | Estimated weight precision |
 | `scores_` | Log marginal likelihood per iteration; requires `compute_score=True` |
@@ -244,7 +217,7 @@ search = GridSearchCV(
     pipe,
     {
         "polynomialfeatures__degree": [2, 3, 4],
-        "popsregression__posterior": ["hypercube", "ensemble", "ellipsoid"],
+        "popsregression__posterior": ["hypercube", "ensemble"],
     },
 )
 search.fit(X_train, y_train)

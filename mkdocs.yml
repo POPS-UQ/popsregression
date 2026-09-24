@@ -31,10 +31,15 @@ theme:
 nav:
   - Home: index.md
   - Usage: usage.md
+  - "Ellipse posteriors": ellipse.md
+  - "Example: POPS vs Bayesian ridge": example.md
+  - Studies: studies.md
   - API reference: api.md
-  - "Example: POPS vs BayesianRidge": example.md
-  - "Ellipsoid posteriors": ellipse.md
+  - Glossary: glossary.md
   - POPS method site: https://pops-uq.github.io/
+
+validation:
+  anchors: warn
 
 plugins:
   - search

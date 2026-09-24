@@ -1,49 +1,67 @@
 # Examples
 
-Runnable example scripts for `popsregression`. Plotting needs the optional
-`examples` extra; with [uv](https://docs.astral.sh/uv/) the lockfile at the
-repository root gives a pinned environment with no setup:
+Scripts that produce the figures and tables of the accompanying paper, and the
+comparison methods they use. Plotting and tables need the optional `examples`
+extra; with [uv](https://docs.astral.sh/uv/), run from this directory:
 
 ```bash
-uv run --extra examples examples/example_polynomial.py
+uv run --extra examples python example_polynomial.py
 ```
 
-Otherwise `pip install popsregression[examples]` into your own environment and
-run the scripts directly. `example_burgers_pod.py` imports `example_burgers`,
-so run that one from this directory.
+Terms such as *pilot split*, *floored NLL* or *interval score* are defined in
+the [glossary](../docs/glossary.md).
 
-- `example_mliap.py` — compares `BayesianRidge`, the POPS hypercube, the POPS
-  ellipse, and the PAC-Bayes POPS ellipse for a linear 267-feature Cu ACE
-  interatomic potential. The bundled `ace_linear_uq_energies.npz` (1 MB) holds
-  the energy equations only: 700 training and 300 held-out test structures.
-  The design is projected onto its leading PCA modes (95% of the variance, at
-  least 35) so that small observation/parameter ratios are reachable, and two
-  rows compare $N/P=1.5$ with $N/P=20$.
+## Comparison methods (`comparisons/`)
 
-  It writes `example_mliap.png`, a probability-probability (P-P) plot of the
-  posterior-sampled CDF of the held-out energy error against the observed CDF.
-  A calibrated posterior lies on the parity line, and each panel is annotated
-  with the *signed miscalibration area* between the two: the signed area
-  enclosed by the P-P curve and the parity line, which equals
-  $P(|e_\mathrm{post}|<|e_\mathrm{obs}|)-\tfrac12$ and so is half the Gini
-  coefficient of the two error samples. It is positive when the posterior is
-  too narrow and negative when it is too wide. `--error-output` additionally
-  writes the two error densities that the P-P plot compares. A trusted pickle
-  with the same four keys can be passed with `--data`.
-- `example_polynomial.py` — the headline figure: `BayesianRidge`, the POPS
-  hypercube, the POPS ellipse and the PAC-Bayes ellipse fitting a quartic
-  polynomial to an oscillatory target it cannot represent, at N = 10 and
-  N = 100. Each panel reports the fraction of the truth covered by its outer
-  band. It writes `example_polynomial.png`, which is also the figure in the
-  root README and in the rendered
-  [Example](https://POPS-UQ.github.io/popsregression/example/) in the docs.
+These are baselines and ablations for the paper, not part of the
+`popsregression` package:
 
-- `example_burgers.py` / `example_burgers_pod.py` — small-N
-  simulation-to-science example using a deterministic periodic viscous Burgers
-  solver. The POD basis is learned only from smooth snapshots, so the linear
-  modal-coefficient emulator is deliberately misspecified for the steep-front
-  regime, and training keeps only a few random spatial observations per PDE
-  run. It compares epistemic-only `BayesianRidge`, the POPS ellipse, and the
-  PAC-Bayes ellipse as simulator cases are added. The POD script writes
-  `example_burgers_pod_randomx_r<rank>_m<points>_s<seed>.png`; the committed
-  `example_burgers_pod.png` is that figure for the default settings.
+- `bayesian_stacking.py`, `stacking_weights.py`: Bayesian stacking of
+  normal–inverse-gamma linear regressions on predeclared feature subsets
+  (Yao et al. 2018).
+- `low_noise_objectives.py`: PACm (Morningstar et al. 2022) and PAC²-T
+  (Masegosa 2020).
+- `pvi.py`: predictive variational inference (Lai, Linero and Yao), with the
+  exact Gaussian predictive.
+- `pops_dictionary.py`: the finite POPS dictionary and its weighting ablation
+  (Gibbs versus POPS-dictionary stacking).
+- `harness.py`: the quartic, Burgers and ACE problems, every method behind
+  one interface, and the common parameter-only metrics.
+- `fluctuations.py`: estimators of the moment term of the PAC-Bayes bound.
+- `plotting.py`: the shared band style.
+
+Their tests run with `uv run --group test pytest comparisons`.
+
+## Conventions
+
+- No interval, density or score includes a residual-noise term, for any
+  method.
+- Every method reports the same two exact central intervals, 95.45% and
+  99.9%.
+- Repeated studies use predeclared seeds and report medians with central 90%
+  intervals. Failed fits are counted.
+- Declared output intervals come from domain knowledge:
+  - quartic: `[-160, 160]`, since the target lies in `[-144.4, 136.9]` on
+    `[-10, 10]`;
+  - Burgers: `[-2.6, 2.6]`, from the maximum principle;
+  - ACE: `[-4.2, -2.2]` eV/atom, an assumption stated in `harness.py`.
+
+## Scripts
+
+| Script | Outputs | Content |
+|---|---|---|
+| `example_polynomial.py` | `example_polynomial.png` | Quartic surrogate of an oscillatory function (P = 5), N = 10 and 100; Bayesian ridge, POPS hypercube, POPS ellipse, Ellipse+EB, Ellipse+PAC |
+| `example_burgers_pod.py` | `example_burgers_pod.png` | Rank-2 POD Burgers emulator (P = 8), N = 8 and 80 simulator cases, same five methods |
+| `example_mliap.py` | `example_mliap.png` | Linear ACE potential for Cu, energies only (267 features projected on 35 PCA modes), calibration curves at N/P = 1.5 and 20. `--basis subset` (default) builds the PCA basis from each training subset only; `--basis pool` uses all 700 training descriptors |
+| `example_repeated_splits.py` | `repeated_splits.png`, `generated/repeated_splits.csv`, `generated/repeated_splits_summary.{md,tex}` | All seven methods (plus PVI without KL) on all three problems, 30 training draws per size |
+| `example_low_noise_objectives.py` | `low_noise_objectives.png`, `generated/low_noise_objectives.{csv,md}` | PACm, PAC²-T and PVI as the likelihood width shrinks, against the zero-noise ellipse family and Bayesian stacking, N = 10 and 50, 20 draws |
+| `example_loss_fluctuations.py` | `loss_fluctuations.png`, `generated/loss_fluctuations.{csv,md}` | Held-out estimates of the one-sided moment of the bound: CGF curves, `J(Ψ)`, generalization gap, 20 draws |
+| `example_burgers_qoi.py` | `burgers_qoi.png`, `generated/burgers_qoi.{csv,md}` | Propagation to Burgers dissipation and front steepness, 20 draws |
+| `example_scaling.py` | `scaling.png`, `generated/scaling.{csv,md}` | Fit time and peak memory against P (to 2000), N and rank; full 267-feature ACE design |
+| `example_pops_dictionary_ablation.py` | `pops_dictionary_ablation.png`, `generated/pops_dictionary_ablation.{csv,md}` | Supplementary ablation: weight rules on a finite POPS dictionary |
+
+The repeated studies accept `--seeds` (or `--repeats`) and `--workers`;
+`--plot-only` rebuilds figures and tables from the saved CSV.
+`example_burgers.py` is the shared Burgers solver. The ACE data
+(`ace_linear_uq_energies.npz`, 1 MB) holds the energy equations of a linear
+267-feature Cu ACE potential: 700 training and 300 test structures.

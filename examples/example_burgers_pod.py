@@ -1,20 +1,22 @@
-"""POD reduced-order Burgers emulator with controlled ROM misspecification.
+"""POD reduced-order Burgers emulator with controlled ROM misspecification
+(paper Fig. ``fig:burgers``).
 
-Matches ``example_burgers.py`` in solver and plotting style.  The POD basis is
-learned only from smooth Burgers snapshots and the modal coefficient map is
-linear.  Training keeps only a few random spatial observations from each PDE
-run; this exposes finite-sample overconfidence at low N while the data-rich
-limit remains well resolved.
+The POD basis is learned only from smooth Burgers snapshots and the modal
+coefficient map is linear. Training keeps only a few random spatial
+observations from each PDE run; this exposes finite-sample overconfidence at
+low N while the data-rich limit remains well resolved. The figure shows the
+same five methods and the same two exact central intervals as
+``example_polynomial.py``; coverages are on an independent held-out set.
 """
 
 import argparse
+from pathlib import Path
 
 import example_burgers as burgers
 import matplotlib.pyplot as plt
 import numpy as np
-from sklearn.linear_model import BayesianRidge
-
-from popsregression import POPSRegression
+from comparisons import harness
+from comparisons.plotting import band_panel, coverage_label, legend_handles
 
 SEED = burgers.SEED
 NU_RANGE = burgers.NU_RANGE
@@ -32,14 +34,6 @@ POD_T_RANGE = (T_RANGE[0], 0.35)
 # spatial designs are nested as simulator cases are added.
 SPATIAL_SEED = 4432
 TEST_SEED = 27182
-
-# Plot styling: use a distinct cool outer band so max/min is visually
-# separable from the central 95.45% interval.
-OUTER_COLOR = "#8FA4BF"
-OUTER_ALPHA = 0.42
-INNER_COLOR = "C1"
-INNER_ALPHA = 0.45
-COVERAGE_BBOX = dict(boxstyle="round,pad=0.18", fc="white", ec="0.65", alpha=0.90)
 
 
 def build_pod_basis(rank=2, n_basis_cases=48, seed=SEED + 1000):
@@ -124,6 +118,15 @@ def slice_design(theta, modes, mean_field):
     return x, X, offset, truth
 
 
+FIGURE_METHODS = (
+    "Bayesian ridge",
+    "POPS hypercube",
+    "POPS ellipse",
+    "Ellipse+EB",
+    "Ellipse+PAC",
+)
+
+
 def run(
     seed=SEED,
     train_case_counts=(8, 16, 24, 40, 80),
@@ -133,36 +136,39 @@ def run(
     points_per_case=3,
     spatial_seed=SPATIAL_SEED,
     test_seed=TEST_SEED,
+    output=None,
 ):
+    """Fit every method at each case count and draw the N=8 / N=80 slices.
+
+    Intervals are the exact 95.45% and 99.9% central intervals of each
+    parameter-only predictive (see ``comparisons.harness``); simulator cases
+    are the independent units of the PAC construction.
+    """
     rng = np.random.default_rng(seed)
     mean_field, modes, singular_values, energy = build_pod_basis(
         rank=pod_rank, n_basis_cases=n_basis_cases, seed=seed + 1000
     )
-
     all_train = burgers.draw_cases(rng, max(train_case_counts))
     test_cases = burgers.draw_cases(np.random.default_rng(test_seed), n_test_cases)
     X_test, r_test = simulate_cases(
         test_cases, modes, mean_field, points_per_case=16, random_x=False
     )
-    p = X_test.shape[1]
-
     print(
-        f"Burgers POD emulator: rank={pod_rank}, P={p}; "
-        f"basis nu={POD_NU_RANGE}, t={POD_T_RANGE}; "
-        f"random training x, {points_per_case} points/case; "
-        f"spatial_seed={spatial_seed}"
+        f"Burgers POD emulator: rank={pod_rank}, P={X_test.shape[1]}; "
+        f"POD energy at rank {pod_rank}: {energy[pod_rank - 1]:.5f}"
     )
-    print(
-        f"POD cumulative snapshot energy at rank {pod_rank}: {energy[pod_rank-1]:.5f}"
-    )
-    print("cases rows rows/P  BRcov4s  Hcov  Ellcov PACcov  PAC+%   slice H/E/P max")
-
     theta = (0.014, 1.15, 0.78)
     x, X_slice, offset, truth = slice_design(theta, modes, mean_field)
-    target_slice = truth - offset
 
-    fitted = {}
-    coverages = {}
+    shown = (train_case_counts[0], train_case_counts[-1])
+    fig, axes = plt.subplots(
+        2, len(FIGURE_METHODS), figsize=(10, 3.3), sharex=True, sharey=True
+    )
+    print(
+        "cases  "
+        + "  ".join(f"{m[:14]:>14s}" for m in FIGURE_METHODS)
+        + "   (held-out 95.45% coverage)"
+    )
     for n_cases in train_case_counts:
         X_train, r_train = simulate_cases(
             all_train[:n_cases],
@@ -172,218 +178,55 @@ def run(
             random_x=True,
             seed=spatial_seed,
         )
-        bayes = BayesianRidge(fit_intercept=False).fit(X_train, r_train)
-        hypercube = POPSRegression(
-            minimum_relative_error=0.0, posterior="hypercube", random_state=seed
-        ).fit(X_train, r_train)
-        ellipse = POPSRegression(posterior="ellipsoid", random_state=seed).fit(
-            X_train, r_train
+        problem = harness.Problem(
+            name="burgers",
+            X_train=X_train,
+            y_train=r_train,
+            X_test=X_test,
+            y_test=r_test,
+            y_bounds=harness.BURGERS_Y_BOUNDS,
+            stacking_components=harness.BURGERS_COMPONENTS,
+            groups=np.repeat(np.arange(n_cases), points_per_case),
         )
-        pac = POPSRegression(
-            posterior="ellipsoid", pac_bayes=True, random_state=seed
-        ).fit(X_train, r_train)
+        row_cov = []
+        for col, method in enumerate(FIGURE_METHODS):
+            test_pred = harness.fit_predictive(method, problem, seed)
+            lo, hi = test_pred.intervals[0.9545]
+            row_cov.append(np.mean((r_test >= lo) & (r_test <= hi)))
+            if n_cases not in shown:
+                continue
+            ax = axes[shown.index(n_cases), col]
+            slice_pred = harness.fit_predictive(method, problem, seed, X_eval=X_slice)
+            slice_pred.mean = slice_pred.mean + offset
+            slice_pred.intervals = {
+                level: (lo_ + offset, hi_ + offset)
+                for level, (lo_, hi_) in slice_pred.intervals.items()
+            }
+            band_panel(ax, x, slice_pred, truth)
+            coverage_label(ax, r_test, test_pred)
+        print(f"{n_cases:5d}  " + "  ".join(f"{c:14.3f}" for c in row_cov))
 
-        b_mean = bayes.predict(X_test)
-        b_std = burgers.epistemic_bayes_std(bayes, X_test)
-        b_cov = burgers.coverage(r_test, b_mean - 4 * b_std, b_mean + 4 * b_std)
-
-        _, _, h_hi_test, h_lo_test = hypercube.predict(
-            X_test, return_std=True, return_bounds=True
-        )
-        h_cov = burgers.coverage(r_test, h_lo_test, h_hi_test)
-
-        _, e_hi_test, e_lo_test = ellipse.predict(X_test, return_bounds=True)
-        e_cov = burgers.coverage(r_test, e_lo_test, e_hi_test)
-
-        _, p_hi_test, p_lo_test, p_bstd = pac.predict(
-            X_test, return_bounds=True, return_bound_std=True
-        )
-        p_cov = burgers.coverage(r_test, p_lo_test, p_hi_test)
-        bare_width = (p_hi_test - p_lo_test) - 4.0 * p_bstd
-        valid = bare_width > 1e-12
-        broadening = np.mean(
-            (p_hi_test[valid] - p_lo_test[valid]) / bare_width[valid] - 1.0
-        )
-
-        _, _, h_hi_slice, h_lo_slice = hypercube.predict(
-            X_slice, return_std=True, return_bounds=True
-        )
-        _, e_hi_slice, e_lo_slice = ellipse.predict(X_slice, return_bounds=True)
-        _, p_hi_slice, p_lo_slice = pac.predict(X_slice, return_bounds=True)
-        h_slice_cov = burgers.coverage(target_slice, h_lo_slice, h_hi_slice)
-        e_slice_cov = burgers.coverage(target_slice, e_lo_slice, e_hi_slice)
-        p_slice_cov = burgers.coverage(target_slice, p_lo_slice, p_hi_slice)
-
-        coverages[n_cases] = {
-            "bayes": b_cov,
-            "hyper": h_cov,
-            "ellipse": e_cov,
-            "pac": p_cov,
-        }
-        fitted[n_cases] = (bayes, hypercube, ellipse, pac)
-        print(
-            f"{n_cases:5d} {len(r_train):4d} {len(r_train)/p:6.2f}"
-            f"   {b_cov:7.3f} {h_cov:5.3f} {e_cov:6.3f} {p_cov:6.3f}"
-            f" {100*broadening:6.1f}%   "
-            f"{h_slice_cov:4.2f}/{e_slice_cov:4.2f}/{p_slice_cov:4.2f}"
-        )
-
-    shown_counts = (train_case_counts[0], train_case_counts[-1])
-    fig, axes = plt.subplots(2, 4, figsize=(8, 3), sharex=True, sharey=True)
-    titles = ["Bayesian Ridge", "POPS Hypercube", "POPS Ellipse", "POPS Ellipse + PAC"]
-    for col, title in enumerate(titles):
-        axes[0, col].set_title(title, fontsize=10)
-
-    for row_idx, n_cases in enumerate(shown_counts):
-        bayes, hypercube, ellipse, pac = fitted[n_cases]
-
-        b_resid = bayes.predict(X_slice)
-        b_mean = offset + b_resid
-        b_std = burgers.epistemic_bayes_std(bayes, X_slice)
-
-        h_resid, h_std, h_hi, h_lo = hypercube.predict(
-            X_slice, return_std=True, return_bounds=True
-        )
-        h_mean = offset + h_resid
-
-        e_resid, e_hi, e_lo = ellipse.predict(X_slice, return_bounds=True)
-        e_qlo, e_qhi = burgers.bare_percentile_interval(ellipse, X_slice)
-        e_mean = offset + e_resid
-
-        p_resid, p_hi, p_lo = pac.predict(X_slice, return_bounds=True)
-        p_qlo, p_qhi = burgers.pac_percentile_interval(pac, X_slice)
-        p_mean = offset + p_resid
-
-        ax = axes[row_idx, 0]
-        ax.fill_between(
-            x,
-            b_mean - 4 * b_std,
-            b_mean + 4 * b_std,
-            alpha=OUTER_ALPHA,
-            facecolor=OUTER_COLOR,
-            label=r"max/min ($\pm4\sigma$)",
-        )
-        ax.fill_between(
-            x,
-            b_mean - 2 * b_std,
-            b_mean + 2 * b_std,
-            alpha=INNER_ALPHA,
-            facecolor=INNER_COLOR,
-            label=r"$95.45\%$ ($\pm2\sigma$)",
-        )
-        ax.plot(x, b_mean, "C1-", lw=2, label="mean")
-
-        ax = axes[row_idx, 1]
-        ax.fill_between(
-            x,
-            offset + h_lo,
-            offset + h_hi,
-            alpha=OUTER_ALPHA,
-            facecolor=OUTER_COLOR,
-            label="max/min",
-        )
-        ax.fill_between(
-            x,
-            h_mean - 2 * h_std,
-            h_mean + 2 * h_std,
-            alpha=INNER_ALPHA,
-            facecolor=INNER_COLOR,
-            label=r"$95.45\%$",
-        )
-        ax.plot(x, h_mean, "C1-", lw=2)
-
-        ax = axes[row_idx, 2]
-        ax.fill_between(
-            x,
-            offset + e_lo,
-            offset + e_hi,
-            alpha=OUTER_ALPHA,
-            facecolor=OUTER_COLOR,
-            label="max/min",
-        )
-        ax.fill_between(
-            x,
-            offset + e_qlo,
-            offset + e_qhi,
-            alpha=INNER_ALPHA,
-            facecolor=INNER_COLOR,
-            label=r"$95.45\%$",
-        )
-        ax.plot(x, e_mean, "C1-", lw=2)
-
-        ax = axes[row_idx, 3]
-        ax.fill_between(
-            x,
-            offset + p_lo,
-            offset + p_hi,
-            alpha=OUTER_ALPHA,
-            facecolor=OUTER_COLOR,
-            label="max/min",
-        )
-        ax.fill_between(
-            x,
-            offset + p_qlo,
-            offset + p_qhi,
-            alpha=INNER_ALPHA,
-            facecolor=INNER_COLOR,
-            label=r"$95.45\%$",
-        )
-        ax.plot(x, p_mean, "C1-", lw=2)
-
-        # Annotate held-out coverage of the outer interval. These values come
-        # from the independent test set, not the displayed slice.
-        cov = coverages[n_cases]
-        coverage_text = [
-            rf"$4\sigma$ cov. = {cov['bayes']:.3f}",
-            f"cov. = {cov['hyper']:.3f}",
-            f"cov. = {cov['ellipse']:.3f}",
-            f"cov. = {cov['pac']:.3f}",
-        ]
-        for col, text in enumerate(coverage_text):
-            axes[row_idx, col].text(
-                0.5,
-                0.95,
-                text,
-                transform=axes[row_idx, col].transAxes,
-                ha="center",
-                va="top",
-                fontsize=6,
-                bbox=COVERAGE_BBOX,
-                zorder=10,
-            )
-
-        for col in range(4):
-            ax = axes[row_idx, col]
-            truth_label = "Truth" if col == 2 else "_nolegend_"
-            ax.plot(x, truth, "k-", lw=1.5, label=truth_label)
-            ax.tick_params(labelsize=8)
-            if row_idx == 1:
-                ax.set_xlabel("x", fontsize=9)
-            ax.set_ylim(-2, 2)
-        axes[row_idx, 0].set_ylabel(f"N = {n_cases}\nu(x,t)", fontsize=9)
-
-    br_handles, br_labels = axes[0, 0].get_legend_handles_labels()
-    axes[0, 0].legend(
-        [br_handles[i] for i in [2, 1, 0]],
-        [br_labels[i] for i in [2, 1, 0]],
-        fontsize=6,
+    for col, title in enumerate(FIGURE_METHODS):
+        axes[0, col].set_title(title, fontsize=9.5, pad=12)
+    for r, n_cases in enumerate(shown):
+        axes[r, 0].set_ylabel(f"N = {n_cases}\nu(x, t)", fontsize=9)
+    for ax in axes.flat:
+        ax.set_ylim(-2, 2)
+        ax.tick_params(labelsize=7.5)
+    for ax in axes[-1]:
+        ax.set_xlabel("x", fontsize=9)
+    fig.legend(
+        handles=legend_handles()[:2] + legend_handles()[3:],
         loc="lower center",
+        ncol=4,
+        fontsize=7.5,
+        frameon=False,
+        bbox_to_anchor=(0.5, -0.005),
     )
-    pops_handles, pops_labels = axes[0, 2].get_legend_handles_labels()
-    label_to_handle = dict(zip(pops_labels, pops_handles))
-    pops_order = ["Truth", r"$95.45\%$", "max/min"]
-    axes[0, 1].legend(
-        [label_to_handle[label] for label in pops_order],
-        pops_order,
-        fontsize=6,
-        loc="lower center",
-    )
-
-    fig.tight_layout(pad=0.2, w_pad=0.1, h_pad=0.1)
-    stem = f"example_burgers_pod_randomx_r{pod_rank}_m{points_per_case}_s{spatial_seed}"
-    fig.savefig(stem + ".png", dpi=180, bbox_inches="tight")
-    print(f"Saved {stem}.png")
-    return fitted
+    fig.tight_layout(pad=0.2, w_pad=0.25, h_pad=0.9, rect=(0, 0.06, 1, 1))
+    output = output or Path(__file__).resolve().parent / "example_burgers_pod.png"
+    fig.savefig(output, dpi=200, bbox_inches="tight")
+    print(f"Saved {output}")
 
 
 if __name__ == "__main__":

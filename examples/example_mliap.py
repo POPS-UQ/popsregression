@@ -3,10 +3,17 @@
 The bundled ``ace_linear_uq_energies.npz`` holds the energy equations of a
 linear 267-feature Cu ACE potential exported by ``mliap_train.py``: 700
 training structures and 300 held-out test structures. The design is projected
-onto its leading PCA modes so that small observation/parameter ratios are
+onto its leading 35 PCA modes so that small observation/parameter ratios are
 reachable from 700 structures alone, and two regimes (N/P = 1.5 and N/P = 20)
-are fitted with ``BayesianRidge``, the POPS hypercube, the POPS ellipse, and
-the PAC-Bayes POPS ellipse.
+are fitted with ``BayesianRidge``, the POPS hypercube, the POPS ellipse,
+Ellipse+EB and Ellipse+PAC (paper Fig. ``fig:ace``).
+
+By default (``--basis subset``) the PCA basis of each regime is built from its
+own training structures only, so the sparse regime uses no information from
+the other training structures; ``--basis pool`` reproduces the workshop
+construction, whose basis used the unlabelled descriptors of all 700
+training structures. Every posterior is sampled for parameter uncertainty
+only (Bayesian ridge ``sigma_``, never its noise precision).
 
 The main figure is a probability-probability (P-P) plot: the posterior-sampled
 CDF of the held-out energy error against the observed CDF, which is the parity
@@ -24,15 +31,14 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
+from comparisons import harness
 from sklearn.linear_model import BayesianRidge
 
-from popsregression import POPSRegression
+from popsregression import POPSEllipseRegression, POPSRegression
 
 SEED = 0
 POSTERIOR_SAMPLE_COUNT = 1024
 DATA_RATIOS = (1.5, 20.0)
-PCA_VARIANCE = 0.95
-PCA_MIN_RANK = 35
 MAX_SIGMA = 4.0
 HERE = Path(__file__).resolve().parent
 DEFAULT_DATA = HERE / "ace_linear_uq_energies.npz"
@@ -40,10 +46,11 @@ DEFAULT_OUTPUT = HERE / "example_mliap.png"
 DEFAULT_ERROR_OUTPUT = HERE / "example_mliap_errors.png"
 DATA_KEYS = ("A_train_E", "y_train_E", "A_test_E", "y_test_E")
 MODEL_TITLES = (
-    "Bayesian Ridge",
-    "POPS Hypercube",
-    "POPS Ellipse",
-    "POPS Ellipse + PAC",
+    "Bayesian ridge",
+    "POPS hypercube",
+    "POPS ellipse",
+    "Ellipse+EB",
+    "Ellipse+PAC",
 )
 
 
@@ -79,51 +86,25 @@ def load_mliap_data(path):
     return X_train, y_train, X_test, y_test
 
 
-def pca_basis(X):
-    """Leading PCA modes of the training design.
-
-    Enough modes are kept to explain ``PCA_VARIANCE`` of the variance, but
-    never fewer than ``PCA_MIN_RANK``. Reducing the rank is what makes small
-    N/P ratios reachable from the 700 bundled training structures.
-    """
-    centered = X - X.mean(axis=0, keepdims=True)
-    covariance = centered.T @ centered / X.shape[0]
-    eigenvalues, eigenvectors = np.linalg.eigh(covariance)
-    order = np.argsort(eigenvalues)[::-1]
-    eigenvalues = np.maximum(eigenvalues[order], 0.0)
-    cumulative = np.cumsum(eigenvalues) / np.sum(eigenvalues)
-    rank = int(np.searchsorted(cumulative, PCA_VARIANCE, side="left") + 1)
-    rank = min(max(rank, PCA_MIN_RANK), X.shape[1])
-    return eigenvectors[:, order[:rank]]
-
-
-def make_regimes(X_train, y_train, basis, ratios=DATA_RATIOS):
-    """Draw one training subset per requested observation/parameter ratio."""
-    n_train, rank = len(y_train), basis.shape[1]
-    projected = X_train @ basis
-    max_feasible_ratio = n_train / rank  # Cap to the available structures
-    rng = np.random.default_rng(SEED)
-
+def make_regimes(ratios=DATA_RATIOS, basis="subset"):
+    """One training subset per observation/parameter ratio (35 PCA modes)."""
     regimes = []
     for ratio in ratios:
-        ratio = min(ratio, max_feasible_ratio)
-        n_samples = max(2, int(round(ratio * rank)))
-        indices = rng.choice(n_train, n_samples, replace=False)
+        problem = harness.ace_problem(ratio, SEED, basis=basis)
         regimes.append(
             {
-                "ratio": float(ratio),
-                "X": projected[indices],
-                "y": y_train[indices],
+                "ratio": problem.y_train.size / problem.n_params,
+                "X": problem.X_train,
+                "y": problem.y_train,
+                "X_test": problem.X_test,
+                "y_test": problem.y_test,
             }
         )
     return tuple(regimes)
 
 
 def fit_models(X_train, y_train):
-    """Fit the same four estimators as the polynomial and Burgers examples."""
-    # Use a fixed-size hypercube sample in every data regime. The current
-    # POPSRegression implementation draws from NumPy's global RNG.
-    np.random.seed(SEED)
+    """Fit the same five estimators as the polynomial and Burgers examples."""
     resample_density = POSTERIOR_SAMPLE_COUNT / len(y_train)
 
     bayesian_ridge = BayesianRidge(fit_intercept=False)
@@ -134,27 +115,18 @@ def fit_models(X_train, y_train):
         minimum_relative_error=0.0,
         posterior="hypercube",
         resample_density=resample_density,
+        random_state=SEED,
     )
     pops_hypercube.fit(X_train, y_train)
 
-    pops_ellipse = POPSRegression(posterior="ellipsoid", random_state=SEED)
-    pops_ellipse.fit(X_train, y_train)
-
-    # PAC-Bayes variant: phase-1 hyperprior centre with a tight scale, and a
-    # short rho schedule for faster convergence.
-    pops_ellipse_pac = POPSRegression(
-        posterior="ellipsoid",
-        pac_bayes=True,
-        random_state=SEED,
-        posterior_options={
-            "hyperprior_center": "phase1",
-            "hyperprior_scale": 1.0,
-            "rho_schedule": [1.0, 0.1, 0.01],
-        },
-    )
-    pops_ellipse_pac.fit(X_train, y_train)
-
-    return (bayesian_ridge, pops_hypercube, pops_ellipse, pops_ellipse_pac)
+    ellipse = POPSEllipseRegression(random_state=SEED).fit(X_train, y_train)
+    ellipse_eb = POPSEllipseRegression(
+        regularization="empirical-bayes", random_state=SEED
+    ).fit(X_train, y_train)
+    ellipse_pac = POPSEllipseRegression(
+        regularization="PAC", y_bounds=harness.ACE_Y_BOUNDS, random_state=SEED
+    ).fit(X_train, y_train)
+    return (bayesian_ridge, pops_hypercube, ellipse, ellipse_eb, ellipse_pac)
 
 
 def sample_bayesian_errors(model, X, rng, n_samples):
@@ -171,65 +143,25 @@ def projected_ball_samples(rng, n_rows, n_samples, dimension):
     return 2.0 * rng.beta(beta_shape, beta_shape, (n_rows, n_samples)) - 1.0
 
 
-def sample_ellipse_errors(ellipsoid, X, rng, n_samples):
-    """Draw exact marginal errors from a bare or PAC-Bayes ellipsoid.
+def sample_ellipse_errors(model, X, rng, n_samples):
+    """Exact marginal errors of a (hierarchical) ellipsoid predictive.
 
-    For the bare ellipse this is the exact projected-ball pushforward. For the
-    PAC model, the diagonal Laplace hyperposterior is sampled first and then a
-    projected-ball error is drawn conditionally. Independent hyperposterior
-    draws per test row preserve the marginal densities needed by these plots.
+    Each draw picks a stored hyperparameter draw with its mixture weight and
+    then a projected-ball point of that ellipsoid's pushforward; errors are
+    measured from the mixture mean.
     """
-    Xc, Z = ellipsoid._whitened_design(np.asarray(X, dtype=np.float64))
-    projected_factor = Z @ ellipsoid.U_
-    fitted_width = ellipsoid._squared_widths(Xc, Z) + ellipsoid.delta**2
-    baseline_width = np.maximum(
-        fitted_width - np.sum(projected_factor**2, axis=1),
-        0.0,
-    )
-
-    if not ellipsoid._pac_bayes_fitted:
-        ball = projected_ball_samples(rng, len(X), n_samples, ellipsoid._ball_dim)
-        return np.sqrt(fitted_width)[:, None] * ball
-
-    Z2 = Z * Z
-    projected_variance = np.maximum(Z2 @ ellipsoid._sigma_U, 0.0)
-    center_variance = np.maximum(Z2 @ ellipsoid._sigma_c, 0.0)
-    errors = np.empty((len(X), n_samples))
-    chunk_size = 32
-    for start in range(0, len(X), chunk_size):
-        stop = min(start + chunk_size, len(X))
-        mean_projection = projected_factor[start:stop, None, :]
-        projection_scale = np.sqrt(projected_variance[start:stop, None, :])
-        sampled_projection = mean_projection + projection_scale * rng.standard_normal(
-            (stop - start, n_samples, ellipsoid.rank_)
-        )
-        sampled_width = baseline_width[start:stop, None] + np.sum(
-            sampled_projection**2,
-            axis=2,
-        )
-        ball = projected_ball_samples(
-            rng,
-            stop - start,
-            n_samples,
-            ellipsoid._ball_dim,
-        )
-        center_error = np.sqrt(center_variance[start:stop, None]) * (
-            rng.standard_normal((stop - start, n_samples))
-        )
-        errors[start:stop] = center_error + np.sqrt(sampled_width) * ball
-    return errors
+    weights, mean, half = model._mixture(X)
+    idx = rng.choice(weights.size, size=(len(X), n_samples), p=weights)
+    rows = np.arange(len(X))[:, None]
+    ball = projected_ball_samples(rng, len(X), n_samples, model._ball_dim)
+    samples = mean[idx, rows] + half[idx, rows] * ball
+    return samples - (weights @ mean)[:, None]
 
 
 def sample_posterior_errors(model, X, rng):
-    """Return posterior prediction errors about the model's point prediction.
-
-    Ellipsoid posteriors are sampled from their exact marginal pushforward
-    rather than from the stored draws. ``POPSRegression`` exposes the fitted
-    ellipsoid as ``ellipsoid_`` when ``posterior="ellipsoid"``.
-    """
-    ellipsoid = getattr(model, "ellipsoid_", None)
-    if ellipsoid is not None:
-        return sample_ellipse_errors(ellipsoid, X, rng, POSTERIOR_SAMPLE_COUNT)
+    """Return posterior prediction errors about the model's point prediction."""
+    if isinstance(model, POPSEllipseRegression):
+        return sample_ellipse_errors(model, X, rng, POSTERIOR_SAMPLE_COUNT)
     if isinstance(model, POPSRegression):
         # POPSRegression.posterior_samples_ contains coefficient perturbations,
         # not absolute coefficient vectors. Therefore no mean prediction is
@@ -307,11 +239,13 @@ def area_label(record):
 
 
 def make_panel_grid(n_rows):
-    """Shared 4-column panel grid with model titles on the top row."""
-    fig, axes = plt.subplots(n_rows, 4, figsize=(8, 3), sharex=True, sharey=True)
+    """Shared panel grid with model titles on the top row."""
+    fig, axes = plt.subplots(
+        n_rows, len(MODEL_TITLES), figsize=(10, 3.4), sharex=True, sharey=True
+    )
     axes = np.atleast_2d(axes)
     for column, title in enumerate(MODEL_TITLES):
-        axes[0, column].set_title(title, fontsize=10)
+        axes[0, column].set_title(title, fontsize=9.5, pad=12)
     return fig, axes
 
 
@@ -408,14 +342,13 @@ def plot_pp(regimes, all_records, output):
                 linewidth=0.0,
             )
             ax.text(
-                0.96,
-                0.08,
+                0.5,
+                1.015,
                 area_label(record),
                 transform=ax.transAxes,
-                ha="right",
+                ha="center",
                 va="bottom",
-                fontsize=6.2,
-                bbox=ANNOTATION_BBOX,
+                fontsize=6.5,
             )
             ax.set_xlim(0.0, 1.0)
             ax.set_ylim(0.0, 1.0)
@@ -430,27 +363,35 @@ def plot_pp(regimes, all_records, output):
             fontsize=8,
         )
 
-    axes[0, -1].legend(fontsize=6, loc="upper left")
-    fig.tight_layout(pad=0.25, w_pad=0.2, h_pad=0.25)
+    handles, labels = axes[0, 0].get_legend_handles_labels()
+    fig.legend(
+        handles,
+        labels,
+        loc="lower center",
+        ncol=2,
+        fontsize=7.5,
+        frameon=False,
+        bbox_to_anchor=(0.5, -0.005),
+    )
+    fig.tight_layout(pad=0.25, w_pad=0.3, h_pad=0.9, rect=(0, 0.06, 1, 1))
     fig.savefig(output, dpi=180, bbox_inches="tight")
     plt.close(fig)
 
 
-def run(data=DEFAULT_DATA, output=DEFAULT_OUTPUT, error_output=None):
+def run(data=DEFAULT_DATA, output=DEFAULT_OUTPUT, error_output=None, basis="subset"):
     X_train, y_train, X_test, y_test = load_mliap_data(data)
-    basis = pca_basis(X_train)
-    regimes = make_regimes(X_train, y_train, basis)
-    X_test_projected = X_test @ basis
+    regimes = make_regimes(basis=basis)
     print(
         f"ACE energies: train={len(y_train)}, test={len(y_test)}, "
-        f"P={X_train.shape[1]} reduced to rank {basis.shape[1]}"
+        f"P={X_train.shape[1]} reduced to rank {harness.ACE_RANK} "
+        f"(PCA basis: {basis})"
     )
 
     all_records = [
         posterior_error_records(
             fit_models(regime["X"], regime["y"]),
-            X_test_projected,
-            y_test,
+            regime["X_test"],
+            regime["y_test"],
         )
         for regime in regimes
     ]
@@ -496,5 +437,16 @@ if __name__ == "__main__":
         default=None,
         help="also write the error-density figure (optional path)",
     )
+    parser.add_argument(
+        "--basis",
+        choices=("subset", "pool"),
+        default="subset",
+        help="PCA basis from the training subset (default) or all 700 structures",
+    )
     args = parser.parse_args()
-    run(data=args.data, output=args.output, error_output=args.error_output)
+    run(
+        data=args.data,
+        output=args.output,
+        error_output=args.error_output,
+        basis=args.basis,
+    )

@@ -8,13 +8,13 @@ from popsregression.utils.discovery import all_displays, all_estimators, all_fun
 
 
 def test_all_estimators():
-    # POPSRegression is the only public estimator: the ellipsoid posterior is
-    # an internal engine reached through posterior='ellipsoid'.
+    # POPSRegression and POPSEllipseRegression; the ellipsoid fitting engine
+    # is private.
     estimators = all_estimators()
-    assert len(estimators) == 1
+    assert len(estimators) == 2
 
     estimators = all_estimators(type_filter="regressor")
-    assert len(estimators) == 1
+    assert len(estimators) == 2
 
     estimators = all_estimators(type_filter="classifier")
     assert len(estimators) == 0
@@ -30,5 +30,6 @@ def test_all_displays():
 
 
 def test_all_functions():
+    # Projected-ball kernels (8) plus the three discovery helpers.
     functions = all_functions()
-    assert len(functions) == 8
+    assert len(functions) == 11

@@ -31,7 +31,7 @@ jobs:
       - name: Run tests
         run: >-
           uv run --locked --group test
-          pytest -vsl --cov=popsregression --cov-report=xml popsregression
+          pytest -vsl --cov=popsregression --cov-report=xml popsregression examples/comparisons
 
       - name: Upload coverage reports to Codecov
         uses: codecov/codecov-action@v5.5.3
