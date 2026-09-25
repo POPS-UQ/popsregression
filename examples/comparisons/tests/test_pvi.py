@@ -90,3 +90,32 @@ def test_predictions_are_parameter_only():
     coef, offset = model.sample_parameters(4000, random_state=0)
     draws = X @ coef + offset
     assert_allclose(draws.mean(axis=1), model.predict(X), atol=0.05 * std.max() + 1e-6)
+
+
+@pytest.mark.parametrize("lamb", [0.0, 1.0])
+def test_fresh_objective_matches_training_history(lamb):
+    """The fresh-draw objective at the final q agrees with the average of
+    the last training steps (which used their own fresh draws), and the
+    recorded parts add up to the recorded step values."""
+    X, y = _data(40)
+    model = PredictiveVI(
+        sigma=0.3,
+        s=4,
+        lamb=lamb,
+        iterations=4000,
+        learning_rate=1e-2,
+        optimizer="rmsprop",
+    ).fit(X, y)
+    v, sc, kl = map(np.asarray, (model.values_, model.score_values_, model.kl_values_))
+    assert_allclose(v, sc + lamb * kl)
+    assert model.n_fev_ == model.n_iter_ == 4000
+    assert model.termination_ == "iteration_budget"
+    data, kl_term, total = model.evaluate_objective(X, y, n_groups=4000, random_state=1)
+    n = y.size
+    assert total == pytest.approx(data + kl_term)
+    assert data == pytest.approx(-np.mean(sc[-500:]) / n, rel=0.05, abs=0.05)
+    if lamb:
+        # The published KLPrior estimates -KL(q || prior) without bias.
+        assert -np.mean(kl[-500:]) == pytest.approx(model.kl_divergence(), rel=0.1)
+    else:
+        assert kl_term == 0.0

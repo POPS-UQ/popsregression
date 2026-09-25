@@ -133,8 +133,10 @@ def test_pacm_matches_the_multisample_identity():
 
 
 def test_pac2t_variance_term_matches_source():
-    """Eq. 5 / C.13 of Masegosa (2020): V = (p^2 - p p') / exp(2M) and the
-    Taylor weight h(alpha); h -> 1/2 as alpha -> 0-, and pac2 uses h = 1."""
+    """Eq. 5 and the Appendix C stable form of Masegosa (2020): V = (p^2 -
+    p p') / exp(2M) and the Taylor weight h(alpha); h -> 1/2 as alpha -> 0-,
+    and pac2 (Eq. 4, weight 1 / (2 max p^2)) uses h = 1/2, as the published
+    code does (0.5 * var with hmax = 1)."""
     model, Z, ys, eps, params = _prepared("pac2t", n_samples=5, n_groups=2)
     value, _ = model._objective(params, Z, ys, eps)
     mu, L = model._family.unpack(params)
@@ -156,9 +158,12 @@ def test_pac2t_variance_term_matches_source():
     assert dh0 == pytest.approx(fd, rel=1e-6)
     model2, Z, ys, eps, params = _prepared("pac2", n_samples=5, n_groups=2)
     value2, _ = model2._objective(params, Z, ys, eps)
-    assert value2 == pytest.approx(np.mean(-A - V) + kl / Z.shape[0], rel=1e-10)
-    # The variance correction only lowers the first-order objective.
+    assert value2 == pytest.approx(np.mean(-A - 0.5 * V) + kl / Z.shape[0], rel=1e-10)
+    # The variance correction only lowers the first-order objective, and the
+    # tighter weight h >= 1/2 lowers it at least as much.
     assert value2 <= np.mean(-A) + kl / Z.shape[0] + 1e-12
+    assert value <= value2 + 1e-12
+    assert np.all(h >= 0.5 - 1e-12)
 
 
 def test_ensemble_with_one_particle_is_map():
@@ -242,3 +247,115 @@ def test_narrow_likelihood_raises_the_objective():
 def test_invalid_objective():
     with pytest.raises(ValueError, match="objective"):
         LowNoiseObjective("nope")
+
+
+@pytest.mark.parametrize("objective", ["pacm", "pac2t", "elbo"])
+def test_diagnostics_are_recorded(objective):
+    X, y = _data(30, seed=6)
+    model = LowNoiseObjective(objective, sigma=0.3, n_samples=4, max_iter=5000)
+    model.fit(X, y)
+    assert model.max_iter_ == 5000 and model.max_fun_ == 10000
+    assert model.n_fev_ >= model.n_iter_ > 0
+    assert model.n_fev_ == model.n_evaluations_
+    assert model.termination_status_ in (0, 1, 2)
+    assert model.termination_ in (
+        "converged",
+        "max_iter",
+        "max_fun",
+        "line_search",
+        "other",
+    )
+    assert model.converged_ == (model.termination_ == "converged")
+    assert isinstance(model.termination_message_, str)
+    # The recorded split adds up to the returned objective.
+    total = model.objective_data_ + model.objective_kl_
+    assert total == pytest.approx(model.objective_value_, rel=1e-10)
+    assert model.objective_kl_ > 0
+    if objective == "pac2t":
+        assert model.objective_variance_ > 0
+    else:
+        assert model.objective_variance_ == 0.0
+
+
+def test_iteration_and_evaluation_limits_are_distinguished():
+    X, y = _data(30, seed=6)
+    by_iter = LowNoiseObjective("pacm", sigma=0.01, n_samples=4, max_iter=3).fit(X, y)
+    assert by_iter.termination_ == "max_iter" and not by_iter.converged_
+    assert by_iter.n_iter_ == 3
+    by_fun = LowNoiseObjective(
+        "pacm", sigma=0.01, n_samples=4, max_iter=1000, max_fun=3
+    ).fit(X, y)
+    assert by_fun.termination_ == "max_fun" and not by_fun.converged_
+    # The unconverged iterate is kept and still predicts.
+    assert np.all(np.isfinite(by_fun.params_))
+    assert np.all(np.isfinite(by_fun.predict(X)))
+
+
+@pytest.mark.parametrize("objective", ["pacm", "pac2t"])
+def test_fresh_draws_reproduce_the_training_objective(objective):
+    """With many groups the objective on fresh draws matches the one
+    optimized on the fixed draws (the fixed draws are not special)."""
+    X, y = _data(40, seed=7)
+    model = LowNoiseObjective(
+        objective, sigma=0.3, n_samples=8, n_groups=512, random_state=0
+    ).fit(X, y)
+    data, kl, total = model.evaluate_objective(X, y, n_groups=4096, random_state=99)
+    assert kl == pytest.approx(model.objective_kl_, rel=1e-12)
+    assert total == pytest.approx(data + kl)
+    assert total == pytest.approx(model.objective_value_, rel=0.02)
+    # Same draws as the fit reproduce it exactly.
+    model2 = LowNoiseObjective(objective, sigma=0.3, n_samples=8, n_groups=4)
+    model2.fit(X, y)
+    same = model2._objective(
+        model2.params_, *model2._standardize_fit(X, y), model2._eps
+    )
+    assert same[0] == pytest.approx(model2.objective_value_, rel=1e-12)
+
+
+def test_pacm_m1_fresh_draws_match_closed_form():
+    X, y = _data(40, seed=8)
+    model = LowNoiseObjective("pacm", sigma=0.3, n_samples=1).fit(X, y)
+    _, _, total = model.evaluate_objective(X, y, n_groups=20000, random_state=1)
+    assert total == pytest.approx(model.objective_value_, rel=0.01)
+
+
+def test_fixed_m_objective_grows_like_inverse_variance():
+    """At fixed m on data no linear model fits exactly, the optimized PACm
+    objective grows like C_m / sigma^2 once sigma is small: shrinking sigma
+    by 10 multiplies it by about 100 (the log-sigma term is negligible).
+    A larger m lowers C_m but does not make it zero."""
+    X, y = _data(20, seed=9)
+    assert np.min(np.abs(y - X @ np.linalg.lstsq(X, y, rcond=None)[0])) > 0
+    coefficients = []
+    for m in (1, 4, 16):
+        sigmas = (1e-4, 1e-5)
+        values = [
+            LowNoiseObjective("pacm", sigma=s, n_samples=m, n_groups=8)
+            .fit(X, y)
+            .objective_value_
+            for s in sigmas
+        ]
+        slope = np.log10(values[1] / values[0])
+        assert 1.9 < slope < 2.1, (m, values)
+        coefficients.append(values[1] * sigmas[1] ** 2)
+    assert coefficients[0] > coefficients[1] > coefficients[2] > 0
+
+
+def test_termination_reasons_from_scipy_messages():
+    from types import SimpleNamespace
+
+    from comparisons.low_noise_objectives import _termination_reason
+
+    def res(success, message):
+        return SimpleNamespace(success=success, message=message)
+
+    assert _termination_reason(res(True, "CONVERGENCE: ...")) == "converged"
+    cases = {
+        "STOP: TOTAL NO. OF ITERATIONS REACHED LIMIT": "max_iter",
+        "STOP: TOTAL NO. OF F,G EVALUATIONS EXCEEDS LIMIT": "max_fun",
+        "ABNORMAL: ": "line_search",
+        "ABNORMAL_TERMINATION_IN_LNSRCH": "line_search",
+        "something else": "other",
+    }
+    for message, reason in cases.items():
+        assert _termination_reason(res(False, message)) == reason

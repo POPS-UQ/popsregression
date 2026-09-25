@@ -1,0 +1,253 @@
+% Medians and central 90% intervals over 30 independent training draws (fixed test sets). Every interval is an exact central interval of the method's parameter-only predictive (no residual-noise term). IS: interval score (Gneiting and Raftery) of the 95.45% interval, lower is better. NLL: negative log predictive density, floored as -log((1 - b) p + b / R_y) with b = 0.01 on the declared output interval of width R_y (a comparison score; the PAC certificate uses its own beta = 0.02). A_abs = int |C(u) - u| du and A_s = int (C(u) - u) du for the pooled absolute-error P-P curve C (smaller A_abs is better; A_s > 0 means net over-confidence, but A_s = 0 does not imply agreement). The PIT areas use u_i = F_i(y_i) instead and measure input-conditional calibration. Burgers test points are weighted so every simulator case counts equally in the areas. The POPS hypercube has no density (no NLL, no PIT from a density: its PIT uses its draws). '*' marks cells where at least one fit did not report optimizer convergence; those iterates are kept, not dropped. Abbreviations: POPS = pointwise optimal parameter sets; EB = empirical Bayes; PAC = probably approximately correct (PAC-Bayes hyperparameter bound); PACm = PAC-Bayes objective with an m-sample predictive (Morningstar et al. 2022); PAC$^2_T$ = second-order PAC-Bayes objective with the tandem Taylor weight (Masegosa 2020); PVI = predictive variational inference (Lai, Linero and Yao); IS = interval score (Gneiting and Raftery), of the 95.45% central interval; NLL = negative log predictive density.
+
+% quartic: unsigned calibration area A_abs (pooled |error| P-P)
+\begin{tabular}{lccccc}
+\toprule
+Method & 10 & 20 & 50 & 100 & 300 \\
+\midrule
+Bayesian ridge & 0.357 {\scriptsize[0.269, 0.401]} & 0.365 {\scriptsize[0.308, 0.396]} & 0.399 {\scriptsize[0.385, 0.413]} & 0.420 {\scriptsize[0.410, 0.425]} & 0.439 {\scriptsize[0.425, 0.442]} \\
+POPS hypercube & 0.128 {\scriptsize[0.059, 0.243]} & 0.098 {\scriptsize[0.065, 0.160]} & 0.077 {\scriptsize[0.065, 0.132]} & 0.067 {\scriptsize[0.056, 0.083]} & 0.074 {\scriptsize[0.057, 0.144]} \\
+POPS Ellipse & 0.084 {\scriptsize[0.028, 0.203]} & 0.061 {\scriptsize[0.039, 0.129]} & 0.067 {\scriptsize[0.054, 0.087]} & 0.078 {\scriptsize[0.065, 0.095]} & 0.082 {\scriptsize[0.077, 0.089]} \\
+POPS Ellipse+EB & 0.074 {\scriptsize[0.026, 0.195]} & 0.045 {\scriptsize[0.025, 0.108]} & 0.053 {\scriptsize[0.041, 0.064]} & 0.060 {\scriptsize[0.048, 0.070]} & 0.073 {\scriptsize[0.062, 0.080]} \\
+POPS Ellipse+PAC & 0.115 {\scriptsize[0.059, 0.212]} & 0.071 {\scriptsize[0.033, 0.121]} & 0.054 {\scriptsize[0.038, 0.073]} & 0.058 {\scriptsize[0.048, 0.076]} & 0.069 {\scriptsize[0.062, 0.077]} \\
+Bayesian stacking & 0.170 {\scriptsize[0.061, 0.287]} & 0.226 {\scriptsize[0.114, 0.304]} & 0.287 {\scriptsize[0.247, 0.346]} & 0.309 {\scriptsize[0.267, 0.346]} & 0.331 {\scriptsize[0.309, 0.358]} \\
+PVI & 0.123 {\scriptsize[0.066, 0.260]} & 0.089 {\scriptsize[0.043, 0.138]} & 0.072 {\scriptsize[0.042, 0.108]} & 0.075 {\scriptsize[0.055, 0.093]} & 0.084 {\scriptsize[0.071, 0.103]} \\
+PACm & 0.172 {\scriptsize[0.099, 0.290]} & 0.078 {\scriptsize[0.032, 0.180]} & 0.063 {\scriptsize[0.034, 0.093]} & 0.054 {\scriptsize[0.033, 0.091]} & 0.056 {\scriptsize[0.037, 0.090]} \\
+PAC$^2_T$ & 0.489 {\scriptsize[0.428, 0.496]} & 0.496 {\scriptsize[0.481, 0.498]} & 0.498 {\scriptsize[0.492, 0.499]} & 0.498 {\scriptsize[0.496, 0.500]} & 0.499 {\scriptsize[0.498, 0.499]} \\
+PVI (lamb=1) & 0.122 {\scriptsize[0.063, 0.253]} & 0.083 {\scriptsize[0.039, 0.135]} & 0.071 {\scriptsize[0.052, 0.101]} & 0.077 {\scriptsize[0.056, 0.099]} & 0.083 {\scriptsize[0.077, 0.095]} \\
+POPS Ellipse (free center) & 0.114 {\scriptsize[0.056, 0.215]} & 0.082 {\scriptsize[0.042, 0.149]} & 0.069 {\scriptsize[0.044, 0.103]} & 0.072 {\scriptsize[0.050, 0.090]} & 0.068 {\scriptsize[0.058, 0.077]} \\
+POPS Ellipse+EB (free center) & 0.072 {\scriptsize[0.033, 0.200]} & 0.047 {\scriptsize[0.023, 0.118]} & 0.046 {\scriptsize[0.026, 0.060]} & 0.056 {\scriptsize[0.029, 0.069]} & 0.062 {\scriptsize[0.053, 0.073]} \\
+POPS Ellipse+PAC (free center) & 0.175 {\scriptsize[0.052, 0.275]} & 0.078 {\scriptsize[0.024, 0.188]} & 0.043 {\scriptsize[0.025, 0.106]} & 0.036 {\scriptsize[0.024, 0.046]} & 0.045 {\scriptsize[0.035, 0.062]} \\
+\bottomrule
+\end{tabular}
+
+% quartic: signed calibration area A_s (pooled |error| P-P)
+\begin{tabular}{lccccc}
+\toprule
+Method & 10 & 20 & 50 & 100 & 300 \\
+\midrule
+Bayesian ridge & +0.357 {\scriptsize[+0.269, +0.401]} & +0.365 {\scriptsize[+0.308, +0.396]} & +0.399 {\scriptsize[+0.385, +0.413]} & +0.420 {\scriptsize[+0.410, +0.425]} & +0.439 {\scriptsize[+0.425, +0.442]} \\
+POPS hypercube & +0.002 {\scriptsize[-0.147, +0.229]} & -0.046 {\scriptsize[-0.111, +0.108]} & -0.022 {\scriptsize[-0.109, +0.011]} & +0.013 {\scriptsize[-0.025, +0.039]} & +0.063 {\scriptsize[+0.027, +0.144]} \\
+POPS Ellipse & +0.017 {\scriptsize[-0.117, +0.172]} & +0.038 {\scriptsize[-0.027, +0.129]} & +0.062 {\scriptsize[-0.004, +0.086]} & +0.077 {\scriptsize[+0.058, +0.094]} & +0.081 {\scriptsize[+0.073, +0.086]} \\
+POPS Ellipse+EB & -0.057 {\scriptsize[-0.166, +0.112]} & +0.006 {\scriptsize[-0.056, +0.082]} & +0.040 {\scriptsize[-0.018, +0.059]} & +0.053 {\scriptsize[+0.035, +0.069]} & +0.069 {\scriptsize[+0.055, +0.075]} \\
+POPS Ellipse+PAC & -0.113 {\scriptsize[-0.212, -0.024]} & -0.042 {\scriptsize[-0.120, -0.008]} & +0.009 {\scriptsize[-0.044, +0.058]} & +0.044 {\scriptsize[+0.026, +0.071]} & +0.066 {\scriptsize[+0.055, +0.073]} \\
+Bayesian stacking & +0.168 {\scriptsize[+0.058, +0.287]} & +0.225 {\scriptsize[+0.109, +0.304]} & +0.287 {\scriptsize[+0.247, +0.346]} & +0.309 {\scriptsize[+0.267, +0.346]} & +0.331 {\scriptsize[+0.309, +0.358]} \\
+PVI & +0.123 {\scriptsize[+0.061, +0.260]} & +0.085 {\scriptsize[+0.031, +0.137]} & +0.061 {\scriptsize[+0.035, +0.096]} & +0.068 {\scriptsize[+0.052, +0.084]} & +0.078 {\scriptsize[+0.065, +0.091]} \\
+PACm & +0.172 {\scriptsize[+0.099, +0.290]} & +0.069 {\scriptsize[+0.004, +0.180]} & +0.041 {\scriptsize[-0.020, +0.075]} & +0.030 {\scriptsize[-0.005, +0.078]} & +0.034 {\scriptsize[-0.013, +0.082]} \\
+PAC$^2_T$ & +0.489 {\scriptsize[+0.428, +0.496]} & +0.496 {\scriptsize[+0.481, +0.498]} & +0.498 {\scriptsize[+0.492, +0.499]} & +0.498 {\scriptsize[+0.496, +0.500]} & +0.499 {\scriptsize[+0.498, +0.499]} \\
+PVI (lamb=1) & +0.122 {\scriptsize[+0.062, +0.253]} & +0.073 {\scriptsize[+0.025, +0.134]} & +0.061 {\scriptsize[+0.036, +0.088]} & +0.066 {\scriptsize[+0.052, +0.085]} & +0.077 {\scriptsize[+0.069, +0.087]} \\
+POPS Ellipse (free center) & +0.110 {\scriptsize[+0.006, +0.215]} & +0.074 {\scriptsize[-0.011, +0.149]} & +0.065 {\scriptsize[+0.023, +0.101]} & +0.071 {\scriptsize[+0.049, +0.090]} & +0.065 {\scriptsize[+0.057, +0.075]} \\
+POPS Ellipse+EB (free center) & +0.054 {\scriptsize[-0.013, +0.200]} & +0.031 {\scriptsize[-0.037, +0.116]} & +0.037 {\scriptsize[-0.000, +0.056]} & +0.052 {\scriptsize[+0.020, +0.061]} & +0.061 {\scriptsize[+0.052, +0.073]} \\
+POPS Ellipse+PAC (free center) & -0.175 {\scriptsize[-0.275, -0.019]} & -0.073 {\scriptsize[-0.188, -0.006]} & -0.029 {\scriptsize[-0.105, +0.015]} & +0.011 {\scriptsize[-0.012, +0.036]} & +0.039 {\scriptsize[+0.018, +0.054]} \\
+\bottomrule
+\end{tabular}
+
+% quartic: unsigned PIT calibration area (input-conditional)
+\begin{tabular}{lccccc}
+\toprule
+Method & 10 & 20 & 50 & 100 & 300 \\
+\midrule
+Bayesian ridge & 0.217 {\scriptsize[0.178, 0.265]} & 0.221 {\scriptsize[0.195, 0.243]} & 0.234 {\scriptsize[0.225, 0.246]} & 0.239 {\scriptsize[0.231, 0.247]} & 0.242 {\scriptsize[0.232, 0.247]} \\
+POPS hypercube & 0.112 {\scriptsize[0.077, 0.235]} & 0.085 {\scriptsize[0.046, 0.133]} & 0.062 {\scriptsize[0.044, 0.110]} & 0.052 {\scriptsize[0.042, 0.084]} & 0.067 {\scriptsize[0.057, 0.102]} \\
+POPS Ellipse & 0.078 {\scriptsize[0.029, 0.166]} & 0.058 {\scriptsize[0.033, 0.115]} & 0.063 {\scriptsize[0.044, 0.093]} & 0.073 {\scriptsize[0.064, 0.088]} & 0.073 {\scriptsize[0.066, 0.083]} \\
+POPS Ellipse+EB & 0.084 {\scriptsize[0.036, 0.164]} & 0.057 {\scriptsize[0.027, 0.097]} & 0.055 {\scriptsize[0.041, 0.085]} & 0.062 {\scriptsize[0.053, 0.077]} & 0.066 {\scriptsize[0.060, 0.077]} \\
+POPS Ellipse+PAC & 0.103 {\scriptsize[0.051, 0.138]} & 0.061 {\scriptsize[0.029, 0.098]} & 0.049 {\scriptsize[0.035, 0.086]} & 0.059 {\scriptsize[0.049, 0.078]} & 0.070 {\scriptsize[0.065, 0.082]} \\
+Bayesian stacking & 0.132 {\scriptsize[0.056, 0.223]} & 0.138 {\scriptsize[0.096, 0.191]} & 0.159 {\scriptsize[0.134, 0.208]} & 0.170 {\scriptsize[0.149, 0.191]} & 0.180 {\scriptsize[0.163, 0.191]} \\
+PVI & 0.137 {\scriptsize[0.054, 0.218]} & 0.083 {\scriptsize[0.046, 0.131]} & 0.073 {\scriptsize[0.051, 0.106]} & 0.074 {\scriptsize[0.060, 0.094]} & 0.082 {\scriptsize[0.072, 0.095]} \\
+PACm & 0.134 {\scriptsize[0.077, 0.232]} & 0.077 {\scriptsize[0.045, 0.157]} & 0.067 {\scriptsize[0.041, 0.109]} & 0.068 {\scriptsize[0.036, 0.091]} & 0.070 {\scriptsize[0.047, 0.086]} \\
+PAC$^2_T$ & 0.258 {\scriptsize[0.245, 0.293]} & 0.260 {\scriptsize[0.246, 0.276]} & 0.258 {\scriptsize[0.248, 0.272]} & 0.258 {\scriptsize[0.251, 0.263]} & 0.257 {\scriptsize[0.255, 0.261]} \\
+PVI (lamb=1) & 0.135 {\scriptsize[0.052, 0.220]} & 0.082 {\scriptsize[0.042, 0.130]} & 0.071 {\scriptsize[0.051, 0.103]} & 0.073 {\scriptsize[0.063, 0.092]} & 0.082 {\scriptsize[0.075, 0.094]} \\
+POPS Ellipse (free center) & 0.131 {\scriptsize[0.059, 0.221]} & 0.091 {\scriptsize[0.039, 0.145]} & 0.057 {\scriptsize[0.033, 0.111]} & 0.066 {\scriptsize[0.054, 0.100]} & 0.069 {\scriptsize[0.059, 0.143]} \\
+POPS Ellipse+EB (free center) & 0.106 {\scriptsize[0.038, 0.210]} & 0.074 {\scriptsize[0.029, 0.143]} & 0.045 {\scriptsize[0.027, 0.108]} & 0.054 {\scriptsize[0.040, 0.099]} & 0.059 {\scriptsize[0.051, 0.145]} \\
+POPS Ellipse+PAC (free center) & 0.154 {\scriptsize[0.059, 0.206]} & 0.093 {\scriptsize[0.042, 0.141]} & 0.053 {\scriptsize[0.037, 0.098]} & 0.042 {\scriptsize[0.031, 0.074]} & 0.047 {\scriptsize[0.038, 0.108]} \\
+\bottomrule
+\end{tabular}
+
+% quartic: signed PIT calibration area (input-conditional)
+\begin{tabular}{lccccc}
+\toprule
+Method & 10 & 20 & 50 & 100 & 300 \\
+\midrule
+Bayesian ridge & -0.064 {\scriptsize[-0.175, +0.031]} & -0.080 {\scriptsize[-0.140, -0.015]} & -0.086 {\scriptsize[-0.122, -0.055]} & -0.084 {\scriptsize[-0.111, -0.063]} & -0.078 {\scriptsize[-0.102, -0.056]} \\
+POPS hypercube & +0.025 {\scriptsize[-0.111, +0.190]} & +0.037 {\scriptsize[-0.049, +0.089]} & +0.046 {\scriptsize[+0.009, +0.099]} & +0.035 {\scriptsize[+0.008, +0.078]} & +0.003 {\scriptsize[-0.027, +0.021]} \\
+POPS Ellipse & -0.033 {\scriptsize[-0.112, +0.029]} & -0.038 {\scriptsize[-0.106, -0.004]} & -0.050 {\scriptsize[-0.091, -0.014]} & -0.053 {\scriptsize[-0.078, -0.034]} & -0.052 {\scriptsize[-0.070, -0.041]} \\
+POPS Ellipse+EB & -0.017 {\scriptsize[-0.093, +0.032]} & -0.031 {\scriptsize[-0.094, +0.009]} & -0.046 {\scriptsize[-0.082, -0.013]} & -0.048 {\scriptsize[-0.073, -0.030]} & -0.050 {\scriptsize[-0.068, -0.038]} \\
+POPS Ellipse+PAC & -0.025 {\scriptsize[-0.068, +0.023]} & -0.030 {\scriptsize[-0.078, +0.013]} & -0.034 {\scriptsize[-0.082, -0.017]} & -0.045 {\scriptsize[-0.071, -0.027]} & -0.052 {\scriptsize[-0.067, -0.042]} \\
+Bayesian stacking & -0.056 {\scriptsize[-0.217, +0.127]} & -0.064 {\scriptsize[-0.161, +0.081]} & -0.065 {\scriptsize[-0.151, -0.006]} & -0.060 {\scriptsize[-0.102, -0.019]} & -0.064 {\scriptsize[-0.087, -0.040]} \\
+PVI & -0.068 {\scriptsize[-0.211, +0.133]} & -0.065 {\scriptsize[-0.118, +0.095]} & -0.059 {\scriptsize[-0.101, -0.024]} & -0.056 {\scriptsize[-0.088, -0.028]} & -0.066 {\scriptsize[-0.086, -0.049]} \\
+PACm & -0.072 {\scriptsize[-0.221, +0.127]} & -0.048 {\scriptsize[-0.134, +0.121]} & -0.053 {\scriptsize[-0.106, +0.010]} & -0.056 {\scriptsize[-0.085, -0.012]} & -0.053 {\scriptsize[-0.076, -0.025]} \\
+PAC$^2_T$ & -0.097 {\scriptsize[-0.214, +0.119]} & -0.097 {\scriptsize[-0.172, +0.091]} & -0.096 {\scriptsize[-0.151, -0.031]} & -0.092 {\scriptsize[-0.116, -0.056]} & -0.088 {\scriptsize[-0.107, -0.073]} \\
+PVI (lamb=1) & -0.077 {\scriptsize[-0.220, +0.131]} & -0.053 {\scriptsize[-0.118, +0.088]} & -0.053 {\scriptsize[-0.097, -0.008]} & -0.058 {\scriptsize[-0.083, -0.034]} & -0.066 {\scriptsize[-0.083, -0.048]} \\
+POPS Ellipse (free center) & -0.015 {\scriptsize[-0.175, +0.170]} & -0.018 {\scriptsize[-0.141, +0.132]} & -0.003 {\scriptsize[-0.095, +0.068]} & +0.013 {\scriptsize[-0.071, +0.095]} & +0.049 {\scriptsize[-0.001, +0.142]} \\
+POPS Ellipse+EB (free center) & -0.007 {\scriptsize[-0.175, +0.155]} & -0.014 {\scriptsize[-0.142, +0.121]} & -0.002 {\scriptsize[-0.094, +0.069]} & +0.013 {\scriptsize[-0.070, +0.096]} & +0.048 {\scriptsize[-0.000, +0.143]} \\
+POPS Ellipse+PAC (free center) & -0.039 {\scriptsize[-0.159, +0.116]} & -0.010 {\scriptsize[-0.109, +0.067]} & -0.008 {\scriptsize[-0.084, +0.061]} & +0.016 {\scriptsize[-0.042, +0.065]} & +0.038 {\scriptsize[-0.003, +0.105]} \\
+\bottomrule
+\end{tabular}
+
+% burgers: unsigned calibration area A_abs (pooled |error| P-P)
+\begin{tabular}{lccccc}
+\toprule
+Method & 8 & 16 & 24 & 40 & 80 \\
+\midrule
+Bayesian ridge & 0.135 {\scriptsize[0.045, 0.272]} & 0.167 {\scriptsize[0.081, 0.250]} & 0.192 {\scriptsize[0.124, 0.276]} & 0.245 {\scriptsize[0.181, 0.298]} & 0.290 {\scriptsize[0.261, 0.334]} \\
+POPS hypercube & 0.159 {\scriptsize[0.022, 0.286]} & 0.077 {\scriptsize[0.011, 0.168]} & 0.081 {\scriptsize[0.024, 0.173]} & 0.118 {\scriptsize[0.017, 0.246]} & 0.175 {\scriptsize[0.076, 0.255]} \\
+POPS Ellipse & 0.109 {\scriptsize[0.034, 0.217]} & 0.054 {\scriptsize[0.015, 0.110]} & 0.042 {\scriptsize[0.012, 0.093]} & 0.037 {\scriptsize[0.014, 0.128]} & 0.051 {\scriptsize[0.018, 0.125]} \\
+POPS Ellipse+EB & 0.054 {\scriptsize[0.019, 0.165]} & 0.036 {\scriptsize[0.014, 0.102]} & 0.045 {\scriptsize[0.016, 0.138]} & 0.050 {\scriptsize[0.012, 0.146]} & 0.074 {\scriptsize[0.014, 0.141]} \\
+POPS Ellipse+PAC & 0.101 {\scriptsize[0.019, 0.224]} & 0.088 {\scriptsize[0.021, 0.178]} & 0.088 {\scriptsize[0.034, 0.164]} & 0.087 {\scriptsize[0.037, 0.178]} & 0.097 {\scriptsize[0.039, 0.161]} \\
+Bayesian stacking & 0.069 {\scriptsize[0.015, 0.154]} & 0.050 {\scriptsize[0.011, 0.121]} & 0.063 {\scriptsize[0.026, 0.116]} & 0.067 {\scriptsize[0.026, 0.129]} & 0.080 {\scriptsize[0.049, 0.116]} \\
+PVI & 0.118 {\scriptsize[0.043, 0.251]} & 0.036 {\scriptsize[0.012, 0.073]} & 0.037 {\scriptsize[0.013, 0.076]} & 0.058 {\scriptsize[0.011, 0.086]} & 0.063 {\scriptsize[0.039, 0.094]} \\
+PACm & 0.045 {\scriptsize[0.012, 0.133]} & 0.033 {\scriptsize[0.012, 0.065]} & 0.036 {\scriptsize[0.014, 0.068]} & 0.033 {\scriptsize[0.013, 0.088]} & 0.042 {\scriptsize[0.016, 0.086]} \\
+PAC$^2_T$ & 0.454 {\scriptsize[0.403, 0.468]} & 0.466 {\scriptsize[0.454, 0.474]} & 0.469 {\scriptsize[0.463, 0.476]} & 0.471 {\scriptsize[0.464, 0.476]} & 0.473 {\scriptsize[0.465, 0.477]} \\
+PVI (lamb=1) & 0.111 {\scriptsize[0.024, 0.219]} & 0.042 {\scriptsize[0.010, 0.081]} & 0.035 {\scriptsize[0.015, 0.077]} & 0.059 {\scriptsize[0.016, 0.090]} & 0.061 {\scriptsize[0.040, 0.095]} \\
+POPS Ellipse (free center) & 0.072 {\scriptsize[0.037, 0.209]} & 0.026 {\scriptsize[0.009, 0.098]} & 0.033 {\scriptsize[0.010, 0.090]} & 0.042 {\scriptsize[0.014, 0.120]} & 0.067 {\scriptsize[0.018, 0.103]} \\
+POPS Ellipse+EB (free center) & 0.065 {\scriptsize[0.019, 0.192]} & 0.038 {\scriptsize[0.016, 0.077]} & 0.051 {\scriptsize[0.027, 0.116]} & 0.078 {\scriptsize[0.032, 0.141]} & 0.083 {\scriptsize[0.034, 0.115]} \\
+POPS Ellipse+PAC (free center) & 0.094 {\scriptsize[0.035, 0.168]} & 0.130 {\scriptsize[0.060, 0.182]} & 0.137 {\scriptsize[0.057, 0.190]} & 0.124 {\scriptsize[0.090, 0.189]} & 0.135 {\scriptsize[0.102, 0.186]} \\
+\bottomrule
+\end{tabular}
+
+% burgers: signed calibration area A_s (pooled |error| P-P)
+\begin{tabular}{lccccc}
+\toprule
+Method & 8 & 16 & 24 & 40 & 80 \\
+\midrule
+Bayesian ridge & +0.135 {\scriptsize[+0.038, +0.272]} & +0.167 {\scriptsize[+0.081, +0.250]} & +0.192 {\scriptsize[+0.124, +0.276]} & +0.245 {\scriptsize[+0.181, +0.298]} & +0.290 {\scriptsize[+0.261, +0.334]} \\
+POPS hypercube & +0.159 {\scriptsize[-0.011, +0.286]} & +0.034 {\scriptsize[-0.152, +0.135]} & -0.078 {\scriptsize[-0.173, +0.090]} & -0.117 {\scriptsize[-0.246, +0.030]} & -0.175 {\scriptsize[-0.255, -0.076]} \\
+POPS Ellipse & +0.099 {\scriptsize[-0.006, +0.217]} & +0.044 {\scriptsize[-0.055, +0.110]} & +0.011 {\scriptsize[-0.083, +0.080]} & -0.015 {\scriptsize[-0.128, +0.042]} & -0.048 {\scriptsize[-0.125, +0.015]} \\
+POPS Ellipse+EB & +0.035 {\scriptsize[-0.087, +0.156]} & -0.020 {\scriptsize[-0.102, +0.046]} & -0.042 {\scriptsize[-0.138, +0.032]} & -0.050 {\scriptsize[-0.146, +0.004]} & -0.074 {\scriptsize[-0.141, -0.007]} \\
+POPS Ellipse+PAC & -0.099 {\scriptsize[-0.224, +0.021]} & -0.088 {\scriptsize[-0.178, -0.006]} & -0.086 {\scriptsize[-0.164, +0.011]} & -0.087 {\scriptsize[-0.178, -0.037]} & -0.097 {\scriptsize[-0.161, -0.039]} \\
+Bayesian stacking & +0.005 {\scriptsize[-0.131, +0.140]} & -0.033 {\scriptsize[-0.120, +0.038]} & -0.053 {\scriptsize[-0.115, +0.042]} & -0.066 {\scriptsize[-0.128, -0.006]} & -0.078 {\scriptsize[-0.115, -0.047]} \\
+PVI & +0.118 {\scriptsize[+0.018, +0.251]} & +0.004 {\scriptsize[-0.053, +0.072]} & -0.020 {\scriptsize[-0.071, +0.041]} & -0.058 {\scriptsize[-0.086, +0.000]} & -0.063 {\scriptsize[-0.094, -0.037]} \\
+PACm & +0.032 {\scriptsize[-0.019, +0.115]} & -0.011 {\scriptsize[-0.061, +0.038]} & -0.027 {\scriptsize[-0.068, +0.031]} & -0.032 {\scriptsize[-0.087, +0.010]} & -0.042 {\scriptsize[-0.086, -0.001]} \\
+PAC$^2_T$ & +0.454 {\scriptsize[+0.403, +0.468]} & +0.466 {\scriptsize[+0.454, +0.474]} & +0.469 {\scriptsize[+0.463, +0.476]} & +0.471 {\scriptsize[+0.464, +0.476]} & +0.473 {\scriptsize[+0.465, +0.477]} \\
+PVI (lamb=1) & +0.111 {\scriptsize[-0.000, +0.219]} & +0.011 {\scriptsize[-0.048, +0.079]} & -0.023 {\scriptsize[-0.076, +0.035]} & -0.058 {\scriptsize[-0.090, +0.001]} & -0.061 {\scriptsize[-0.095, -0.039]} \\
+POPS Ellipse (free center) & +0.068 {\scriptsize[-0.039, +0.209]} & +0.010 {\scriptsize[-0.044, +0.085]} & -0.014 {\scriptsize[-0.080, +0.047]} & -0.041 {\scriptsize[-0.120, +0.011]} & -0.067 {\scriptsize[-0.103, -0.014]} \\
+POPS Ellipse+EB (free center) & +0.053 {\scriptsize[-0.065, +0.192]} & -0.027 {\scriptsize[-0.077, +0.049]} & -0.045 {\scriptsize[-0.116, +0.021]} & -0.078 {\scriptsize[-0.141, -0.012]} & -0.083 {\scriptsize[-0.115, -0.028]} \\
+POPS Ellipse+PAC (free center) & -0.085 {\scriptsize[-0.168, +0.026]} & -0.130 {\scriptsize[-0.182, -0.059]} & -0.137 {\scriptsize[-0.190, -0.050]} & -0.124 {\scriptsize[-0.189, -0.086]} & -0.135 {\scriptsize[-0.186, -0.101]} \\
+\bottomrule
+\end{tabular}
+
+% burgers: unsigned PIT calibration area (input-conditional)
+\begin{tabular}{lccccc}
+\toprule
+Method & 8 & 16 & 24 & 40 & 80 \\
+\midrule
+Bayesian ridge & 0.087 {\scriptsize[0.030, 0.166]} & 0.104 {\scriptsize[0.049, 0.152]} & 0.115 {\scriptsize[0.074, 0.163]} & 0.141 {\scriptsize[0.106, 0.169]} & 0.165 {\scriptsize[0.147, 0.189]} \\
+POPS hypercube & 0.144 {\scriptsize[0.093, 0.182]} & 0.117 {\scriptsize[0.075, 0.151]} & 0.105 {\scriptsize[0.071, 0.144]} & 0.098 {\scriptsize[0.059, 0.143]} & 0.081 {\scriptsize[0.043, 0.125]} \\
+POPS Ellipse & 0.076 {\scriptsize[0.019, 0.133]} & 0.038 {\scriptsize[0.015, 0.075]} & 0.028 {\scriptsize[0.012, 0.062]} & 0.027 {\scriptsize[0.011, 0.086]} & 0.037 {\scriptsize[0.009, 0.091]} \\
+POPS Ellipse+EB & 0.032 {\scriptsize[0.013, 0.102]} & 0.027 {\scriptsize[0.009, 0.072]} & 0.039 {\scriptsize[0.013, 0.091]} & 0.043 {\scriptsize[0.011, 0.105]} & 0.059 {\scriptsize[0.015, 0.108]} \\
+POPS Ellipse+PAC & 0.064 {\scriptsize[0.017, 0.118]} & 0.061 {\scriptsize[0.020, 0.121]} & 0.061 {\scriptsize[0.014, 0.093]} & 0.064 {\scriptsize[0.027, 0.114]} & 0.068 {\scriptsize[0.030, 0.109]} \\
+Bayesian stacking & 0.052 {\scriptsize[0.015, 0.114]} & 0.027 {\scriptsize[0.016, 0.060]} & 0.034 {\scriptsize[0.017, 0.067]} & 0.032 {\scriptsize[0.017, 0.053]} & 0.032 {\scriptsize[0.022, 0.053]} \\
+PVI & 0.073 {\scriptsize[0.022, 0.147]} & 0.024 {\scriptsize[0.010, 0.047]} & 0.026 {\scriptsize[0.009, 0.049]} & 0.040 {\scriptsize[0.010, 0.057]} & 0.045 {\scriptsize[0.026, 0.059]} \\
+PACm & 0.030 {\scriptsize[0.008, 0.084]} & 0.023 {\scriptsize[0.010, 0.052]} & 0.027 {\scriptsize[0.015, 0.054]} & 0.031 {\scriptsize[0.013, 0.062]} & 0.039 {\scriptsize[0.021, 0.067]} \\
+PAC$^2_T$ & 0.239 {\scriptsize[0.225, 0.244]} & 0.242 {\scriptsize[0.236, 0.244]} & 0.243 {\scriptsize[0.239, 0.246]} & 0.244 {\scriptsize[0.241, 0.245]} & 0.244 {\scriptsize[0.240, 0.246]} \\
+PVI (lamb=1) & 0.064 {\scriptsize[0.014, 0.132]} & 0.023 {\scriptsize[0.011, 0.049]} & 0.024 {\scriptsize[0.009, 0.051]} & 0.041 {\scriptsize[0.011, 0.058]} & 0.042 {\scriptsize[0.027, 0.064]} \\
+POPS Ellipse (free center) & 0.055 {\scriptsize[0.019, 0.132]} & 0.022 {\scriptsize[0.010, 0.076]} & 0.024 {\scriptsize[0.013, 0.063]} & 0.034 {\scriptsize[0.011, 0.091]} & 0.054 {\scriptsize[0.017, 0.080]} \\
+POPS Ellipse+EB (free center) & 0.043 {\scriptsize[0.017, 0.117]} & 0.031 {\scriptsize[0.017, 0.059]} & 0.043 {\scriptsize[0.015, 0.088]} & 0.067 {\scriptsize[0.019, 0.112]} & 0.072 {\scriptsize[0.028, 0.095]} \\
+POPS Ellipse+PAC (free center) & 0.062 {\scriptsize[0.022, 0.112]} & 0.087 {\scriptsize[0.040, 0.118]} & 0.091 {\scriptsize[0.034, 0.133]} & 0.091 {\scriptsize[0.057, 0.139]} & 0.097 {\scriptsize[0.066, 0.134]} \\
+\bottomrule
+\end{tabular}
+
+% burgers: signed PIT calibration area (input-conditional)
+\begin{tabular}{lccccc}
+\toprule
+Method & 8 & 16 & 24 & 40 & 80 \\
+\midrule
+Bayesian ridge & +0.001 {\scriptsize[-0.005, +0.011]} & +0.004 {\scriptsize[-0.002, +0.010]} & +0.002 {\scriptsize[-0.004, +0.008]} & +0.003 {\scriptsize[-0.003, +0.010]} & +0.003 {\scriptsize[-0.001, +0.007]} \\
+POPS hypercube & +0.002 {\scriptsize[-0.007, +0.011]} & +0.003 {\scriptsize[-0.006, +0.013]} & +0.002 {\scriptsize[-0.006, +0.007]} & +0.002 {\scriptsize[-0.004, +0.010]} & +0.002 {\scriptsize[-0.003, +0.006]} \\
+POPS Ellipse & -0.000 {\scriptsize[-0.005, +0.007]} & +0.003 {\scriptsize[-0.004, +0.008]} & +0.002 {\scriptsize[-0.003, +0.006]} & +0.001 {\scriptsize[-0.002, +0.008]} & +0.002 {\scriptsize[-0.001, +0.004]} \\
+POPS Ellipse+EB & +0.000 {\scriptsize[-0.005, +0.005]} & +0.002 {\scriptsize[-0.003, +0.007]} & +0.002 {\scriptsize[-0.002, +0.005]} & +0.002 {\scriptsize[-0.001, +0.007]} & +0.002 {\scriptsize[-0.001, +0.004]} \\
+POPS Ellipse+PAC & +0.001 {\scriptsize[-0.003, +0.007]} & +0.003 {\scriptsize[-0.002, +0.008]} & +0.002 {\scriptsize[-0.002, +0.006]} & +0.002 {\scriptsize[-0.001, +0.005]} & +0.002 {\scriptsize[-0.000, +0.004]} \\
+Bayesian stacking & +0.003 {\scriptsize[-0.003, +0.008]} & +0.004 {\scriptsize[-0.000, +0.009]} & +0.004 {\scriptsize[-0.001, +0.007]} & +0.004 {\scriptsize[+0.002, +0.008]} & +0.005 {\scriptsize[+0.002, +0.008]} \\
+PVI & +0.003 {\scriptsize[-0.005, +0.012]} & +0.003 {\scriptsize[-0.003, +0.010]} & +0.002 {\scriptsize[-0.002, +0.005]} & +0.001 {\scriptsize[-0.002, +0.006]} & +0.000 {\scriptsize[-0.002, +0.003]} \\
+PACm & +0.002 {\scriptsize[-0.005, +0.008]} & +0.001 {\scriptsize[-0.003, +0.010]} & +0.001 {\scriptsize[-0.002, +0.006]} & +0.001 {\scriptsize[-0.003, +0.007]} & +0.001 {\scriptsize[-0.003, +0.002]} \\
+PAC$^2_T$ & -0.001 {\scriptsize[-0.009, +0.013]} & +0.002 {\scriptsize[-0.005, +0.015]} & +0.003 {\scriptsize[-0.009, +0.012]} & +0.002 {\scriptsize[-0.005, +0.015]} & +0.003 {\scriptsize[-0.002, +0.010]} \\
+PVI (lamb=1) & +0.003 {\scriptsize[-0.005, +0.011]} & +0.002 {\scriptsize[-0.003, +0.010]} & +0.002 {\scriptsize[-0.003, +0.006]} & +0.001 {\scriptsize[-0.001, +0.006]} & +0.000 {\scriptsize[-0.002, +0.003]} \\
+POPS Ellipse (free center) & +0.001 {\scriptsize[-0.006, +0.010]} & +0.001 {\scriptsize[-0.006, +0.007]} & +0.001 {\scriptsize[-0.006, +0.006]} & +0.002 {\scriptsize[-0.002, +0.004]} & +0.002 {\scriptsize[+0.000, +0.004]} \\
+POPS Ellipse+EB (free center) & +0.001 {\scriptsize[-0.004, +0.010]} & +0.002 {\scriptsize[-0.004, +0.006]} & +0.001 {\scriptsize[-0.004, +0.005]} & +0.002 {\scriptsize[-0.002, +0.003]} & +0.002 {\scriptsize[+0.001, +0.003]} \\
+POPS Ellipse+PAC (free center) & +0.001 {\scriptsize[-0.004, +0.007]} & +0.002 {\scriptsize[-0.002, +0.006]} & +0.002 {\scriptsize[-0.001, +0.005]} & +0.003 {\scriptsize[-0.001, +0.005]} & +0.003 {\scriptsize[+0.001, +0.004]} \\
+\bottomrule
+\end{tabular}
+
+% ace: unsigned calibration area A_abs (pooled |error| P-P)
+\begin{tabular}{lcccc}
+\toprule
+Method & 1.5 & 3 & 6 & 20 \\
+\midrule
+Bayesian ridge & 0.068 {\scriptsize[0.021, 0.136]} & 0.152 {\scriptsize[0.089, 0.188]} & 0.196 {\scriptsize[0.159, 0.249]} & 0.301 {\scriptsize[0.301, 0.301]} \\
+POPS hypercube & 0.265 {\scriptsize[0.227, 0.301]} & 0.231 {\scriptsize[0.179, 0.267]} & 0.145 {\scriptsize[0.089, 0.184]} & 0.025 {\scriptsize[0.024, 0.027]} \\
+POPS Ellipse & 0.092 {\scriptsize[0.050, 0.138]} & 0.103 {\scriptsize[0.071, 0.142]} & 0.072 {\scriptsize[0.043, 0.095]} & 0.045 {\scriptsize[0.045, 0.046]} \\
+POPS Ellipse+EB & 0.111 {\scriptsize[0.021, 0.277]} & 0.045 {\scriptsize[0.017, 0.089]} & 0.042 {\scriptsize[0.018, 0.082]} & 0.055 {\scriptsize[0.054, 0.057]} \\
+POPS Ellipse+PAC & 0.063 {\scriptsize[0.019, 0.107]} & 0.040 {\scriptsize[0.016, 0.088]} & 0.111 {\scriptsize[0.038, 0.148]} & 0.018 {\scriptsize[0.010, 0.069]} \\
+Bayesian stacking & 0.103 {\scriptsize[0.021, 0.182]} & 0.105 {\scriptsize[0.070, 0.141]} & 0.036 {\scriptsize[0.016, 0.061]} & 0.023 {\scriptsize[0.023, 0.023]} \\
+PVI & 0.133 {\scriptsize[0.057, 0.245]} & 0.160 {\scriptsize[0.079, 0.231]} & 0.151 {\scriptsize[0.090, 0.232]} & 0.172 {\scriptsize[0.055, 0.228]} \\
+PACm & 0.398 {\scriptsize[0.319, 0.420]}* & 0.398 {\scriptsize[0.357, 0.419]}* & 0.384 {\scriptsize[0.339, 0.402]}* & 0.307 {\scriptsize[0.289, 0.327]}* \\
+PAC$^2_T$ & 0.124 {\scriptsize[0.043, 0.228]}* & 0.354 {\scriptsize[0.296, 0.404]}* & 0.415 {\scriptsize[0.386, 0.438]}* & 0.442 {\scriptsize[0.439, 0.445]}* \\
+PVI (lamb=1) & 0.111 {\scriptsize[0.052, 0.229]} & 0.178 {\scriptsize[0.058, 0.317]} & 0.169 {\scriptsize[0.063, 0.255]} & 0.147 {\scriptsize[0.055, 0.182]} \\
+POPS Ellipse (free center) & 0.169 {\scriptsize[0.041, 0.307]} & 0.083 {\scriptsize[0.044, 0.168]} & 0.034 {\scriptsize[0.013, 0.073]} & 0.017 {\scriptsize[0.014, 0.024]} \\
+POPS Ellipse+EB (free center) & 0.144 {\scriptsize[0.040, 0.308]} & 0.069 {\scriptsize[0.038, 0.161]} & 0.039 {\scriptsize[0.027, 0.086]} & 0.056 {\scriptsize[0.045, 0.066]} \\
+POPS Ellipse+PAC (free center) & 0.086 {\scriptsize[0.038, 0.161]} & 0.135 {\scriptsize[0.101, 0.182]} & 0.139 {\scriptsize[0.109, 0.173]} & 0.093 {\scriptsize[0.069, 0.116]} \\
+\bottomrule
+\end{tabular}
+
+% ace: signed calibration area A_s (pooled |error| P-P)
+\begin{tabular}{lcccc}
+\toprule
+Method & 1.5 & 3 & 6 & 20 \\
+\midrule
+Bayesian ridge & +0.067 {\scriptsize[-0.002, +0.136]} & +0.152 {\scriptsize[+0.089, +0.188]} & +0.196 {\scriptsize[+0.159, +0.249]} & +0.301 {\scriptsize[+0.301, +0.301]} \\
+POPS hypercube & +0.265 {\scriptsize[+0.227, +0.301]} & +0.231 {\scriptsize[+0.179, +0.267]} & +0.145 {\scriptsize[+0.088, +0.184]} & +0.017 {\scriptsize[+0.012, +0.021]} \\
+POPS Ellipse & +0.092 {\scriptsize[+0.050, +0.138]} & +0.103 {\scriptsize[+0.071, +0.142]} & +0.072 {\scriptsize[+0.043, +0.095]} & +0.045 {\scriptsize[+0.045, +0.046]} \\
+POPS Ellipse+EB & -0.108 {\scriptsize[-0.277, +0.081]} & -0.008 {\scriptsize[-0.078, +0.054]} & -0.037 {\scriptsize[-0.081, +0.015]} & -0.055 {\scriptsize[-0.057, -0.053]} \\
+POPS Ellipse+PAC & -0.061 {\scriptsize[-0.107, -0.008]} & -0.038 {\scriptsize[-0.088, -0.009]} & -0.111 {\scriptsize[-0.148, -0.037]} & -0.006 {\scriptsize[-0.069, +0.019]} \\
+Bayesian stacking & -0.102 {\scriptsize[-0.182, -0.005]} & -0.103 {\scriptsize[-0.140, -0.066]} & +0.021 {\scriptsize[-0.021, +0.061]} & -0.001 {\scriptsize[-0.001, -0.001]} \\
+PVI & -0.071 {\scriptsize[-0.206, +0.226]} & -0.113 {\scriptsize[-0.223, +0.203]} & -0.097 {\scriptsize[-0.232, +0.157]} & -0.142 {\scriptsize[-0.211, +0.208]} \\
+PACm & -0.398 {\scriptsize[-0.420, -0.319]}* & -0.398 {\scriptsize[-0.419, -0.356]}* & -0.384 {\scriptsize[-0.402, -0.339]}* & -0.307 {\scriptsize[-0.327, -0.289]}* \\
+PAC$^2_T$ & +0.123 {\scriptsize[+0.043, +0.228]}* & +0.354 {\scriptsize[+0.296, +0.404]}* & +0.415 {\scriptsize[+0.386, +0.438]}* & +0.442 {\scriptsize[+0.439, +0.445]}* \\
+PVI (lamb=1) & -0.005 {\scriptsize[-0.206, +0.212]} & -0.144 {\scriptsize[-0.246, +0.296]} & -0.158 {\scriptsize[-0.255, +0.147]} & -0.135 {\scriptsize[-0.182, +0.124]} \\
+POPS Ellipse (free center) & +0.012 {\scriptsize[-0.307, +0.204]} & +0.080 {\scriptsize[-0.127, +0.119]} & +0.030 {\scriptsize[-0.070, +0.051]} & +0.011 {\scriptsize[+0.002, +0.024]} \\
+POPS Ellipse+EB (free center) & -0.006 {\scriptsize[-0.308, +0.170]} & +0.064 {\scriptsize[-0.128, +0.106]} & -0.012 {\scriptsize[-0.086, +0.012]} & -0.053 {\scriptsize[-0.063, -0.043]} \\
+POPS Ellipse+PAC (free center) & -0.086 {\scriptsize[-0.161, -0.029]} & -0.135 {\scriptsize[-0.182, -0.101]} & -0.139 {\scriptsize[-0.173, -0.109]} & -0.092 {\scriptsize[-0.116, -0.068]} \\
+\bottomrule
+\end{tabular}
+
+% ace: unsigned PIT calibration area (input-conditional)
+\begin{tabular}{lcccc}
+\toprule
+Method & 1.5 & 3 & 6 & 20 \\
+\midrule
+Bayesian ridge & 0.070 {\scriptsize[0.021, 0.108]} & 0.106 {\scriptsize[0.068, 0.128]} & 0.122 {\scriptsize[0.099, 0.152]} & 0.172 {\scriptsize[0.172, 0.172]} \\
+POPS hypercube & 0.181 {\scriptsize[0.159, 0.206]} & 0.155 {\scriptsize[0.138, 0.180]} & 0.113 {\scriptsize[0.093, 0.146]} & 0.107 {\scriptsize[0.105, 0.109]} \\
+POPS Ellipse & 0.078 {\scriptsize[0.046, 0.125]} & 0.084 {\scriptsize[0.060, 0.109]} & 0.059 {\scriptsize[0.040, 0.079]} & 0.042 {\scriptsize[0.042, 0.042]} \\
+POPS Ellipse+EB & 0.086 {\scriptsize[0.029, 0.173]} & 0.041 {\scriptsize[0.019, 0.066]} & 0.039 {\scriptsize[0.017, 0.060]} & 0.049 {\scriptsize[0.049, 0.049]} \\
+POPS Ellipse+PAC & 0.063 {\scriptsize[0.028, 0.086]} & 0.045 {\scriptsize[0.028, 0.092]} & 0.079 {\scriptsize[0.036, 0.107]} & 0.030 {\scriptsize[0.017, 0.060]} \\
+Bayesian stacking & 0.069 {\scriptsize[0.031, 0.124]} & 0.067 {\scriptsize[0.045, 0.091]} & 0.031 {\scriptsize[0.016, 0.059]} & 0.070 {\scriptsize[0.070, 0.070]} \\
+PVI & 0.152 {\scriptsize[0.077, 0.360]} & 0.158 {\scriptsize[0.112, 0.331]} & 0.173 {\scriptsize[0.109, 0.312]} & 0.133 {\scriptsize[0.100, 0.340]} \\
+PACm & 0.223 {\scriptsize[0.216, 0.228]}* & 0.219 {\scriptsize[0.213, 0.223]}* & 0.210 {\scriptsize[0.199, 0.217]}* & 0.172 {\scriptsize[0.165, 0.180]}* \\
+PAC$^2_T$ & 0.113 {\scriptsize[0.047, 0.183]}* & 0.201 {\scriptsize[0.175, 0.223]}* & 0.219 {\scriptsize[0.205, 0.230]}* & 0.228 {\scriptsize[0.226, 0.229]}* \\
+PVI (lamb=1) & 0.177 {\scriptsize[0.099, 0.336]} & 0.169 {\scriptsize[0.108, 0.386]} & 0.161 {\scriptsize[0.130, 0.315]} & 0.134 {\scriptsize[0.100, 0.296]} \\
+POPS Ellipse (free center) & 0.139 {\scriptsize[0.054, 0.188]} & 0.081 {\scriptsize[0.052, 0.124]} & 0.056 {\scriptsize[0.026, 0.104]} & 0.073 {\scriptsize[0.058, 0.076]} \\
+POPS Ellipse+EB (free center) & 0.118 {\scriptsize[0.044, 0.189]} & 0.063 {\scriptsize[0.037, 0.121]} & 0.050 {\scriptsize[0.025, 0.091]} & 0.069 {\scriptsize[0.059, 0.070]} \\
+POPS Ellipse+PAC (free center) & 0.071 {\scriptsize[0.046, 0.124]} & 0.107 {\scriptsize[0.080, 0.130]} & 0.106 {\scriptsize[0.084, 0.138]} & 0.083 {\scriptsize[0.068, 0.099]} \\
+\bottomrule
+\end{tabular}
+
+% ace: signed PIT calibration area (input-conditional)
+\begin{tabular}{lcccc}
+\toprule
+Method & 1.5 & 3 & 6 & 20 \\
+\midrule
+Bayesian ridge & +0.017 {\scriptsize[-0.066, +0.068]} & +0.011 {\scriptsize[-0.056, +0.061]} & +0.014 {\scriptsize[-0.030, +0.057]} & +0.049 {\scriptsize[+0.049, +0.049]} \\
+POPS hypercube & +0.003 {\scriptsize[-0.101, +0.089]} & +0.005 {\scriptsize[-0.060, +0.068]} & +0.013 {\scriptsize[-0.027, +0.069]} & +0.090 {\scriptsize[+0.088, +0.092]} \\
+POPS Ellipse & +0.011 {\scriptsize[-0.070, +0.076]} & -0.001 {\scriptsize[-0.052, +0.051]} & -0.001 {\scriptsize[-0.030, +0.050]} & +0.012 {\scriptsize[+0.012, +0.012]} \\
+POPS Ellipse+EB & +0.006 {\scriptsize[-0.050, +0.047]} & +0.003 {\scriptsize[-0.046, +0.038]} & +0.004 {\scriptsize[-0.030, +0.034]} & +0.016 {\scriptsize[+0.015, +0.016]} \\
+POPS Ellipse+PAC & +0.000 {\scriptsize[-0.047, +0.069]} & +0.012 {\scriptsize[-0.032, +0.051]} & -0.007 {\scriptsize[-0.042, +0.021]} & +0.010 {\scriptsize[-0.012, +0.026]} \\
+Bayesian stacking & +0.013 {\scriptsize[-0.034, +0.068]} & +0.009 {\scriptsize[-0.033, +0.043]} & +0.014 {\scriptsize[-0.018, +0.049]} & +0.065 {\scriptsize[+0.065, +0.065]} \\
+PVI & +0.025 {\scriptsize[-0.256, +0.338]} & +0.047 {\scriptsize[-0.280, +0.291]} & +0.051 {\scriptsize[-0.281, +0.304]} & -0.001 {\scriptsize[-0.262, +0.291]} \\
+PACm & +0.010 {\scriptsize[-0.063, +0.050]}* & -0.008 {\scriptsize[-0.041, +0.049]}* & +0.010 {\scriptsize[-0.039, +0.055]}* & +0.008 {\scriptsize[-0.021, +0.025]}* \\
+PAC$^2_T$ & -0.024 {\scriptsize[-0.115, +0.053]}* & +0.000 {\scriptsize[-0.068, +0.067]}* & +0.015 {\scriptsize[-0.028, +0.074]}* & +0.049 {\scriptsize[+0.047, +0.052]}* \\
+PVI (lamb=1) & -0.007 {\scriptsize[-0.326, +0.259]} & -0.040 {\scriptsize[-0.321, +0.293]} & -0.007 {\scriptsize[-0.231, +0.289]} & +0.045 {\scriptsize[-0.245, +0.232]} \\
+POPS Ellipse (free center) & -0.010 {\scriptsize[-0.103, +0.042]} & -0.033 {\scriptsize[-0.105, +0.019]} & -0.048 {\scriptsize[-0.097, -0.005]} & -0.073 {\scriptsize[-0.076, -0.058]} \\
+POPS Ellipse+EB (free center) & -0.008 {\scriptsize[-0.100, +0.042]} & -0.030 {\scriptsize[-0.101, +0.022]} & -0.046 {\scriptsize[-0.088, -0.007]} & -0.066 {\scriptsize[-0.069, -0.052]} \\
+POPS Ellipse+PAC (free center) & -0.009 {\scriptsize[-0.074, +0.053]} & -0.009 {\scriptsize[-0.050, +0.028]} & -0.022 {\scriptsize[-0.046, +0.008]} & -0.040 {\scriptsize[-0.056, -0.026]} \\
+\bottomrule
+\end{tabular}

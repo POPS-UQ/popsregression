@@ -86,6 +86,18 @@ class PredictiveVI:
     n_skipped_ : int
         Steps skipped because of NaN gradients.
 
+    values_, score_values_, kl_values_ : list of float
+        Per accepted step: the maximized quantity ``score + lamb * KLPrior``
+        and its two parts (the summed Monte Carlo log score and the
+        ``KLPrior`` estimate, 0 when ``lamb = 0``), each on that step's own
+        fresh draws.
+
+    n_iter_, n_fev_ : int
+        Iterations run and gradient evaluations (one per iteration). The
+        published loop has a fixed iteration budget and no convergence
+        test, so ``termination_`` is always ``'iteration_budget'``;
+        ``converged_`` only records that the final parameters are finite.
+
     fit_time_ : float
     """
 
@@ -223,11 +235,14 @@ class PredictiveVI:
         state = {"v": np.zeros_like(params), "m": np.zeros_like(params)}
         self.n_skipped_ = 0
         self.values_ = []
+        self.score_values_ = []
+        self.kl_values_ = []
         for step in range(self.iterations):
             lr = self.learning_rate
             if step >= self.iterations // 2:
                 lr = self.learning_rate / 10
             value, grads = self._log_score(params, Z, ys, rng.randn(self.s, p))
+            score, v2 = value, 0.0
             if self.lamb != 0:
                 v2, g2 = self._kl_prior(params, rng.randn(self.s, p))
                 value, grads = value + self.lamb * v2, grads + self.lamb * g2
@@ -240,12 +255,56 @@ class PredictiveVI:
                 continue
             params = self._ascend(params, grads, lr, state)
             self.values_.append(value)
+            self.score_values_.append(score)
+            self.kl_values_.append(v2)
         self.mu_, self.L_, _ = self._factor(params, p)
         self.params_ = params
         self.converged_ = bool(np.all(np.isfinite(params)))
         self.n_iter_ = self.iterations
+        self.n_fev_ = self.iterations
+        self.termination_ = "iteration_budget"
         self.fit_time_ = time.perf_counter() - start
         return self
+
+    # -- independent re-evaluation of the objective ---------------------------
+
+    def kl_divergence(self):
+        """Closed-form ``KL(q || N(0, prior_scale^2 I))`` of the fitted ``q``
+        (the expectation of minus the published ``KLPrior`` estimate)."""
+        p = self.mu_.size
+        tau2 = self.prior_scale**2
+        return 0.5 * (
+            (np.sum(self.L_**2) + self.mu_ @ self.mu_) / tau2
+            - p
+            + p * np.log(tau2)
+            - 2.0 * np.sum(np.log(np.diag(self.L_)))
+        )
+
+    def evaluate_objective(self, X, y, n_groups=256, random_state=None):
+        """The published objective at the fitted ``q``, on fresh draws.
+
+        Per datum, as a quantity to minimize: the data term
+        ``-(1/n) sum_i mean_k log((1/s) sum_j p(y_i | theta_jk))`` over
+        ``n_groups`` fresh independent groups of ``s`` draws, and the
+        regularizer ``lamb * KL(q || prior) / n`` (in closed form).
+
+        Returns
+        -------
+        data, kl, total : float
+        """
+        Z = self._transform(X)
+        ys = np.asarray(y, dtype=float).ravel() / self.y_scale_
+        n, p = Z.shape
+        rng = np.random.RandomState(random_state)
+        u = rng.randn(n_groups, self.s, p)
+        theta = self.mu_[None, None, :] + u @ self.L_.T  # (K, s, p)
+        resid = ys[None, :, None] - np.einsum("ip,ksp->kis", Z, theta)
+        s2 = self._width() ** 2
+        lls = -0.5 * np.log(2 * np.pi * s2) - 0.5 * resid**2 / s2
+        score = logsumexp(lls, axis=2) - np.log(self.s)  # (K, n)
+        data = float(-np.mean(score))
+        kl = float(self.lamb * self.kl_divergence() / n)
+        return data, kl, data + kl
 
     def _ascend(self, x, g, lr, state):
         """One ascent step: the jax.example_libraries update applied to -g."""

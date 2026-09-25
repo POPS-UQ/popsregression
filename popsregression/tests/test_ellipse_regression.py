@@ -419,9 +419,7 @@ def test_pac_bound_holds_on_an_exactly_summable_population():
         ):
             draws = mean + np.sqrt(var) * rng.randn(2000, mean.size)
             mu, half = kernel.pushforward(kernel.design(X_pop), draws)
-            log_ball = projected_ball_logpdf(
-                y_pop[None, :] - mu, half, kernel.ball_dim
-            )
+            log_ball = projected_ball_logpdf(y_pop[None, :] - mu, half, kernel.ball_dim)
             loss = -np.logaddexp(np.log1p(-beta) + log_ball, np.log(beta / R))
             risks.append(weight * loss.mean())  # E_{pi_H} G(Psi), exact over x
         population_H = float(np.sum(risks))

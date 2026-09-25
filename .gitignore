@@ -71,3 +71,6 @@ popsregression/_version.py
 # Local virtual environments
 .venv/
 venv/
+
+# Per-point prediction exports (large, regenerable)
+examples/generated/predictions/
