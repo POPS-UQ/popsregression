@@ -42,7 +42,7 @@ y_pred, y_std = model.predict(X_test, return_std=True)
 ellipse = POPSEllipseRegression(regularization="empirical-bayes")
 ellipse.fit(X_train, y_train)
 lo, hi = ellipse.predict_interval(X_test, level=0.9545)
-theta = ellipse.sample(1000)          # parameter draws for propagation
+fields = ellipse.sample_predictions(X_test, 1000)  # joint draws for propagation
 
 # The same with a PAC-Bayes bound; y_bounds must be known in advance
 pac = POPSEllipseRegression(regularization="PAC", y_bounds=(y_lower, y_upper))

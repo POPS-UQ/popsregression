@@ -43,9 +43,16 @@ density: supported on `μ · F(x) ± a(x)`, with half-width
 has *compact support*.
 
 ### Width floor δ
-A small constant added inside every half-width, `a(x)² = F(x)ᵀ B F(x) + δ²`. It
-keeps the objective finite and gives every predictive density an upper bound
-`C_P / δ`.
+An extra parameter coordinate: an output offset `a` with `|a| ≤ δ`. The
+parameter distribution is uniform on an ellipsoid in `(θ, a)`, and each draw's
+prediction is `θ · F(x) + a`. Every half-width therefore becomes
+`a(x)² = F(x)ᵀ B F(x) + δ²`, the projected-ball dimension becomes `P + 1`, and
+every predictive density is at most `C_{P+1} / δ` anywhere in the input
+domain. Because the floor is part of the parameter distribution, scored
+intervals and propagated draws (`sample(return_offset=True)`,
+`sample_predictions`) come from the same distribution. For a design without a
+constant feature (e.g. Burgers) it adds a small constant shift to the function
+space; `delta=0` removes it. It is not observation noise.
 
 ### Parameter-only predictive (no aleatoric term)
 Every prediction, interval and score in this package uses the pushforward of
@@ -132,9 +139,12 @@ every output the engine can produce (e.g. a maximum principle). It must not be
 read off the training sample. It fixes `R_y` and the loss ceiling.
 
 ### Minimum half-width
-`min_half_width`, written `a_min`: the width floor used by the PAC path. Every
-pushforward half-width is at least `a_min`, so the density is at most
-`C_P / a_min` and the floored loss lies in a known interval `[a_β, b_β]`.
+`min_half_width`, written `a_min`: the radius of the [width floor](#width-floor)
+coordinate used by the PAC path (default 1% of the
+[declared output interval](#declared-output-interval)). Every pushforward
+half-width is at least `a_min` for every input, so the density is at most
+`C_{P+1} / a_min` and the floored loss lies in a known interval `[a_β, b_β]`,
+without looking at data.
 
 ### Trivial bound, non-vacuous
 The floored loss can never exceed `b_β = log(R_y / β)`. A PAC bound below this
@@ -145,7 +155,19 @@ The PAC path randomly divides the independent units into two halves. The
 *pilot* half fixes everything the bound treats as given in advance: centering
 and whitening, the pilot ellipse, the hyperprior over `Ψ`. The *certification*
 half is then used only to fit the hyperposterior and to evaluate the bound, so
-the hyperprior is independent of the data the bound is computed on.
+the hyperprior is independent of the data the bound is computed on. Any
+[preprocessor](#preprocessor-pilot-only-features) is also fitted on the pilot
+half only.
+
+### Preprocessor (pilot-only features)
+`POPSEllipseRegression(preprocessor=...)` accepts a scikit-learn transformer,
+such as a PCA projection, applied before the ellipsoid model. On the PAC path
+it is cloned and fitted on each [pilot split](#pilot-split), so the
+certification units never influence the features, which is what the bound
+requires. On the other paths it is fitted on the whole training sample. In the
+ACE study every method uses the same 35 PCA modes plus a constant column; the
+modes are learned from training descriptors only and refitted wherever a
+method holds data out (pilot splits, stacking validation folds).
 
 ### Cross-fitting
 With `cross_fit=True` the roles of the two halves are also swapped. The
@@ -170,8 +192,10 @@ Two PAC-Bayes inequalities are available for the PAC path.
 - `pac_inequality="linear"` is the paper's Theorem 1, with the Hoeffding bound
   `λ R² / (8 N₁)` for the moment term of a loss of range `R`.
 - `pac_inequality="kl"` (default) is the Seeger–Maurer bound
-  `kl(Ĝ ‖ G) ≤ (KL + log(2 sqrt(N₁) / ξ)) / N₁`, for the loss rescaled to
-  `[0, 1]`. It is usually tighter with few units.
+  `kl(Ĝ ‖ G) ≤ (KL + log(ξ(N₁) / ξ)) / N₁`, for the loss rescaled to
+  `[0, 1]`. Here `ξ(N₁) = Σ_k C(N₁, k) (k/N₁)^k (1 - k/N₁)^(N₁-k)` is Maurer's
+  moment constant, computed exactly; it is valid for every `N₁ ≥ 1` and never
+  exceeds `2 sqrt(N₁)`. This form is usually tighter with few units.
 
 Both lift a standard PAC-Bayes inequality to the hyperparameters and then use
 the Jensen step `G[mixture] ≤ average of G[Ψ]`.
@@ -185,6 +209,17 @@ grid size.
 The hyperposterior average of `Ĝ` is estimated from independent draws of `Ψ`.
 The bound adds an empirical-Bernstein upper deviation for that estimate, with
 its own failure probability `mc_failure_probability`.
+
+### Stored mixture, continuous mixture
+The PAC hyperposterior is a continuous Gaussian over `Ψ`, but `predict*`
+returns a finite mixture of `n_hyper_samples` (default 1024) stored draws from
+it. The PAC-Bayes inequality bounds the *continuous* mixture. A last step
+carries the bound to the *stored* mixture actually returned: its loss is at
+most the average of the draws' losses (Jensen), which exceeds its mean by at
+most a Chernoff–kl deviation that holds with probability
+`1 - mixture_failure_probability`. `certificate_.raw_bound` is this bound for
+the stored mixture; `certificate_.continuous_bound` is the one for the
+continuous mixture. Quantiles are exact for the stored mixture.
 
 ### Jensen gap
 The difference between the averaged loss `Σ_k q_k Ĝ(Ψ_k)` and the loss of the
@@ -211,16 +246,50 @@ Envelopes for the moment term: `ψ(t) ≤ t² s² / 2` (sub-Gaussian) or
 `ψ(t) ≤ t² s² / (2 (1 - c t))` (sub-gamma, as in Corollary 1). For the
 one-sided moment, a bounded predictive density suffices for a sub-gamma
 envelope, with `s² = Var(ℓ)` and `c = (G - a_Ψ) / 3`, where `a_Ψ` is the
-smallest possible loss. Heavy upper tails of the loss do not enter `c`.
+smallest possible loss. Heavy upper tails of the loss do not enter `c`. The
+envelope holds for `0 < t < 1 / c`.
+
+### Domain-wide minimum loss
+The `a_Ψ` of the sub-gamma envelope must bound the loss over the whole input
+and output domain, not just the test points seen. For the POPS ellipse family
+it is analytic: every half-width is at least the [width floor](#width-floor)
+`δ` (the [minimum half-width](#minimum-half-width) on the PAC path), so
+`a_Ψ = -log((1 - β) C_{P+1} / δ + β / R_y)`. The smallest loss on a finite test
+set is only a plug-in estimate of it and gives a smaller, unjustified `c`.
+
+### Hoeffding bound for the floored loss
+The [floored](#floor-contamination-floor-weight) loss lies in a known
+interval of width `R_ℓ = b_β - a_β`, so Hoeffding's lemma gives
+`ψ(t) ≤ t² R_ℓ² / 8` for every `t` and every `Ψ`: a uniform sub-Gaussian (hence
+sub-gamma with `c = 0`) condition that needs no data. It says nothing about
+the unfloored loss. Everything else in the fluctuation study (sample CGFs,
+`J`, sample variances) is an empirical plug-in estimate; no finite sample
+establishes a moment condition uniformly over a hyperprior.
 
 ## Evaluation and comparison methods
 
 ### Exact central interval, coverage
 The interval between the `(1 - level) / 2` and `(1 + level) / 2` quantiles of a
-predictive distribution: computed from the mixture CDF for the ellipse family,
+predictive distribution: computed from the CDF of the returned (stored)
+mixture for the ellipse family,
 from Gaussian quantiles for Bayesian ridge, PVI, PACm and PAC²-T, and from parameter draws
 for the hypercube. *Coverage* is the fraction of held-out targets inside it.
 The same levels (95.45% and 99.9%) are used for every method.
+
+### Calibration areas (P-P and PIT)
+Two different checks, each summarised by the area between a curve `C(u)` and
+the diagonal: the unsigned area `A_abs = ∫ |C(u) - u| du` (the primary ranking,
+smaller is better) and the signed area `A_s = ∫ (C(u) - u) du`.
+- *Pooled error P-P curve*: the distribution of predicted absolute errors,
+  pooled over all test inputs, against the observed one. It checks that the
+  overall spread of errors is right, not that each input's interval is right.
+- *PIT curve*: the distribution of `u_i = F_i(y_i)`, each target passed
+  through its own predictive CDF. It checks input-conditional calibration.
+
+`A_abs = 0` only when the curve is the diagonal. `A_s = 0` does not imply
+agreement (positive and negative parts cancel), and `A_s > 0` alone does not
+show that one distribution is stochastically smaller than the other. For the
+pooled error curve, `A_s > 0` indicates net over-confidence.
 
 ### Interval score
 The Gneiting–Raftery score of a central interval:
@@ -229,11 +298,14 @@ The Gneiting–Raftery score of a central interval:
 cover, and is finite for every method. Lower is better.
 
 ### Shared design matrix
-Every method is fitted on the same design matrix. The comparison methods
-rescale features and target but never center them, since centering would
-quietly add an intercept that the POPS methods and Bayesian ridge do not
-have. Where an intercept is wanted (ACE), it is an explicit constant column
-of the design, so every method treats it the same way.
+Every method is fitted on the same features. The comparison methods rescale
+features and target but never center them, since centering would quietly add
+an intercept that the POPS methods and Bayesian ridge do not have. Where an
+intercept is wanted (ACE), it is an explicit constant column of the design,
+so every method treats it the same way. For ACE the features are 35 PCA modes
+of the raw descriptors plus that column; see
+[preprocessor](#preprocessor-pilot-only-features) for where the modes are
+learned.
 
 ### Floored NLL
 The test log loss of `(1 - b) p + b / R_y` for a common small `b`. It is finite

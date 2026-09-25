@@ -3,24 +3,30 @@
 The bundled ``ace_linear_uq_energies.npz`` holds the energy equations of a
 linear 267-feature Cu ACE potential exported by ``mliap_train.py``: 700
 training structures and 300 held-out test structures. The design is projected
-onto its leading 35 PCA modes so that small observation/parameter ratios are
-reachable from 700 structures alone, and two regimes (N/P = 1.5 and N/P = 20)
-are fitted with ``BayesianRidge``, the POPS hypercube, the POPS ellipse,
-Ellipse+EB and Ellipse+PAC (paper Fig. ``fig:ace``).
+onto its leading 35 PCA modes plus a constant column (P = 36) so that small
+observation/parameter ratios are reachable from 700 structures alone, and two
+regimes (N/P = 1.5 and N/P = 20) are fitted with ``BayesianRidge``, the POPS
+hypercube, POPS Ellipse, POPS Ellipse+EB and POPS Ellipse+PAC (paper Fig.
+``fig:ace``).
 
-By default (``--basis subset``) the PCA basis of each regime is built from its
-own training structures only, so the sparse regime uses no information from
-the other training structures; ``--basis pool`` reproduces the workshop
-construction, whose basis used the unlabelled descriptors of all 700
-training structures. Every posterior is sampled for parameter uncertainty
-only (Bayesian ridge ``sigma_``, never its noise precision).
+By default (``--basis subset``) the PCA basis is learned from training
+descriptors only: once from the whole training subset for the first four
+methods, and separately on each pilot split inside POPS Ellipse+PAC, so its
+certification structures never influence the features. ``--basis pool``
+reproduces the workshop construction, whose basis used the unlabelled
+descriptors of all 700 training structures (not valid for the PAC bound).
+Every posterior is sampled for parameter uncertainty only (Bayesian ridge
+``sigma_``, never its noise precision).
 
-The main figure is a probability-probability (P-P) plot: the posterior-sampled
-CDF of the held-out energy error against the observed CDF, which is the parity
-line for a perfectly calibrated posterior. Each panel is annotated with the
-signed miscalibration area between the two (see
-:func:`probability_probability_curve`). ``--error-output`` additionally writes
-the two error densities that the P-P plot compares.
+The main figure is a probability-probability (P-P) plot of pooled absolute
+errors: the predicted distribution function of ``|E - E_mean|`` over all test
+structures against the observed one; a perfectly matched spread lies on the
+parity line. This is pooled error-distribution agreement, not calibration of
+each structure's interval (see :mod:`comparisons.calibration`). Each panel is
+annotated with the unsigned area ``A_abs`` and signed area ``A_s`` between the
+curve and the parity line (see :func:`probability_probability_curve`).
+``--error-output`` additionally writes the two error densities that the P-P
+plot compares.
 
 A trusted pickle with the same four keys can be supplied with ``--data``.
 """
@@ -31,7 +37,8 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
-from comparisons import harness
+from comparisons import calibration, harness
+from comparisons.labels import display
 from sklearn.linear_model import BayesianRidge
 
 from popsregression import POPSEllipseRegression, POPSRegression
@@ -45,12 +52,15 @@ DEFAULT_DATA = HERE / "ace_linear_uq_energies.npz"
 DEFAULT_OUTPUT = HERE / "example_mliap.png"
 DEFAULT_ERROR_OUTPUT = HERE / "example_mliap_errors.png"
 DATA_KEYS = ("A_train_E", "y_train_E", "A_test_E", "y_test_E")
-MODEL_TITLES = (
-    "Bayesian ridge",
-    "POPS hypercube",
-    "POPS ellipse",
-    "Ellipse+EB",
-    "Ellipse+PAC",
+MODEL_TITLES = tuple(
+    display(m)
+    for m in (
+        "Bayesian ridge",
+        "POPS hypercube",
+        "POPS ellipse",
+        "Ellipse+EB",
+        "Ellipse+PAC",
+    )
 )
 
 
@@ -94,17 +104,24 @@ def make_regimes(ratios=DATA_RATIOS, basis="subset"):
         regimes.append(
             {
                 "ratio": problem.y_train.size / problem.n_params,
-                "X": problem.X_train,
+                "problem": problem,
                 "y": problem.y_train,
-                "X_test": problem.X_test,
                 "y_test": problem.y_test,
             }
         )
     return tuple(regimes)
 
 
-def fit_models(X_train, y_train):
-    """Fit the same five estimators as the polynomial and Burgers examples."""
+def fit_models(problem):
+    """Fit the same five estimators as the polynomial and Burgers examples.
+
+    Returns ``(model, X_eval)`` pairs: Bayesian ridge and the hypercube use
+    the PCA features fitted on the whole training subset; the ellipse family
+    takes the raw descriptors and its own ``preprocessor`` (for PAC fitted on
+    each pilot split only).
+    """
+    X_train, X_test, _ = problem.design()
+    y_train = problem.y_train
     resample_density = POSTERIOR_SAMPLE_COUNT / len(y_train)
 
     bayesian_ridge = BayesianRidge(fit_intercept=False)
@@ -119,14 +136,26 @@ def fit_models(X_train, y_train):
     )
     pops_hypercube.fit(X_train, y_train)
 
-    ellipse = POPSEllipseRegression(random_state=SEED).fit(X_train, y_train)
+    raw, raw_test, pre = problem.X_train, problem.X_test, problem.preprocessor
+    ellipse = POPSEllipseRegression(preprocessor=pre, random_state=SEED).fit(
+        raw, y_train
+    )
     ellipse_eb = POPSEllipseRegression(
-        regularization="empirical-bayes", random_state=SEED
-    ).fit(X_train, y_train)
+        regularization="empirical-bayes", preprocessor=pre, random_state=SEED
+    ).fit(raw, y_train)
     ellipse_pac = POPSEllipseRegression(
-        regularization="PAC", y_bounds=harness.ACE_Y_BOUNDS, random_state=SEED
-    ).fit(X_train, y_train)
-    return (bayesian_ridge, pops_hypercube, ellipse, ellipse_eb, ellipse_pac)
+        regularization="PAC",
+        y_bounds=harness.ACE_Y_BOUNDS,
+        preprocessor=pre,
+        random_state=SEED,
+    ).fit(raw, y_train)
+    return (
+        (bayesian_ridge, X_test),
+        (pops_hypercube, X_test),
+        (ellipse, raw_test),
+        (ellipse_eb, raw_test),
+        (ellipse_pac, raw_test),
+    )
 
 
 def sample_bayesian_errors(model, X, rng, n_samples):
@@ -137,25 +166,17 @@ def sample_bayesian_errors(model, X, rng, n_samples):
     return X @ coefficient_errors
 
 
-def projected_ball_samples(rng, n_rows, n_samples, dimension):
-    """Sample one-dimensional marginals of a uniform dimension-D ball."""
-    beta_shape = 0.5 * (dimension + 1.0)
-    return 2.0 * rng.beta(beta_shape, beta_shape, (n_rows, n_samples)) - 1.0
-
-
 def sample_ellipse_errors(model, X, rng, n_samples):
-    """Exact marginal errors of a (hierarchical) ellipsoid predictive.
+    """Errors of joint draws of the (hierarchical) ellipsoid predictive.
 
-    Each draw picks a stored hyperparameter draw with its mixture weight and
-    then a projected-ball point of that ellipsoid's pushforward; errors are
-    measured from the mixture mean.
+    Each column is one parameter draw ``(theta, a)`` of the returned
+    predictive (offset coordinate included), so the marginal at each input is
+    exactly the scored predictive; errors are measured from the mean.
     """
-    weights, mean, half = model._mixture(X)
-    idx = rng.choice(weights.size, size=(len(X), n_samples), p=weights)
-    rows = np.arange(len(X))[:, None]
-    ball = projected_ball_samples(rng, len(X), n_samples, model._ball_dim)
-    samples = mean[idx, rows] + half[idx, rows] * ball
-    return samples - (weights @ mean)[:, None]
+    draws = model.sample_predictions(
+        X, n_samples, random_state=int(rng.integers(2**31 - 1))
+    )
+    return draws - model.predict(X)[:, None]
 
 
 def sample_posterior_errors(model, X, rng):
@@ -171,58 +192,58 @@ def sample_posterior_errors(model, X, rng):
 
 
 def probability_probability_curve(observed_errors, posterior_errors):
-    """Empirical P-P curve of |error| and its signed miscalibration area.
+    """Pooled P-P curve of |error| and its signed and unsigned areas.
 
-    Plotting one empirical CDF against another is a probability-probability
-    (P-P) plot; a perfectly calibrated posterior lies on the parity line. The
-    signed area enclosed between the curve and that line,
+    Plotting the predicted distribution function of the pooled absolute
+    errors against the observed one is a probability-probability (P-P) plot,
+    ``C(u) = F_post(F_obs^{-1}(u))``; matching error distributions lie on the
+    parity line. The two areas are
 
-        A = int_0^1 F_post(F_obs^-1(u)) du - 1/2
-          = P(|e_post| < |e_obs|) - 1/2,
+        A_s   = int_0^1 (C(u) - u) du = P(|e_post| < |e_obs|) - 1/2,
+        A_abs = int_0^1 |C(u) - u| du.
 
-    is the *signed miscalibration area*. It is the Mann-Whitney statistic
-    shifted to zero, so 2A is the Gini coefficient (equivalently Somers' D, or
-    twice the ROC excess area AUC - 1/2) of the two error samples. It lies in
-    [-1/2, +1/2], is invariant under any common rescaling of the errors, and is
-    zero exactly when the two distributions agree. Positive values mean the
-    posterior errors are stochastically smaller than the observed ones, i.e.
-    the posterior is too narrow (over-confident); negative values mean it is
-    too wide.
+    ``A_s`` is the Mann-Whitney statistic shifted to zero (so ``2 A_s`` is
+    the Gini coefficient, or Somers' D, of the two samples); it lies in
+    ``[-1/2, 1/2]`` and is invariant under a common rescaling of the errors.
+    ``A_s = 0`` does NOT mean the two distributions agree (positive and
+    negative parts of ``C(u) - u`` can cancel), and ``A_s > 0`` alone does NOT
+    mean the predicted errors are stochastically smaller (that requires
+    ``C(u) >= u`` for every ``u``); ``A_s > 0`` indicates net
+    over-confidence and ``A_s < 0`` net under-confidence. ``A_abs`` is zero
+    exactly when the two pooled distributions agree, and is the primary
+    ranking (smaller is better). Pooled agreement is not per-input
+    calibration: it can hold while individual intervals are wrong.
 
-    Returns the observed CDF, the posterior CDF, and the signed area. The area
-    is integrated over the returned curve, so it is exactly the area drawn.
+    Returns the observed CDF ``u``, the curve ``C(u)`` (a step function,
+    constant on each ``(u[k-1], u[k]]``), ``A_s`` and ``A_abs``, integrated
+    exactly over the returned curve.
     """
-    observed = np.sort(np.abs(np.asarray(observed_errors, dtype=np.float64).ravel()))
-    posterior = np.sort(np.abs(np.asarray(posterior_errors, dtype=np.float64).ravel()))
+    posterior = np.asarray(posterior_errors, dtype=np.float64)
+    observed = np.asarray(observed_errors, dtype=np.float64).ravel()
     if observed.size == 0 or posterior.size == 0:
         raise ValueError("both error samples must be non-empty")
-    thresholds = np.unique(np.concatenate([[0.0], observed, posterior]))
-    observed_cdf = np.searchsorted(observed, thresholds, side="right") / observed.size
-    posterior_cdf = (
-        np.searchsorted(posterior, thresholds, side="right") / posterior.size
-    )
-    area = float(np.trapezoid(posterior_cdf, observed_cdf) - 0.5)
-    return observed_cdf, posterior_cdf, area
+    return calibration.error_pp_curve(observed, posterior)
 
 
-def posterior_error_records(models, X_test, y_test):
+def posterior_error_records(models, y_test):
     """Collect observed and sampled posterior energy errors for each model."""
     records = []
     rng = np.random.default_rng(SEED)
-    for model in models:
+    for model, X_test in models:
         test_errors = y_test - model.predict(X_test)
         pred_errors = sample_posterior_errors(model, X_test, rng)
         posterior_rms = np.sqrt(np.mean(pred_errors**2, axis=1))
         if np.any(posterior_rms <= 0.0):
             raise RuntimeError("encountered a zero energy posterior width")
         posterior_95 = np.sqrt(np.percentile(pred_errors**2, 95, axis=1))
-        _, _, area = probability_probability_curve(test_errors, pred_errors)
+        _, _, area, area_abs = probability_probability_curve(test_errors, pred_errors)
         records.append(
             {
                 "test_errors": test_errors,
                 "pred_errors": pred_errors,
                 "posterior_rms": posterior_rms,
                 "miscalibration_area": area,
+                "miscalibration_area_abs": area_abs,
                 "actual_coverage": float(np.mean(np.abs(test_errors) <= posterior_95)),
                 "energy_rmse": float(np.sqrt(np.mean(test_errors**2))),
             }
@@ -234,8 +255,11 @@ ANNOTATION_BBOX = dict(boxstyle="round,pad=0.18", fc="white", ec="0.65", alpha=0
 
 
 def area_label(record):
-    """Annotation text for a panel's signed miscalibration area."""
-    return f"misc. area = {record['miscalibration_area']:+.3f}"
+    """Annotation text for a panel's unsigned and signed areas."""
+    return (
+        f"$A_{{abs}}$ = {record['miscalibration_area_abs']:.3f}, "
+        f"$A_s$ = {record['miscalibration_area']:+.3f}"
+    )
 
 
 def make_panel_grid(n_rows):
@@ -321,26 +345,21 @@ def plot_pp(regimes, all_records, output):
     for row, (regime, records) in enumerate(zip(regimes, all_records)):
         for column, record in enumerate(records):
             ax = axes[row, column]
-            observed_cdf, posterior_cdf, _ = probability_probability_curve(
+            observed_cdf, posterior_cdf, _, _ = probability_probability_curve(
                 record["test_errors"],
                 record["pred_errors"],
             )
-            ax.plot([0.0, 1.0], [0.0, 1.0], "k--", linewidth=1.5, label="Calibrated")
+            # The curve is constant on each (u[k-1], u[k]]: evaluate it on a
+            # fine grid so the shaded region is exactly the integrated one.
+            grid = np.linspace(0.0, 1.0, 2001)
+            curve = posterior_cdf[
+                np.clip(np.searchsorted(observed_cdf, grid), 0, grid.size)
+            ]
             ax.plot(
-                observed_cdf,
-                posterior_cdf,
-                "C1",
-                linewidth=1.5,
-                label="Posterior vs observed",
+                [0.0, 1.0], [0.0, 1.0], "k--", linewidth=1.5, label="Matched spread"
             )
-            ax.fill_between(
-                observed_cdf,
-                observed_cdf,
-                posterior_cdf,
-                color="C1",
-                alpha=0.15,
-                linewidth=0.0,
-            )
+            ax.plot(grid, curve, "C1", linewidth=1.5, label="Predicted vs observed")
+            ax.fill_between(grid, grid, curve, color="C1", alpha=0.15, linewidth=0.0)
             ax.text(
                 0.5,
                 1.015,
@@ -357,9 +376,9 @@ def plot_pp(regimes, all_records, output):
             ax.set_yticks([0.0, 0.25, 0.5, 0.75, 1.0])
             ax.tick_params(labelsize=7)
             if row == len(regimes) - 1:
-                ax.set_xlabel("Observed CDF", fontsize=8)
+                ax.set_xlabel("Observed CDF of |error|", fontsize=8)
         axes[row, 0].set_ylabel(
-            f"N/P = {regime['ratio']:.1f}\nPosterior CDF",
+            f"N/P = {regime['ratio']:.1f}\nPredicted CDF of |error|",
             fontsize=8,
         )
 
@@ -388,11 +407,7 @@ def run(data=DEFAULT_DATA, output=DEFAULT_OUTPUT, error_output=None, basis="subs
     )
 
     all_records = [
-        posterior_error_records(
-            fit_models(regime["X"], regime["y"]),
-            regime["X_test"],
-            regime["y_test"],
-        )
+        posterior_error_records(fit_models(regime["problem"]), regime["y_test"])
         for regime in regimes
     ]
 
@@ -406,8 +421,8 @@ def run(data=DEFAULT_DATA, output=DEFAULT_OUTPUT, error_output=None, basis="subs
         print(f"N={len(regime['y'])}, N/P={regime['ratio']:.3f}")
         for title, record in zip(MODEL_TITLES, records):
             print(
-                f"  {title:20s} signed miscalibration area="
-                f"{record['miscalibration_area']:+.4f}  "
+                f"  {title:20s} A_abs={record['miscalibration_area_abs']:.4f} "
+                f"A_s={record['miscalibration_area']:+.4f}  "
                 "95% posterior interval covers "
                 f"{record['actual_coverage'] * 100:.1f}% of tests  "
                 f"RMSE E={record['energy_rmse']:.4g} eV/atom"

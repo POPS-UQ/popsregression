@@ -31,6 +31,7 @@ import numpy as np
 from scipy.linalg import cho_factor, cho_solve, solve_triangular
 from scipy.special import logsumexp
 from scipy.stats import t as student_t
+from sklearn.base import clone
 from sklearn.model_selection import GroupKFold, KFold
 from sklearn.utils import check_random_state
 
@@ -238,6 +239,13 @@ class BayesianStacking:
         Component priors and fold-internal preprocessing, see
         :class:`BayesianLinearRegression`.
 
+    preprocessor : transformer, default=None
+        Optional feature map (for example a PCA projection) whose output
+        columns the ``components`` refer to. It is cloned and refitted on
+        the training part of every validation fold, so held-out rows never
+        shape the features that score them, and once more on the whole
+        sample for the final components.
+
     random_state : int, default=0
         Seed of the fold shuffling and of parameter draws.
 
@@ -284,7 +292,9 @@ class BayesianStacking:
         b0=1e-2,
         standardize=True,
         random_state=0,
+        preprocessor=None,
     ):
+        self.preprocessor = preprocessor
         self.components = components
         self.cv = cv
         self.include_residual = include_residual
@@ -317,6 +327,20 @@ class BayesianStacking:
         n_splits = n_groups if self.cv == "loo" else min(int(self.cv), n_groups)
         return list(GroupKFold(n_splits=n_splits).split(np.zeros(n), groups=groups))
 
+    def _fit_features(self, X, y):
+        """Fitted clone of the preprocessor (or None) and transformed X."""
+        if self.preprocessor is None:
+            return None, X
+        pre = clone(self.preprocessor).fit(X, y)
+        return pre, np.asarray(pre.transform(X), dtype=float)
+
+    def transform(self, X):
+        """Features the final components use (preprocessed if configured)."""
+        X = np.asarray(X, dtype=float)
+        if getattr(self, "preprocessor_", None) is None:
+            return X
+        return np.asarray(self.preprocessor_.transform(X), dtype=float)
+
     def fit(self, X, y, group_ids=None):
         """Cross-validate, solve the stacking weights and refit."""
         t0 = time.perf_counter()
@@ -325,17 +349,21 @@ class BayesianStacking:
         n = y.shape[0]
         if X.ndim != 2 or X.shape[0] != n or n < 2:
             raise ValueError("X must be 2d with one row per entry of y (n >= 2).")
-        n_ref = X.shape[1]
+        self.preprocessor_, X_full = self._fit_features(X, y)
+        n_ref = X_full.shape[1]
         for cols in self.components:
             if cols is not None and np.asarray(cols).max() >= n_ref:
                 raise ValueError("A component references a column outside X.")
         K = len(self.components)
         oof = np.full((n, K), np.nan)
         for train, test in self._folds(n, group_ids):
+            # Fold-internal features: the held-out rows never shape them.
+            pre, X_train = self._fit_features(X[train], y[train])
+            X_test = X[test] if pre is None else pre.transform(X[test])
             for k, cols in enumerate(self.components):
-                model = self._make_component(cols).fit(X[train], y[train])
+                model = self._make_component(cols).fit(X_train, y[train])
                 oof[test, k] = model.predict_logpdf(
-                    X[test], y[test], self.include_residual
+                    X_test, y[test], self.include_residual
                 )
         if not np.all(np.isfinite(oof)):
             raise RuntimeError("Non-finite out-of-fold log densities.")
@@ -365,7 +393,7 @@ class BayesianStacking:
             for name, q in self.weights_by_rule_.items()
         }
         self.components_ = [
-            self._make_component(cols).fit(X, y) for cols in self.components
+            self._make_component(cols).fit(X_full, y) for cols in self.components
         ]
         self.residual_scales_ = np.array([c.residual_scale_ for c in self.components_])
         self.n_features_in_ = n_ref
@@ -390,6 +418,7 @@ class BayesianStacking:
         return self.include_residual if include_residual is None else include_residual
 
     def _component_logpdf(self, X, y, include_residual):
+        X = self.transform(X)
         return np.column_stack(
             [c.predict_logpdf(X, y, include_residual) for c in self.components_]
         )
@@ -406,6 +435,7 @@ class BayesianStacking:
         """Mean and standard deviation of the stacked mixture."""
         q = self._weights(weights)
         include_residual = self._residual(include_residual)
+        X = self.transform(X)
         means, stds = [], []
         for c in self.components_:
             m, s = c.predict(X, return_std=True, include_residual=include_residual)
@@ -421,6 +451,9 @@ class BayesianStacking:
     def predict_cdf(self, X, y, weights=None, include_residual=None):
         q = self._weights(weights)
         include_residual = self._residual(include_residual)
+        return self._cdf(self.transform(X), y, q, include_residual)
+
+    def _cdf(self, X, y, q, include_residual):
         return (
             np.column_stack(
                 [c.predict_cdf(X, y, include_residual) for c in self.components_]
@@ -434,6 +467,7 @@ class BayesianStacking:
         """Exact central interval of the mixture (a t mixture is not t)."""
         q = self._weights(weights)
         include_residual = self._residual(include_residual)
+        X = self.transform(X)
         locs, scales = [], []
         for c in self.components_:
             loc, scale = c._scale(X, include_residual)
@@ -446,7 +480,7 @@ class BayesianStacking:
             left, right = lo.copy(), hi.copy()
             for _ in range(n_bisect):
                 mid = 0.5 * (left + right)
-                below = self.predict_cdf(X, mid, q, include_residual) < prob
+                below = self._cdf(X, mid, q, include_residual) < prob
                 left = np.where(below, mid, left)
                 right = np.where(below, right, mid)
             return 0.5 * (left + right)
@@ -459,7 +493,9 @@ class BayesianStacking:
         Returns
         -------
         coef : ndarray of shape (n_reference_features, n_samples)
-            Coefficients embedded in the reference feature space.
+            Coefficients embedded in the reference feature space (the
+            preprocessed features, ``transform(X)``, if a preprocessor is
+            set).
 
         intercept : ndarray of shape (n_samples,)
 

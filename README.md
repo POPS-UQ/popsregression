@@ -114,8 +114,9 @@ All `BayesianRidge` parameters (`max_iter`, `tol`, `alpha_1`, `alpha_2`,
 `POPSEllipseRegression` fits a parameter distribution that is uniform on an
 ellipsoid. For a linear model its predictive density at `x` has a closed form,
 so the zero-noise generalization error is minimized directly. Predictive
-densities, exact quantiles and parameter draws come out without sampling
-error. The `regularization` parameter chooses how the finite-data uncertainty
+densities, exact quantiles and parameter draws are available in closed form
+(for the hierarchical layers, exactly for the stored finite mixture of
+hyperparameter draws that represents the predictive). The `regularization` parameter chooses how the finite-data uncertainty
 of the ellipsoid itself is handled:
 
 ```python
@@ -134,11 +135,11 @@ eb = POPSEllipseRegression(regularization="empirical-bayes").fit(X_train, y_trai
 # advance (e.g. from a maximum principle), not read off the data.
 pac = POPSEllipseRegression(regularization="PAC", y_bounds=(y_lower, y_upper))
 pac.fit(X_train, y_train, groups=case_id)   # groups: rows of one simulator case
-pac.certificate_.raw_bound, pac.certificate_.trivial_bound
+pac.certificate_.raw_bound, pac.certificate_.trivial_bound  # bound for the returned predictive
 
 lo, hi = eb.predict_interval(X_test, level=0.9545)   # exact central interval
 logp = eb.predict_logpdf(X_test, y_test)
-theta = eb.sample(1000)                               # draws for propagation
+fields = eb.sample_predictions(X_test, 1000)          # joint draws for propagation
 ```
 
 All predictions refer to parameter uncertainty only; no noise term is added.

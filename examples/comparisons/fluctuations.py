@@ -20,20 +20,37 @@ data and ``lambda = N`` the moment term of Theorem 1 is therefore exactly
 ``Psi_0H(N, N) = log E_{pi_0H} exp{N J(Psi)}``.
 
 For smaller ``t`` the one-sided Bennett inequality gives the sub-gamma form of
-Corollary 1 with ``s^2 = Var(l)`` and ``c = (G - a_Psi) / 3``, where
-``a_Psi = -log sup p_Psi`` is the smallest possible loss; it requires an upper
-bound on the density but no bound on the upper tail of the loss.
+Corollary 1 with ``s^2 = Var(l)`` and ``c = (G - a_Psi) / 3``, valid for
+``0 < t < 1 / c``, where ``a_Psi`` is a lower bound on the loss over the whole
+input and output domain. It requires an upper bound on the density but no
+bound on the upper tail of the loss. For the POPS ellipse family the density
+bound is analytic: every half-width is at least the offset radius ``delta``
+(``min_half_width`` for the PAC path), so ``a_Psi`` follows from
+:func:`domain_minimum_loss` without looking at data. The smallest loss seen
+on a finite test set is only a plug-in estimate of it.
+
+The floor-contaminated loss lies in ``[a, b]`` with ``b = log(R_y / beta)``,
+so Hoeffding's lemma gives the uniform sub-Gaussian bound
+``psi(t) <= t^2 (b - a)^2 / 8`` for every ``t`` and every ``Psi``
+(:func:`hoeffding_cgf`); it is a population guarantee for the floored loss
+only and certifies nothing about the unfloored loss.
 
 The helpers below estimate these quantities from held-out losses. Plug-in
-estimates are descriptive: they are not substitutes for the constants of a
-certified bound.
+estimates (``cgf``, ``jensen_gap``, sample variances, test-set minima) are
+descriptive: they are not substitutes for the constants of a certified
+bound, and no finite sample establishes a condition uniformly over a
+hyperprior.
 """
 
 import numpy as np
 from scipy.integrate import quad
 from scipy.special import logsumexp
 
-from popsregression._projected_ball import log_norm_constant, projected_ball_logpdf
+from popsregression._projected_ball import (
+    floor_contaminated_loss_bounds,
+    log_norm_constant,
+    projected_ball_logpdf,
+)
 
 
 def floored_losses(mean, half, y, n_dim, beta, y_bounds):
@@ -74,6 +91,28 @@ def bennett_cgf(t, variance, gap_to_minimum):
     c = gap_to_minimum / 3.0
     with np.errstate(divide="ignore"):
         return np.where(c * t < 1.0, variance * t * t / (2.0 * (1.0 - c * t)), np.inf)
+
+
+def hoeffding_cgf(t, loss_range):
+    """Uniform bound ``t^2 R^2 / 8`` for a loss confined to an interval of
+    width ``R`` (Hoeffding's lemma)."""
+    t = np.asarray(t, dtype=float)
+    return t * t * loss_range**2 / 8.0
+
+
+def domain_minimum_loss(ball_dim, beta, y_bounds, min_half_width):
+    """Smallest floor-contaminated loss anywhere in the domain, from the
+    analytic half-width floor (no data used)."""
+    lower, _ = floor_contaminated_loss_bounds(
+        ball_dim, beta=beta, y_bounds=y_bounds, min_half_width=min_half_width
+    )
+    return float(lower)
+
+
+def bennett_range(gap_to_minimum):
+    """``c = (G - a) / 3`` and the admissible range ``t < 1 / c``."""
+    c = gap_to_minimum / 3.0
+    return c, (np.inf if c <= 0 else 1.0 / c)
 
 
 def soft_max(values, lam):

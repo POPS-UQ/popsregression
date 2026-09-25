@@ -221,3 +221,31 @@ def test_invalid_inputs():
     stack = BayesianStacking(COMPONENTS).fit(X, y)
     with pytest.raises(ValueError, match="probability vector"):
         stack.predict(X, weights=np.array([1.0, 1.0, 0.0, 0.0]))
+
+
+def test_preprocessor_is_refitted_inside_each_validation_fold():
+    from comparisons.harness import PCAWithConstant
+
+    rng = np.random.RandomState(0)
+    raw = rng.randn(30, 12)
+    y = raw[:, 0] - raw[:, 1] + 0.1 * rng.randn(30)
+    fits = []
+
+    class Recording(PCAWithConstant):
+        def fit(self, X, y=None):
+            fits.append(len(X))
+            return super().fit(X, y)
+
+    model = BayesianStacking(
+        [np.array([0, 3]), np.arange(4)],
+        cv=5,
+        preprocessor=Recording(rank=3),
+    ).fit(raw, y)
+    # One fit per validation fold (on its training part) plus the final one.
+    assert sorted(fits) == [24] * 5 + [30]
+    assert model.predict(raw[:4]).shape == (4,)
+    coef, intercept, _, _ = model.sample_parameters(6, random_state=0)
+    assert coef.shape == (4, 6)
+    assert_allclose(
+        model.transform(raw[:2]) @ coef + intercept, model.transform(raw[:2]) @ coef
+    )

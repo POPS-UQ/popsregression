@@ -48,7 +48,9 @@ def _unpack(psi, n_dim):
     return c, U
 
 
-def _ellipse_nll(psi, Z, y, b0, weights, delta, rho, psi0=None, prior_precision=0.0):
+def _ellipse_nll(
+    psi, Z, y, b0, weights, delta, rho, psi0=None, prior_precision=0.0, ball_dim=None
+):
     """Weighted negative log projected-ball likelihood and exact gradient.
 
     Objective ``L = sum_i w_i * (0.5*log(v_i) - log(C_P) - k*L_rho(q_i))``
@@ -77,7 +79,8 @@ def _ellipse_nll(psi, Z, y, b0, weights, delta, rho, psi0=None, prior_precision=
         Non-negative per-datum weights.
 
     delta : float
-        Aleatoric width floor; ``delta**2`` is added to squared widths.
+        Radius of the output-offset coordinate; ``delta**2`` is added to
+        squared widths.
 
     rho : float
         Continuation threshold of the smooth log-barrier.
@@ -87,6 +90,11 @@ def _ellipse_nll(psi, Z, y, b0, weights, delta, rho, psi0=None, prior_precision=
 
     prior_precision : float, default=0.0
         Ridge strength ``1 / tau2`` of the Gaussian hyperprior.
+
+    ball_dim : int, default=None
+        Dimension of the uniform ball whose projection gives the
+        pushforward shape: ``n_dim + 1`` when the output-offset coordinate
+        of radius ``delta`` is present, ``n_dim`` otherwise (the default).
 
     Returns
     -------
@@ -98,7 +106,8 @@ def _ellipse_nll(psi, Z, y, b0, weights, delta, rho, psi0=None, prior_precision=
     """
     n_dim = Z.shape[1]
     c, U = _unpack(psi, n_dim)
-    k = 0.5 * (n_dim - 1)
+    d = n_dim if ball_dim is None else int(ball_dim)
+    k = 0.5 * (d - 1)
 
     resid = y - Z @ c
     H = Z @ U
@@ -107,7 +116,7 @@ def _ellipse_nll(psi, Z, y, b0, weights, delta, rho, psi0=None, prior_precision=
     q = 1.0 - resid * resid / v
 
     log_q, d_log_q, _ = smooth_log(q, rho)
-    ell = 0.5 * np.log(v) - log_norm_constant(n_dim) - k * log_q
+    ell = 0.5 * np.log(v) - log_norm_constant(d) - k * log_q
     value = float(weights @ ell)
 
     g_r = weights * (2.0 * k * resid * d_log_q / v)
@@ -123,7 +132,7 @@ def _ellipse_nll(psi, Z, y, b0, weights, delta, rho, psi0=None, prior_precision=
     return value, grad
 
 
-def _ellipse_nll_hess_diag(psi, Z, y, b0, weights, delta, rho):
+def _ellipse_nll_hess_diag(psi, Z, y, b0, weights, delta, rho, ball_dim=None):
     """Exact diagonal of the Hessian of the weighted negative log likelihood.
 
     The per-datum loss depends on ``psi`` only through ``(r_i, s_i)``, so
@@ -142,7 +151,8 @@ def _ellipse_nll_hess_diag(psi, Z, y, b0, weights, delta, rho):
     """
     n_dim = Z.shape[1]
     c, U = _unpack(psi, n_dim)
-    k = 0.5 * (n_dim - 1)
+    d = n_dim if ball_dim is None else int(ball_dim)
+    k = 0.5 * (d - 1)
 
     resid = y - Z @ c
     H = Z @ U
@@ -212,8 +222,13 @@ class _EllipsoidPosterior(RegressorMixin, BaseEstimator):
         dimension (``n_features``, plus one if ``fit_intercept=True``).
 
     delta : float, default=1e-3
-        Aleatoric width floor. ``delta**2`` is added to every squared
-        pushforward width (not to ``B``). ``delta=0`` is valid only if
+        Radius of an output-offset coordinate. The posterior is uniform on
+        the ellipsoid ``{(theta, a) : (theta - mu)^T B^{-1} (theta - mu)
+        + a**2 / delta**2 <= 1}`` and the model output is ``x @ theta + a``,
+        so ``delta**2`` is added to every squared pushforward width and the
+        pushforward is a projected ball of dimension ``n_dim + 1``. It is a
+        parameter coordinate, not observation noise. ``delta=0`` removes
+        the coordinate and is valid only if
         ``rho_schedule`` does not approach 0 (the barrier diverges
         otherwise); a warning is raised if both are ~0.
 
@@ -364,7 +379,8 @@ class _EllipsoidPosterior(RegressorMixin, BaseEstimator):
         Dense ellipsoid shape matrix ``B`` in original coordinates
         (augmented with the intercept coordinate if
         ``fit_intercept=True``). Computed lazily on first access. Note
-        that the posterior covariance is ``B / (n_dim + 2)``, not ``B``.
+        that the posterior covariance is ``B / (d + 2)``, not ``B``, with ``d`` the
+        ball dimension (``n_dim + 1`` when ``delta > 0``).
 
     baseline_B0_ : ndarray of shape (n_dim, n_dim)
         Dense fixed baseline ``B0_t`` in whitened coordinates. Computed
@@ -595,6 +611,10 @@ class _EllipsoidPosterior(RegressorMixin, BaseEstimator):
             Z = np.hstack([Z, np.ones((n_samples, 1))])
         n_dim = Z.shape[1]
         self._ball_dim = n_dim
+        # The width floor is an output-offset coordinate of radius delta:
+        # the posterior is uniform on an ellipsoid in (theta, offset), so
+        # the pushforward is a projected ball of dimension n_dim + 1.
+        self._projection_dim = n_dim + int(self.delta > 0)
         rank = min(self.rank, n_dim)
         self.rank_ = rank
 
@@ -618,7 +638,7 @@ class _EllipsoidPosterior(RegressorMixin, BaseEstimator):
             psi_full = psi_free
             if not self.optimize_center:
                 psi_full = np.concatenate([c_init, psi_free])
-            value, grad = _ellipse_nll(psi_full, *args)
+            value, grad = _ellipse_nll(psi_full, *args, ball_dim=self._projection_dim)
             return value, grad[free]
 
         # --- Continuation L-BFGS, optional evidence outer loop ---
@@ -697,7 +717,16 @@ class _EllipsoidPosterior(RegressorMixin, BaseEstimator):
             self.intercept_ = 0.0
 
         rho_final = rho_schedule[-1]
-        value, _ = _ellipse_nll(psi, Z, yc, b0, sample_weight, self.delta, rho_final)
+        value, _ = _ellipse_nll(
+            psi,
+            Z,
+            yc,
+            b0,
+            sample_weight,
+            self.delta,
+            rho_final,
+            ball_dim=self._projection_dim,
+        )
         self.objective_ = value / n_samples
         resid = yc - Z @ c_t
         v = b0 + np.sum((Z @ U) ** 2, axis=1) + self.delta**2
@@ -747,7 +776,9 @@ class _EllipsoidPosterior(RegressorMixin, BaseEstimator):
 
     def _clipped_hess_diag(self, psi, Z, yc, b0, sample_weight, rho, warn=True):
         """Diagonal Hessian of the unpenalized objective, floored."""
-        hd = _ellipse_nll_hess_diag(psi, Z, yc, b0, sample_weight, self.delta, rho)
+        hd = _ellipse_nll_hess_diag(
+            psi, Z, yc, b0, sample_weight, self.delta, rho, self._projection_dim
+        )
         n_clipped = int(np.sum(hd < self.hess_floor))
         if warn and n_clipped > 0.01 * hd.size:
             warnings.warn(
@@ -842,7 +873,8 @@ class _EllipsoidPosterior(RegressorMixin, BaseEstimator):
         projected-ball density centered at ``x @ coef_ + intercept_`` with
         squared support half-width ``v = x^T B x + delta**2``. The
         returned standard deviation is the predictive standard deviation
-        of that density, ``sqrt(v / (n_dim + 2))`` — note this is the
+        of that density, ``sqrt(v / (d + 2))`` (``d = n_dim + 1`` when
+        ``delta > 0``) — note this is the
         pushforward standard deviation, NOT the support half-width. For a
         model fitted without ``pac_bayes`` the bounds are the support of
         the fitted ellipsoid, ``mean +/- sqrt(v)`` (the ellipse max/min).
@@ -853,7 +885,7 @@ class _EllipsoidPosterior(RegressorMixin, BaseEstimator):
         - ``y_std`` averages over the hyperposterior: the mean variance
           gains ``z^2 @ Sigma_c`` and the expected squared width gains
           ``dv = sum_m z^2 @ Sigma_U[:, m]``, i.e.
-          ``std = sqrt((v + dv) / (n_dim + 2) + z^2 @ Sigma_c)``.
+          ``std = sqrt((v + dv) / (d + 2) + z^2 @ Sigma_c)``.
         - ``y_bound_std`` is the hyperposterior standard deviation of the
           support-bound curves, propagated about the hyperposterior mean
           squared width ``v_mixed = v + dv``:
@@ -928,7 +960,7 @@ class _EllipsoidPosterior(RegressorMixin, BaseEstimator):
 
         result = [y_mean]
         if return_std:
-            result.append(np.sqrt(v_mixed / (self._ball_dim + 2.0) + mean_var))
+            result.append(np.sqrt(v_mixed / (self._projection_dim + 2.0) + mean_var))
         if return_bounds:
             half_width = np.sqrt(v_mixed) + 2.0 * np.sqrt(bound_var)
             result.extend([y_mean + half_width, y_mean - half_width])
@@ -959,7 +991,8 @@ class _EllipsoidPosterior(RegressorMixin, BaseEstimator):
         If ``fit_intercept=True`` the matrix is augmented: the last
         row/column corresponds to the intercept coordinate of the
         (centered) affine design ``[x - x_mean, 1]``. The posterior
-        covariance of the parameters is ``B / (n_dim + 2)``.
+        covariance of the parameters is ``B / (d + 2)`` (``d = n_dim + 1`` when
+        ``delta > 0``).
         """
         check_is_fitted(self)
         if self._with_intercept:
@@ -985,7 +1018,9 @@ class _EllipsoidPosterior(RegressorMixin, BaseEstimator):
         """Draw parameter samples from the ellipsoid posterior.
 
         Samples are an affine map of uniform unit-ball draws,
-        ``theta = mu + L z`` with ``L L^T = B``, matching the orientation
+        ``theta = mu + L z`` with ``L L^T = B``; with ``delta > 0`` the ball
+        has one extra (output-offset) coordinate, which is dropped here, so
+        these are draws of the parameter marginal. Matching the orientation
         of ``POPSRegression.posterior_samples_`` (parameters in rows). If
         ``fit_intercept=True`` an intercept row is appended.
 
@@ -1006,13 +1041,16 @@ class _EllipsoidPosterior(RegressorMixin, BaseEstimator):
         check_is_fitted(self)
         rng = check_random_state(random_state)
         n_dim = self._ball_dim
+        d = self._projection_dim
         B_t = self.baseline_B0_ + self.U_ @ self.U_.T
         evals, evecs = eigh(B_t)
         L = evecs * np.sqrt(np.maximum(evals, 0.0))
-        g = rng.randn(n_dim, n_samples)
+        g = rng.randn(d, n_samples)
         g /= np.linalg.norm(g, axis=0, keepdims=True)
-        radius = rng.uniform(size=n_samples) ** (1.0 / n_dim)
-        theta_t = self.center_whitened_[:, None] + L @ (g * radius)
+        radius = rng.uniform(size=n_samples) ** (1.0 / d)
+        # The first n_dim coordinates of the (n_dim + 1)-ball draw are the
+        # parameter marginal; the last one is the output offset.
+        theta_t = self.center_whitened_[:, None] + L @ (g[:n_dim] * radius)
         if self._with_intercept:
             theta_f = self._whiten_W @ theta_t[:-1]
             theta_i = theta_t[-1] + self._y_offset - self._x_offset @ theta_f

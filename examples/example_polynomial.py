@@ -1,13 +1,14 @@
 """Quartic surrogate of an oscillatory engine (paper Fig. ``fig:demo``).
 
 Rows are training-set sizes; columns are Bayesian ridge, the POPS hypercube,
-the bare POPS ellipse, Ellipse+EB (the empirical-Bayes Laplace layer) and
-Ellipse+PAC (the pilot-split PAC-Bayes construction). Every panel shows the
-same two exact central intervals of the parameter-only predictive, 95.45%
-(inner) and 99.9% (outer): Gaussian quantiles of the weight posterior
+POPS Ellipse (the bare fitted ellipsoid), POPS Ellipse+EB (the empirical-Bayes
+Laplace layer) and POPS Ellipse+PAC (the pilot-split PAC-Bayes construction).
+Every panel shows the same two exact central intervals of the parameter-only
+predictive, 95.45% (inner) and 99.9% (outer): Gaussian quantiles of the weight posterior
 ``sigma_`` for Bayesian ridge (its fitted noise precision is never used),
 empirical quantiles of 4096 parameter draws for the hypercube, and exact
-mixture quantiles for the ellipse family. Labels report held-out coverage of
+quantiles of the returned (stored finite-mixture) predictive for the ellipse
+family. Labels report held-out coverage of
 both intervals on a dense uniform grid.
 """
 
@@ -16,6 +17,7 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 from comparisons import harness
+from comparisons.labels import display
 from comparisons.plotting import band_panel, coverage_label, legend_handles
 
 SEED = 1042
@@ -27,13 +29,7 @@ METHODS = (
     "Ellipse+EB",
     "Ellipse+PAC",
 )
-TITLES = (
-    "Bayesian ridge",
-    "POPS hypercube",
-    "POPS ellipse",
-    "Ellipse+EB",
-    "Ellipse+PAC",
-)
+TITLES = tuple(display(m) for m in METHODS)
 
 
 def make_problem(rng, n_samples):
@@ -66,7 +62,9 @@ def main(output=None):
             coverage_label(ax, problem.y_test, pred)
             if method == "Ellipse+PAC":
                 print(
-                    f"N={n_samples}: PAC bound {pred.info['bound']:.2f} "
+                    f"N={n_samples}: PAC bound (stored mixture) "
+                    f"{pred.info['bound']:.2f}, continuous mixture "
+                    f"{pred.info['continuous_bound']:.2f} "
                     f"(trivial {pred.info['trivial_bound']:.2f})"
                 )
         axes[row, 0].set_ylabel(f"N = {n_samples}", fontsize=9)

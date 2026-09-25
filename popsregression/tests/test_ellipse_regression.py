@@ -115,14 +115,81 @@ def test_parameter_samples_lie_in_the_predictive_support(fit_intercept):
     X, y = _quartic_data(40)
     X = X[:, 1:] if fit_intercept else X
     model = POPSEllipseRegression(fit_intercept=fit_intercept, random_state=0).fit(X, y)
-    theta = model.sample(500, random_state=1)
+    theta, offset = model.sample(500, random_state=1, return_offset=True)
+    assert np.all(np.abs(offset) <= model.delta + 1e-15)
     design = np.hstack([X, np.ones((X.shape[0], 1))]) if fit_intercept else X
-    preds = design @ theta
+    preds = design @ theta + offset
     _, y_max, y_min = model.predict(X, return_bounds=True)
     assert np.all(preds <= y_max[:, None] + 1e-8)
     assert np.all(preds >= y_min[:, None] - 1e-8)
     mean = model.predict(X)
     assert_allclose(preds.mean(axis=1), mean, atol=0.1 * np.std(y))
+    # sample() without offsets is the coefficient marginal of the same draw.
+    assert_allclose(model.sample(500, random_state=1), theta)
+
+
+@pytest.mark.parametrize("regularization", [None, "empirical-bayes", "PAC"])
+def test_propagated_draws_follow_the_scored_predictive(regularization):
+    """Joint draws have exactly the scored marginal (floor included)."""
+    X, y = _quartic_data(40)
+    kwargs = {"y_bounds": Y_BOUNDS} if regularization == "PAC" else {}
+    model = POPSEllipseRegression(
+        regularization=regularization, delta=0.3, random_state=0, **kwargs
+    ).fit(X, y)
+    x = X[:3]
+    draws = model.sample_predictions(x, 20000, random_state=2)
+    for i in range(3):
+        grid = np.quantile(draws[i], [0.1, 0.3, 0.5, 0.7, 0.9])
+        assert_allclose(
+            model.predict_cdf(np.repeat(x[i : i + 1], grid.size, 0), grid),
+            [0.1, 0.3, 0.5, 0.7, 0.9],
+            atol=0.015,
+        )
+    if regularization != "PAC":
+        theta, offset = model.sample(20000, random_state=2, return_offset=True)
+        assert_allclose(x @ theta + offset, draws)
+
+
+def test_offset_coordinate_sets_the_ball_dimension():
+    X, y = _quartic_data(40)
+    with_floor = POPSEllipseRegression(random_state=0).fit(X, y)
+    assert with_floor._ball_dim == X.shape[1] + 1
+    without = POPSEllipseRegression(delta=0.0, rho_schedule=(1e-1, 1e-2)).fit(X, y)
+    assert without._ball_dim == X.shape[1]
+    _, offset = without.sample(10, random_state=0, return_offset=True)
+    assert np.all(offset == 0.0)
+
+
+def test_preprocessor_is_fitted_on_pilot_units_only():
+    from sklearn.decomposition import PCA
+
+    rng = np.random.RandomState(0)
+    raw = rng.randn(60, 8)
+    y = raw[:, 0] - 0.5 * raw[:, 1] + 0.1 * np.sin(3 * raw[:, 2])
+    model = POPSEllipseRegression(
+        regularization="PAC",
+        preprocessor=PCA(n_components=4),
+        y_bounds=(-10, 10),
+        n_bound_samples=300,
+        random_state=0,
+    ).fit(raw, y)
+    assert model.n_features_in_ == 8
+    assert model._n_coef == 4
+    pilots = []
+    for _, kernel, _ in model.components_:
+        pre = kernel.preprocessor
+        assert pre is not model.preprocessor
+        pilots.append(pre.mean_)
+    # Each fold's PCA saw only its own pilot half: the two halves, and not
+    # the whole sample. The two pilot halves partition the sample.
+    assert not np.allclose(pilots[0], pilots[1])
+    assert not np.allclose(pilots[0], raw.mean(axis=0))
+    assert_allclose(0.5 * (pilots[0] + pilots[1]), raw.mean(axis=0))
+    lo, hi = model.predict_interval(raw[:5])
+    assert np.all(lo < hi)
+    assert model.sample_predictions(raw[:5], 7).shape == (5, 7)
+    with pytest.raises(ValueError, match="sample_predictions"):
+        model.sample(3)
 
 
 # --- regularization='PAC' ------------------------------------------------------
@@ -146,6 +213,8 @@ def test_pac_requires_known_output_bounds():
 
 
 def test_pac_bound_decomposition():
+    from popsregression._ellipse_regression import _bernoulli_kl
+
     X, y = _quartic_data(80)
     model = _pac(pac_inequality="linear", pac_log_scale_std=1.0).fit(X, y)
     cert = model.certificate_
@@ -165,15 +234,40 @@ def test_pac_bound_decomposition():
         assert fold.kl >= 0
         assert fold.mixture_empirical <= fold.empirical + 1e-12
         assert cert.loss_lower <= fold.empirical <= cert.loss_upper
-    assert_allclose(cert.raw_bound, np.mean([f.raw for f in cert.folds]))
-    assert_allclose(cert.failure_probability, 0.06)
+        assert fold.moment_constant == 1.0
+        # Stored-mixture step: kl(q_raw || q_stored) = log(1 / xi_mix) / K.
+        assert fold.n_stored == model.n_hyper_samples
+        assert fold.stored_mixture >= fold.raw
+        q = (min(fold.raw, cert.loss_upper) - cert.loss_lower) / range_
+        p = (fold.stored_mixture - cert.loss_lower) / range_
+        if p < 1.0 - 1e-9:
+            assert_allclose(
+                _bernoulli_kl(q, p), np.log(2 / 0.01) / fold.n_stored, rtol=1e-6
+            )
+    assert_allclose(cert.continuous_bound, np.mean([f.raw for f in cert.folds]))
+    assert_allclose(cert.raw_bound, np.mean([f.stored_mixture for f in cert.folds]))
+    assert cert.raw_bound >= cert.continuous_bound
+    assert_allclose(cert.failure_probability, 0.07)
+    assert cert.n_units == 80
     assert model.bound_ == cert.raw_bound
     assert cert.is_nonvacuous
     assert cert.capped_bound == min(cert.raw_bound, cert.trivial_bound)
 
 
+def test_maurer_constant_is_exact_and_below_two_sqrt_n():
+    from popsregression._ellipse_regression import _maurer_xi
+
+    assert_allclose(_maurer_xi(1), 2.0)
+    assert_allclose(_maurer_xi(2), 2.5)
+    for n in (1, 2, 3, 5, 8, 20, 100, 1000):
+        k = np.arange(n + 1)
+        direct = np.sum(binom.pmf(k, n, k / n))
+        assert_allclose(_maurer_xi(n), direct, rtol=1e-10)
+        assert np.sqrt(n) - 1e-12 <= _maurer_xi(n) <= 2.0 * np.sqrt(n) + 1e-12
+
+
 def test_pac_kl_inequality_and_prior_grid():
-    from popsregression._ellipse_regression import _bernoulli_kl
+    from popsregression._ellipse_regression import _bernoulli_kl, _maurer_xi
 
     X, y = _quartic_data(80)
     grid = (0.25, 1.0)
@@ -187,9 +281,9 @@ def test_pac_kl_inequality_and_prior_grid():
         assert fold.concentration == 0.0
         q = (fold.empirical + fold.monte_carlo - cert.loss_lower) / R
         p = (fold.raw - cert.loss_lower) / R
-        budget = (fold.kl + np.log(len(grid) * 2 * np.sqrt(fold.n_units) / xi)) / (
-            fold.n_units
-        )
+        xi_n = _maurer_xi(fold.n_units)
+        assert_allclose(fold.moment_constant, xi_n)
+        budget = (fold.kl + np.log(len(grid) * xi_n / xi)) / fold.n_units
         assert p >= q
         assert_allclose(_bernoulli_kl(q, p), budget, rtol=1e-6)
     # The linear form at the same data is valid too, and typically looser.
@@ -325,9 +419,15 @@ def test_pac_bound_holds_on_an_exactly_summable_population():
         ):
             draws = mean + np.sqrt(var) * rng.randn(2000, mean.size)
             mu, half = kernel.pushforward(kernel.design(X_pop), draws)
-            log_ball = projected_ball_logpdf(y_pop[None, :] - mu, half, kernel.n_dim)
+            log_ball = projected_ball_logpdf(
+                y_pop[None, :] - mu, half, kernel.ball_dim
+            )
             loss = -np.logaddexp(np.log1p(-beta) + log_ball, np.log(beta / R))
             risks.append(weight * loss.mean())  # E_{pi_H} G(Psi), exact over x
         population_H = float(np.sum(risks))
-        violations += population_H > model.bound_
-    assert violations <= binom.ppf(0.999, n_trials, 0.06)
+        violations += population_H > model.certificate_.continuous_bound
+        # The returned stored mixture, exactly over the population grid.
+        log_p = model.predict_logpdf(X_pop, y_pop)
+        stored = -np.logaddexp(np.log1p(-beta) + log_p, np.log(beta / R)).mean()
+        violations += stored > model.bound_
+    assert violations <= binom.ppf(0.999, 2 * n_trials, 0.07)

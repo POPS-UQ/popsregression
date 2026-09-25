@@ -88,13 +88,15 @@ def test_predict_shapes():
 
 
 def test_std_is_pushforward_std_not_half_width():
-    """std = sqrt(v/(P+2)); bounds = mean +/- sqrt(v)."""
+    """std = sqrt(v/(d+2)) with d = P + 1; bounds = mean +/- sqrt(v)."""
     X, y, _ = _make_well_specified_data()
     model = _EllipsoidPosterior(random_state=0).fit(X, y)
     y_pred, y_std, y_max, y_min = model.predict(X, return_std=True, return_bounds=True)
     half_width = 0.5 * (y_max - y_min)
     n_dim = X.shape[1]
-    assert_allclose(y_std, half_width / np.sqrt(n_dim + 2.0), rtol=1e-10)
+    # delta > 0 adds the output-offset coordinate: ball dimension n_dim + 1.
+    assert model._projection_dim == n_dim + 1
+    assert_allclose(y_std, half_width / np.sqrt(n_dim + 3.0), rtol=1e-10)
 
 
 def test_ellipsoid_B_consistent_with_predict():
@@ -356,7 +358,8 @@ def test_pac_bayes_predictive_spread_added():
     var_v = 4.0 * np.sum((Z @ pac.U_) ** 2 * sigma_u_proj, axis=1) + 2.0 * np.sum(
         sigma_u_proj**2, axis=1
     )
-    assert_allclose(std_pac, np.sqrt(v_mixed / (n_dim + 2.0) + mean_var), rtol=1e-8)
+    d = pac._projection_dim
+    assert_allclose(std_pac, np.sqrt(v_mixed / (d + 2.0) + mean_var), rtol=1e-8)
     assert_allclose(bstd, np.sqrt(mean_var + var_v / (4.0 * v_mixed)), rtol=1e-8)
     assert np.all(d_v > 0) and np.all(bstd > 0)
 

@@ -48,7 +48,11 @@ reaches the edge of the support. The optimization therefore enforces
   each stage.
 - `optimize_center=False` (default) keeps the center at the POPS/Bayesian
   ridge mean and fits the shape only.
-- `delta` is the [width floor](glossary.md#width-floor).
+- `delta` is the [width floor](glossary.md#width-floor): an output-offset
+  coordinate of the parameter distribution, so the projected-ball dimension is
+  `P + 1` and every half-width is at least `delta`.
+- `preprocessor` optionally applies a scikit-learn transformer (e.g. a PCA
+  projection) first; see [preprocessor](glossary.md#preprocessor-pilot-only-features).
 
 Covering the training data does not imply covering new data. At small N a
 bare ellipse typically misses a few percent of held-out targets, where its
@@ -57,8 +61,10 @@ density is zero. The two hierarchical layers address this.
 ## Predictions
 
 All outputs refer to the [parameter-only predictive](glossary.md#parameter-only-predictive-no-aleatoric-term).
-With a hierarchical layer this is the mixture of ellipse pushforwards over
-the stored hyperparameter draws (`n_hyper_samples` per fold).
+With a hierarchical layer this is the finite mixture of ellipse pushforwards
+over the stored hyperparameter draws (`n_hyper_samples` per fold, default
+1024). Quantiles, densities and CDFs are exact for that stored mixture, which
+represents the continuous hyperposterior mixture by Monte Carlo.
 
 ```python
 mean = model.predict(X)
@@ -67,11 +73,15 @@ mean, y_max, y_min = model.predict(X, return_bounds=True)   # support envelope
 lo, hi = model.predict_interval(X, level=0.9545)           # exact central interval
 logp = model.predict_logpdf(X, y)                          # -inf outside the support
 cdf = model.predict_cdf(X, y)
-theta = model.sample(1000, random_state=0)                 # (n_features, 1000)
+theta, a = model.sample(1000, random_state=0, return_offset=True)
+fields = model.sample_predictions(X, 1000, random_state=0)  # (n_points, 1000)
 ```
 
-For [propagation](glossary.md#propagation-qoi), use one column of `theta` for
-every input of a field.
+For [propagation](glossary.md#propagation-qoi), use one draw (a column of
+`theta` with its offset `a`, or a column of `fields`) for every input of a
+field. These draws come from exactly the distribution that the intervals and
+densities describe. With a `preprocessor`, `sample` is unavailable (each
+fold has its own features); use `sample_predictions`.
 
 ## `regularization="empirical-bayes"`
 
@@ -96,9 +106,9 @@ independently of the data the bound is evaluated on.
    [pilot split](glossary.md#pilot-split) and
    [independent units](glossary.md#independent-units-groups); pass
    `groups=` when several rows come from one simulator case.
-2. On the pilot half an ellipse is fitted. It fixes the centering, the
-   whitening, the pilot shape `V diag(λ₀) Vᵀ` and the width floor
-   `a_min`.
+2. On the pilot half an ellipse is fitted. It fixes any `preprocessor`
+   (fitted on the pilot half only), the centering, the whitening, the pilot
+   shape `V diag(λ₀) Vᵀ` and the width floor `a_min`.
 3. The hyperparameters are the log multipliers `ω` of the pilot semi-axes,
    with a Gaussian hyperprior `N(0, τ²)`. `τ` is chosen from the predeclared
    grid `pac_log_scale_std`.
@@ -113,7 +123,11 @@ independently of the data the bound is evaluated on.
      for the hyperposterior-averaged loss;
    - either the Seeger–Maurer [kl inequality](glossary.md#linear-theorem-1-and-kl-forms)
      (default) or the paper's linear Theorem 1 with a Hoeffding moment bound.
-6. With `cross_fit=True` (default) the halves are swapped, the predictive is
+6. The predictive keeps `n_hyper_samples` fresh draws from each Gaussian
+   hyperposterior. A last step carries the bound from the continuous mixture
+   to this [stored mixture](glossary.md#stored-mixture-continuous-mixture),
+   with its own failure probability `mixture_failure_probability`.
+7. With `cross_fit=True` (default) the halves are swapped, the predictive is
    the equal mixture of both folds, and the reported bound is the average of
    the fold bounds. See [cross-fitting](glossary.md#cross-fitting).
 
@@ -121,8 +135,11 @@ The certified quantity is the population log risk of the
 [floor-contaminated](glossary.md#floor-contamination-floor-weight) predictive,
 `(1 - β) p(y | x) + β / R_y`, on the
 [declared output interval](glossary.md#declared-output-interval) `y_bounds`.
+`certificate_.raw_bound` applies to the stored mixture that `predict*`
+returns; `certificate_.continuous_bound` applies to the continuous mixture.
 It holds with probability at least `1 - failure_probability -
-mc_failure_probability` over the training draw, if:
+mc_failure_probability - mixture_failure_probability` (default 0.93) over the
+training draw and the Monte Carlo draws, if:
 
 - the units are i.i.d. draws from the deployment distribution, and
 - `y_bounds` contains every possible output.
@@ -134,9 +151,11 @@ to fit otherwise. It cannot verify either assumption.
 pac = POPSEllipseRegression(regularization="PAC", y_bounds=(-2.6, 2.6))
 pac.fit(X, y, groups=case_id)
 cert = pac.certificate_
-cert.raw_bound, cert.trivial_bound, cert.is_nonvacuous
+cert.raw_bound, cert.continuous_bound, cert.trivial_bound, cert.is_nonvacuous
+cert.n_units, cert.pac_failure_probability, cert.mc_failure_probability
 for fold in cert.folds:
-    fold.empirical, fold.monte_carlo, fold.kl, fold.complexity, fold.lam
+    fold.n_units, fold.empirical, fold.monte_carlo, fold.kl, fold.complexity
+    fold.lam, fold.moment_constant, fold.stored_mixture, fold.n_stored
 ```
 
 What the bound does **not** say:
@@ -159,7 +178,9 @@ Every PAC parameter must be fixed before the data are seen:
 - `lambda_fractions` (the temperature grid, as fractions of `N₁`);
 - `pac_log_scale_std` (the hyperprior grid);
 - `pac_inequality`;
-- `failure_probability`, `mc_failure_probability`, `n_bound_samples`.
+- `failure_probability`, `mc_failure_probability`,
+  `mixture_failure_probability`, `n_bound_samples`, `n_hyper_samples`;
+- any `preprocessor` (it is refitted on each pilot half automatically).
 
 A smaller `β` or `min_half_width` widens the loss range and loosens the bound.
 

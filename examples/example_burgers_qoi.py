@@ -4,7 +4,9 @@ Each parameter draw of each method defines a complete POD surrogate field
 ``u(x) = mean_field(x) + F(x; nu, A, t) @ theta``, which is kept for the whole
 field before two quantities of interest are evaluated on the 96-point grid:
 
-- the viscous dissipation ``D = nu * int |du/dx|^2 dx``;
+- the dissipation ``Q = nu * int |du/dx|^2 dx``, the rate at which viscosity
+  removes kinetic energy from the solution (viscous kinetic-energy loss
+  rate);
 - the front steepness ``max_x (-du/dx)``.
 
 (The front location itself is not informative here: with ``u_0 = A sin x``
@@ -14,7 +16,13 @@ the solution is odd about ``x = pi``, so the steepest descent is always at
 For held-out simulator cases the reference values come from the numerical
 solver. We report the coverage and width of the exact empirical 95.45%
 central interval of the propagated draws, over repeated training draws. No
-scalar residual variance is turned into spatial noise for any method.
+scalar residual variance is turned into spatial noise for any method. For the
+POPS ellipse family each draw also carries its output-offset coordinate (the
+width floor, ``|a| <= delta``), so propagated fields come from exactly the
+distribution whose pointwise intervals are scored; a constant offset has no
+effect on either quantity, which depend on ``du/dx`` only. Iterative
+comparators (PVI, PACm, PAC^2-T) record whether their optimizer reported
+convergence; unconverged fits are kept and flagged with ``*``.
 
 Writes ``generated/burgers_qoi.csv`` and ``.md`` and ``burgers_qoi.png``.
 """
@@ -39,6 +47,7 @@ import example_burgers_pod as pod  # noqa: E402
 import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
 from comparisons import harness  # noqa: E402
+from comparisons.labels import DISSIPATION_DEFINITION, display  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
 OUT = HERE / "generated"
@@ -72,7 +81,10 @@ def run_one(task):
     x = np.linspace(0.0, 2.0 * np.pi, burgers.N_GRID, endpoint=False)
     rows = []
     for method in methods:
-        coef, offset = harness.parameter_draws(method, problem, seed, N_DRAWS)
+        info = {}
+        coef, offset = harness.parameter_draws(
+            method, problem, seed, N_DRAWS, info=info
+        )
         cov = {q: [] for q in QOIS}
         width = {q: [] for q in QOIS}
         err = {q: [] for q in QOIS}
@@ -95,7 +107,7 @@ def run_one(task):
                 scale = abs(ref)
                 width[name].append((hi - lo) / scale)
                 err[name].append((np.median(values) - ref) / scale)
-        row = {"cases": n_cases, "seed": seed, "method": method}
+        row = {"cases": n_cases, "seed": seed, "method": method, **info}
         for name in QOIS:
             row[f"{name}_coverage"] = float(np.mean(cov[name]))
             row[f"{name}_width"] = float(np.median(width[name]))
@@ -111,7 +123,14 @@ def summarize(frame):
             f"Coverage and median width of the empirical 95.45% interval of {N_DRAWS} "
             f"propagated parameter draws on {N_QOI_CASES} held-out cases (widths "
             "relative to the reference value), medians "
-            f"and central 90% intervals over {frame.seed.nunique()} training draws.\n"
+            f"and central 90% intervals over {frame.seed.nunique()} training draws. "
+            f"{DISSIPATION_DEFINITION} Front steepness is max_x(-du/dx). '*': at "
+            "least one fit did not report optimizer convergence (kept). "
+            "Abbreviations: POPS = pointwise optimal parameter sets; EB = "
+            "empirical Bayes; PAC = PAC-Bayes hyperparameter bound; PACm = "
+            "PAC-Bayes objective with an m-sample predictive; PAC^2-T = "
+            "second-order PAC-Bayes objective with the tandem Taylor weight; "
+            "PVI = predictive variational inference.\n"
         ),
     ]
     for name in QOIS:
@@ -122,12 +141,14 @@ def summarize(frame):
             for method in harness.METHODS:
                 cells = []
                 for c in CASES:
-                    v = frame[(frame.method == method) & (frame.cases == c)][
-                        f"{name}_{metric}"
-                    ]
+                    cell = frame[(frame.method == method) & (frame.cases == c)]
+                    v = cell[f"{name}_{metric}"]
                     lo, med, hi = np.quantile(v, [0.05, 0.5, 0.95])
-                    cells.append(f"{med:.3f} [{lo:.3f}, {hi:.3f}]")
-                lines.append(f"| {method} | " + " | ".join(cells) + " |")
+                    flag = ""
+                    if "converged" in cell and cell.converged.notna().any():
+                        flag = "" if cell.converged.dropna().astype(bool).all() else "*"
+                    cells.append(f"{med:.3f} [{lo:.3f}, {hi:.3f}]{flag}")
+                lines.append(f"| {display(method)} | " + " | ".join(cells) + " |")
     (OUT / "burgers_qoi.md").write_text("\n".join(lines) + "\n")
 
 
@@ -137,8 +158,8 @@ def plot(frame, output):
 
     fig, axes = plt.subplots(1, 4, figsize=(10.5, 2.5))
     panels = (
-        ("dissipation_coverage", "Dissipation: coverage"),
-        ("dissipation_width", "Dissipation: rel. width"),
+        ("dissipation_coverage", r"Dissipation $Q=\nu\int|u_x|^2dx$: coverage"),
+        ("dissipation_width", "Dissipation $Q$: rel. width"),
         ("steepness_coverage", "Front steepness: coverage"),
         ("steepness_width", "Front steepness: rel. width"),
     )
@@ -149,7 +170,7 @@ def plot(frame, output):
                 [np.quantile(g.get_group(c), [0.05, 0.5, 0.95]) for c in CASES]
             )
             style = STYLE[method]
-            ax.plot(CASES, q[:, 1], marker="o", ms=2.5, label=method, **style)
+            ax.plot(CASES, q[:, 1], marker="o", ms=2.5, label=display(method), **style)
             ax.fill_between(
                 CASES, q[:, 0], q[:, 2], color=style["color"], alpha=0.1, lw=0
             )

@@ -18,13 +18,26 @@ Metrics (all on an independent test set, see :func:`evaluate`):
 - ``zero_density``: fraction of test targets with zero parameter-only
   density (uncovered by the support);
 - ``nll_floor``: mean negative log of ``(1 - b) p + b / R_y`` with a common
-  ``b = FLOOR_BETA`` on the problem's declared output interval, the bounded
-  loss certified by ``POPSEllipseRegression(regularization='PAC')``;
-- ``rmse``: of the predictive mean.
+  ``b = FLOOR_BETA = 0.01`` on the problem's declared output interval. This
+  is a comparison score only; the loss certified by
+  ``POPSEllipseRegression(regularization='PAC')`` uses its own
+  ``floor_weight = 0.02``;
+- ``rmse``: of the predictive mean;
+- calibration areas (see :mod:`.calibration`): ``pp_area_abs`` /
+  ``pp_area_signed`` of the pooled absolute-error P-P curve (the ACE figure
+  metric), and ``pit_area_abs`` / ``pit_area_signed`` of the
+  input-conditional PIT curve. Burgers test points are weighted so every
+  simulator case counts equally.
 
-Every method sees the same design matrix: the comparison methods rescale
-features and target but never center them, so none of them gains an
-implicit intercept (the ACE design carries an explicit constant column).
+Every method sees the same features and the same feature capacity. For ACE
+the raw 267 descriptors are projected on 35 PCA modes plus a constant
+column (P = 36); the projection is learned from training descriptors only,
+and it is refitted wherever a method holds data out: on each pilot split
+inside ``Ellipse+PAC`` (so the PAC certification units never influence the
+features) and inside every validation fold of Bayesian stacking. The other
+methods fit it once on their whole training subset, which is the same
+total training budget. The comparison methods rescale features and target
+but never center them, so none of them gains an implicit intercept.
 """
 
 import time
@@ -33,10 +46,12 @@ from pathlib import Path
 
 import numpy as np
 from scipy.stats import norm
+from sklearn.base import BaseEstimator, TransformerMixin, clone
 from sklearn.linear_model import BayesianRidge
 
 from popsregression import POPSEllipseRegression, POPSRegression
 
+from . import calibration
 from .bayesian_stacking import BayesianStacking
 from .low_noise_objectives import LowNoiseObjective
 from .pvi import PredictiveVI
@@ -45,6 +60,8 @@ EXAMPLES = Path(__file__).resolve().parents[1]
 LEVELS = (0.9545, 0.999)
 FLOOR_BETA = 0.01
 N_DRAWS = 4096
+# Predictive draws per test input for the pooled-error calibration curve.
+N_CALIBRATION_DRAWS = 256
 
 METHODS = (
     "Bayesian ridge",
@@ -91,11 +108,12 @@ LOW_NOISE_SETTINGS = {
 }
 
 
-def _low_noise_model(method, problem, seed):
+def _low_noise_model(method, problem, seed, X=None):
     settings = dict(LOW_NOISE_SETTINGS[method])
     objective = settings.pop("objective")
+    X = problem.design()[0] if X is None else X
     return LowNoiseObjective(objective, random_state=seed, **settings).fit(
-        problem.X_train, problem.y_train
+        X, problem.y_train
     )
 
 
@@ -107,6 +125,7 @@ def _ellipse_model(method, problem, seed):
         "regularization": regularization,
         "random_state": seed,
         "optimize_center": method.endswith("(free center)"),
+        "preprocessor": problem.preprocessor,
     }
     fit_kwargs = {}
     if regularization == "PAC":
@@ -120,13 +139,12 @@ def _ellipse_model(method, problem, seed):
     )
 
 
-def _pvi_model(method, problem, seed):
+def _pvi_model(method, problem, seed, X=None):
     settings = dict(PVI_SETTINGS)
     if method == "PVI (lamb=1)":
         settings["lamb"] = 1.0
-    return PredictiveVI(random_state=seed, **settings).fit(
-        problem.X_train, problem.y_train
-    )
+    X = problem.design()[0] if X is None else X
+    return PredictiveVI(random_state=seed, **settings).fit(X, problem.y_train)
 
 
 # ---------------------------------------------------------------------------
@@ -136,7 +154,13 @@ def _pvi_model(method, problem, seed):
 
 @dataclass
 class Problem:
-    """A training draw and its fixed test set."""
+    """A training draw and its fixed test set.
+
+    ``X_train`` and ``X_test`` are the raw inputs. When ``preprocessor`` is
+    set (ACE), every method sees ``preprocessor``-transformed features, and
+    the transformer is learned from training inputs only (see the module
+    docstring for where it is refitted).
+    """
 
     name: str
     X_train: np.ndarray
@@ -148,9 +172,24 @@ class Problem:
     groups: np.ndarray = None
     test_groups: np.ndarray = None
     meta: dict = field(default_factory=dict)
+    preprocessor: object = None
+
+    def design(self, X_eval=None):
+        """Model features of the training and evaluation inputs.
+
+        The preprocessor (if any) is fitted on the whole training subset.
+        Returns ``(X_train, X_eval, fitted_preprocessor)``.
+        """
+        X_eval = self.X_test if X_eval is None else X_eval
+        if self.preprocessor is None:
+            return self.X_train, X_eval, None
+        pre = clone(self.preprocessor).fit(self.X_train, self.y_train)
+        return pre.transform(self.X_train), pre.transform(X_eval), pre
 
     @property
     def n_params(self):
+        if self.preprocessor is not None:
+            return int(self.preprocessor.n_output_features)
         return self.X_train.shape[1]
 
     @property
@@ -287,37 +326,68 @@ def ace_pca_basis(A, rank=ACE_RANK):
     return evecs[:, np.argsort(evals)[::-1][:rank]]
 
 
-def ace_problem(ratio, seed, basis="subset"):
-    """Linear ACE energies: 267 features projected onto 35 PCA modes, plus a
-    constant column, so every method fits the same affine model (P = 36).
+class PCAWithConstant(TransformerMixin, BaseEstimator):
+    """Project on the leading ``rank`` PCA modes and append a constant column.
 
-    ``basis='subset'`` builds the PCA basis from the training subset only
-    (no information from the other training structures); ``'pool'`` uses the
+    ``fit`` learns the modes from the descriptors it is given (never from
+    targets). With a fixed ``basis`` (shape ``(n_features, rank)``) nothing
+    is learned: ``fit`` only records it.
+    """
+
+    def __init__(self, rank=ACE_RANK, basis=None):
+        self.rank = rank
+        self.basis = basis
+
+    def fit(self, X, y=None):
+        X = np.asarray(X, dtype=float)
+        self.components_ = (
+            ace_pca_basis(X, self.rank)
+            if self.basis is None
+            else np.asarray(self.basis, dtype=float)
+        )
+        return self
+
+    def transform(self, X):
+        X = np.asarray(X, dtype=float)
+        return np.hstack([X @ self.components_, np.ones((X.shape[0], 1))])
+
+    @property
+    def n_output_features(self):
+        return int(self.rank) + 1
+
+
+def ace_problem(ratio, seed, basis="subset"):
+    """Linear ACE energies: 267 raw descriptors, projected by every method on
+    35 PCA modes plus a constant column, so all fit the same affine model
+    (P = 36).
+
+    ``basis='subset'`` (default) learns the PCA modes from training
+    descriptors only, refitted inside every held-out split (see the module
+    docstring); this is the construction that keeps the PAC certification
+    units out of the features. ``'pool'`` fixes the modes from the
     unlabelled descriptors of all 700 training structures, as in the
-    workshop version. ``ratio`` is the number of training structures per
-    PCA mode.
+    workshop version; those include the certification units' descriptors,
+    so it does NOT satisfy the pilot-only condition of the PAC bound.
+    ``ratio`` is the number of training structures per PCA mode.
     """
     data = _ace_data()
     A, y = data["A_train_E"], data["y_train_E"]
     n = min(int(round(ratio * ACE_RANK)), y.size)
     idx = np.random.RandomState(seed).choice(y.size, n, replace=False)
-    V = ace_pca_basis(A[idx] if basis == "subset" else A)
-
-    def design(M):
-        return np.hstack([M @ V, np.ones((M.shape[0], 1))])
-
+    fixed = None if basis == "subset" else ace_pca_basis(A)
     constant = [ACE_RANK]
     return Problem(
         name="ace",
-        X_train=design(A[idx]),
+        X_train=A[idx],
         y_train=y[idx],
-        X_test=design(data["A_test_E"]),
+        X_test=data["A_test_E"],
         y_test=data["y_test_E"],
         y_bounds=ACE_Y_BOUNDS,
         stacking_components=[
             np.concatenate([np.arange(k), constant]) for k in (5, 10, 20, ACE_RANK)
         ],
         meta={"basis": basis, "indices": idx},
+        preprocessor=PCAWithConstant(ACE_RANK, basis=fixed),
     )
 
 
@@ -328,7 +398,13 @@ def ace_problem(ratio, seed, basis="subset"):
 
 @dataclass
 class Predictive:
-    """Parameter-only predictive of one fitted method on a fixed input set."""
+    """Parameter-only predictive of one fitted method on a fixed input set.
+
+    ``logpdf(y)`` and ``cdf(y)`` evaluate the predictive of each input at
+    its own target (``None`` when the method has no density); ``draws(n,
+    rng)`` returns ``(n_points, n)`` predictive draws (joint over inputs:
+    each column is one parameter draw).
+    """
 
     name: str
     mean: np.ndarray
@@ -336,6 +412,8 @@ class Predictive:
     logpdf: object = None  # callable y -> log density, or None
     fit_time: float = np.nan
     info: dict = field(default_factory=dict)
+    cdf: object = None  # callable y -> F(y)
+    draws: object = None  # callable (n, rng) -> (n_points, n)
 
 
 def _gaussian(name, loc, scale, fit_time, info=None):
@@ -344,15 +422,41 @@ def _gaussian(name, loc, scale, fit_time, info=None):
         z = norm.ppf(0.5 * (1 + level))
         intervals[level] = (loc - z * scale, loc + z * scale)
     return Predictive(
-        name, loc, intervals, lambda y: norm.logpdf(y, loc, scale), fit_time, info or {}
+        name,
+        loc,
+        intervals,
+        lambda y: norm.logpdf(y, loc, scale),
+        fit_time,
+        info or {},
+        cdf=lambda y: norm.cdf(y, loc, scale),
+        draws=lambda n, rng: loc[:, None] + scale[:, None] * rng.randn(loc.size, n),
     )
+
+
+def _optimizer_info(model):
+    """Convergence record of a PACm / PAC^2-T / PVI fit (all that exist)."""
+    keys = (
+        "converged_",
+        "n_nonfinite_",
+        "n_iter_",
+        "n_fev_",
+        "termination_status_",
+        "termination_message_",
+        "max_iter",
+        "max_fun",
+        "n_skipped_",
+    )
+    return {k.rstrip("_"): getattr(model, k) for k in keys if hasattr(model, k)}
 
 
 def fit_predictive(method, problem, seed, X_eval=None):
     """Fit ``method`` on ``problem`` and return its predictive at ``X_eval``."""
-    X, y = problem.X_train, problem.y_train
-    X_eval = problem.X_test if X_eval is None else X_eval
+    y = problem.y_train
+    X_raw_eval = problem.X_test if X_eval is None else X_eval
     start = time.perf_counter()
+    # Fixed-design methods: the preprocessor (ACE PCA) fitted on the whole
+    # training subset. Ellipse-family and stacking handle it themselves.
+    X, X_eval, _ = problem.design(X_raw_eval)
     if method == "Bayesian ridge":
         model = BayesianRidge(fit_intercept=False).fit(X, y)
         loc = X_eval @ model.coef_
@@ -380,17 +484,26 @@ def fit_predictive(method, problem, seed, X_eval=None):
             None,
             time.perf_counter() - start,
             {"n_draws": draws.shape[1]},
+            cdf=lambda yy: np.mean(draws <= np.asarray(yy)[:, None], axis=1),
+            draws=lambda n, rng: draws[:, rng.randint(draws.shape[1], size=n)],
         )
 
     if method.replace(" (free center)", "") in ELLIPSE_METHODS:
         model, regularization = _ellipse_model(method, problem, seed)
         fit_time = time.perf_counter() - start
-        mean = model.predict(X_eval)
-        intervals = {level: model.predict_interval(X_eval, level) for level in LEVELS}
+        Xe = X_raw_eval
+        mean = model.predict(Xe)
+        intervals = {level: model.predict_interval(Xe, level) for level in LEVELS}
         info = {"model": model}
         if regularization == "PAC":
             cert = model.certificate_
-            info.update(bound=cert.raw_bound, trivial_bound=cert.trivial_bound)
+            info.update(
+                bound=cert.raw_bound,
+                continuous_bound=cert.continuous_bound,
+                trivial_bound=cert.trivial_bound,
+                n_units=cert.n_units,
+                failure_probability=cert.failure_probability,
+            )
             for key in (
                 "lam",
                 "empirical",
@@ -400,60 +513,98 @@ def fit_predictive(method, problem, seed, X_eval=None):
                 "concentration",
                 "mixture_empirical",
                 "outside_support_fraction",
+                "moment_constant",
+                "n_stored",
             ):
                 info[key] = float(np.mean([getattr(f, key) for f in cert.folds]))
+            info["n_cert_units"] = int(sum(f.n_units for f in cert.folds))
         return Predictive(
             method,
             mean,
             intervals,
-            lambda yy: model.predict_logpdf(X_eval, yy),
+            lambda yy: model.predict_logpdf(Xe, yy),
             fit_time,
             info,
+            cdf=lambda yy: model.predict_cdf(Xe, yy),
+            draws=lambda n, rng: model.sample_predictions(Xe, n, random_state=rng),
         )
 
     if method == "Bayesian stacking":
-        cv = "loo"
-        model = BayesianStacking(problem.stacking_components, cv=cv, random_state=seed)
-        model.fit(X, y, group_ids=problem.groups)
+        model = BayesianStacking(
+            problem.stacking_components,
+            cv="loo",
+            random_state=seed,
+            preprocessor=problem.preprocessor,
+        )
+        model.fit(problem.X_train, y, group_ids=problem.groups)
         fit_time = time.perf_counter() - start
-        mean = model.predict(X_eval)
-        intervals = {level: model.predict_interval(X_eval, level) for level in LEVELS}
+        Xe = X_raw_eval
+        mean = model.predict(Xe)
+        intervals = {level: model.predict_interval(Xe, level) for level in LEVELS}
+
+        def stacking_draws(n, rng):
+            coef, intercept, _, _ = model.sample_parameters(n, random_state=rng)
+            return model.transform(Xe) @ coef + intercept[None, :]
+
         return Predictive(
             method,
             mean,
             intervals,
-            lambda yy: model.predict_logpdf(X_eval, yy),
+            lambda yy: model.predict_logpdf(Xe, yy),
             fit_time,
             {"weights": model.weights_},
+            cdf=lambda yy: model.predict_cdf(Xe, yy),
+            draws=stacking_draws,
         )
 
     if method in ("PVI", "PVI (lamb=1)"):
-        model = _pvi_model(method, problem, seed)
+        model = _pvi_model(method, problem, seed, X)
         loc, scale = model.predict(X_eval, return_std=True)
         return _gaussian(
             method,
             loc,
             scale,
             time.perf_counter() - start,
-            {"pvi_lam": model.lamb, "converged": model.converged_},
+            {"pvi_lam": model.lamb, **_optimizer_info(model)},
         )
 
     if method in LOW_NOISE_SETTINGS:
-        model = _low_noise_model(method, problem, seed)
+        model = _low_noise_model(method, problem, seed, X)
         loc, scale = model.predict(X_eval, return_std=True)
         return _gaussian(
-            method,
-            loc,
-            scale,
-            time.perf_counter() - start,
-            {"converged": model.converged_, "n_nonfinite": model.n_nonfinite_},
+            method, loc, scale, time.perf_counter() - start, _optimizer_info(model)
         )
 
     raise ValueError(f"unknown method {method!r}")
 
 
-def evaluate(pred, y, y_bounds, floor_beta=FLOOR_BETA):
-    """Parameter-only test metrics of a :class:`Predictive` (see module doc)."""
+def calibration_record(pred, y, weights=None, n_draws=N_CALIBRATION_DRAWS, seed=0):
+    """PIT values, pooled-error P-P curve and both calibration areas.
+
+    Returns a dict with ``pit`` (``F_i(y_i)``), the P-P curve ``(pp_u,
+    pp_C)`` and the four areas (see :mod:`.calibration`).
+    """
+    out = {}
+    if pred.cdf is not None:
+        pit = np.asarray(pred.cdf(y), dtype=float)
+        _, _, s_pit, a_pit = calibration.pit_curve(pit, weights)
+        out.update(pit=pit, pit_area_signed=s_pit, pit_area_abs=a_pit)
+    if pred.draws is not None:
+        rng = np.random.RandomState(seed)
+        errors = pred.draws(n_draws, rng) - pred.mean[:, None]
+        u, C, s_pp, a_pp = calibration.error_pp_curve(y - pred.mean, errors, weights)
+        out.update(pp_u=u, pp_C=C, pp_area_signed=s_pp, pp_area_abs=a_pp)
+    return out
+
+
+def evaluate(pred, y, y_bounds, floor_beta=FLOOR_BETA, weights=None, record=None):
+    """Parameter-only test metrics of a :class:`Predictive` (see module doc).
+
+    ``weights`` weight the test points (every Burgers case equally) in the
+    calibration areas; the other metrics are plain test-point averages, as
+    before. If ``record`` is a dict it receives the per-point arrays
+    (``pit``, ``logpdf``, the P-P curve) for export.
+    """
     out = {
         "fit_time": pred.fit_time,
         "rmse": float(np.sqrt(np.mean((pred.mean - y) ** 2))),
@@ -471,6 +622,7 @@ def evaluate(pred, y, y_bounds, floor_beta=FLOOR_BETA):
         + (2 / alpha) * (y - hi) * (y > hi)
     )
     out["interval_score"] = float(np.mean(score))
+    logp = None
     if pred.logpdf is None:
         out.update(nll=np.nan, zero_density=np.nan, nll_floor=np.nan)
     else:
@@ -480,16 +632,35 @@ def evaluate(pred, y, y_bounds, floor_beta=FLOOR_BETA):
         width = y_bounds[1] - y_bounds[0]
         floored = np.logaddexp(np.log1p(-floor_beta) + logp, np.log(floor_beta / width))
         out["nll_floor"] = float(-np.mean(floored))
+    cal = calibration_record(pred, y, weights)
+    for key in ("pp_area_signed", "pp_area_abs", "pit_area_signed", "pit_area_abs"):
+        out[key] = cal.get(key, np.nan)
+    if record is not None:
+        record.update(
+            mean=pred.mean,
+            logpdf=logp,
+            **{f"lower_{100 * lv:g}": pred.intervals[lv][0] for lv in LEVELS},
+            **{f"upper_{100 * lv:g}": pred.intervals[lv][1] for lv in LEVELS},
+            **{k: cal[k] for k in ("pit", "pp_u", "pp_C") if k in cal},
+        )
     return out
 
 
-def parameter_draws(method, problem, seed, n_draws=2000):
+def parameter_draws(method, problem, seed, n_draws=2000, info=None):
     """Coefficient draws ``(coef (P, n), offset (n,))`` of a fitted method.
 
     Each draw is one complete surrogate function ``x -> F(x) @ coef + offset``
-    and is reused for every input of a propagated field. No residual-noise
-    term is added for any method.
+    and is reused for every input of a propagated field. For the POPS
+    ellipse family the offset is the draw's output-offset coordinate (the
+    width floor, ``|offset| <= delta``), so propagated fields come from the
+    same parameter distribution as the scored intervals. No residual-noise
+    term is added for any method. Problems with a preprocessor (ACE) are
+    not supported here. If ``info`` is a dict it receives the optimizer
+    record of iterative methods (``converged``, iteration counts, ...).
     """
+    info = {} if info is None else info
+    if problem.preprocessor is not None:
+        raise ValueError("parameter_draws needs a fixed design (no preprocessor).")
     X, y = problem.X_train, problem.y_train
     rng = np.random.RandomState(seed)
     zeros = np.zeros(n_draws)
@@ -508,7 +679,7 @@ def parameter_draws(method, problem, seed, n_draws=2000):
         )
     if method.replace(" (free center)", "") in ELLIPSE_METHODS:
         model, _ = _ellipse_model(method, problem, seed)
-        return model.sample(n_draws, random_state=seed), zeros
+        return model.sample(n_draws, random_state=seed, return_offset=True)
     if method == "Bayesian stacking":
         model = BayesianStacking(
             problem.stacking_components, cv="loo", random_state=seed
@@ -516,11 +687,12 @@ def parameter_draws(method, problem, seed, n_draws=2000):
         coef, intercept, _, _ = model.sample_parameters(n_draws, random_state=seed)
         return coef, intercept
     if method in ("PVI", "PVI (lamb=1)"):
-        return _pvi_model(method, problem, seed).sample_parameters(
-            n_draws, random_state=seed
-        )
+        model = _pvi_model(method, problem, seed)
+        info.update(_optimizer_info(model))
+        return model.sample_parameters(n_draws, random_state=seed)
     if method in LOW_NOISE_SETTINGS:
         model = _low_noise_model(method, problem, seed)
+        info.update(_optimizer_info(model))
         theta = model.mu_[:, None] + model.L_ @ rng.randn(model.mu_.size, n_draws)
         return model.y_scale_ * theta / model.x_scale_[:, None], zeros
     raise ValueError(f"unknown method {method!r}")

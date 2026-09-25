@@ -1,14 +1,22 @@
-"""Ellipse+PAC bounds from the repeated-split study (supplementary figure).
+"""POPS Ellipse+PAC bounds from the repeated-split study (supplementary figure).
 
 Reads ``generated/repeated_splits.csv`` (from ``example_repeated_splits.py``)
 and plots, for each problem against the number of independent units per
 parameter:
 
-- the PAC bound on the floor-contaminated log risk, its trivial ceiling
-  ``log(R_y / beta)`` and the held-out floor-contaminated log loss of the same
-  predictive (the certified quantity, estimated on the test set);
+- the PAC bound on the floor-contaminated log risk (``beta = 0.02``) of the
+  returned predictive (the stored finite mixture of hyperparameter draws),
+  the bound for the continuous hyperposterior mixture it approximates, the
+  trivial ceiling ``log(R_y / beta)`` and the held-out floor-contaminated log
+  loss of the returned predictive (the certified quantity, estimated on the
+  test set);
 - the decomposition of the bound into the hyperposterior-averaged empirical
-  term, its Monte Carlo correction and the remaining complexity term.
+  term, its Monte Carlo correction, the PAC-Bayes-kl complexity term and the
+  step from the continuous to the stored mixture.
+
+Each bound holds with probability at least 0.93 (failure budgets 0.05
+PAC-Bayes, 0.01 Monte Carlo, 0.01 stored mixture). It bounds log risk only
+and implies no interval coverage.
 
 Medians and central 90% bands over training draws. Writes ``pac_bounds.png``.
 """
@@ -33,6 +41,7 @@ def band(ax, x, values, **style):
 def main():
     frame = pd.read_csv(HERE / "generated" / "repeated_splits.csv")
     pac = frame[(frame.method == "Ellipse+PAC") & ~frame.failed]
+    pac = pac.assign(transfer=pac.bound - pac.continuous_bound)
     problems = [p for p in PROBLEM_TITLES if p in set(pac.problem)]
     fig, axes = plt.subplots(2, len(problems), figsize=(10, 4.8), squeeze=False)
     for c, name in enumerate(problems):
@@ -41,13 +50,27 @@ def main():
         x = np.array(sorted(g.groups))
         groups = [g.get_group(v) for v in x]
         ax = axes[0, c]
-        band(ax, x, [s.bound for s in groups], color="C1", label="PAC bound")
+        band(
+            ax,
+            x,
+            [s.bound for s in groups],
+            color="C1",
+            label="PAC bound, returned (stored) mixture",
+        )
+        band(
+            ax,
+            x,
+            [s.continuous_bound for s in groups],
+            color="C1",
+            ls="--",
+            label="PAC bound, continuous mixture",
+        )
         band(
             ax,
             x,
             [s.pac_test_risk for s in groups],
             color="k",
-            label="held-out floored log loss",
+            label="held-out floored log loss (returned mixture)",
         )
         ax.axhline(
             sub.trivial_bound.iloc[0],
@@ -74,6 +97,13 @@ def main():
             [s.complexity for s in groups],
             color="C3",
             label="complexity (kl inverse)",
+        )
+        band(
+            ax,
+            x,
+            [s.transfer for s in groups],
+            color="C4",
+            label="continuous to stored mixture",
         )
         for ax in axes[:, c]:
             ax.set_xscale("log")

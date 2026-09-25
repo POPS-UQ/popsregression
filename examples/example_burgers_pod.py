@@ -16,6 +16,7 @@ import example_burgers as burgers
 import matplotlib.pyplot as plt
 import numpy as np
 from comparisons import harness
+from comparisons.labels import display
 from comparisons.plotting import band_panel, coverage_label, legend_handles
 
 SEED = burgers.SEED
@@ -166,7 +167,7 @@ def run(
     )
     print(
         "cases  "
-        + "  ".join(f"{m[:14]:>14s}" for m in FIGURE_METHODS)
+        + "  ".join(f"{display(m)[:16]:>16s}" for m in FIGURE_METHODS)
         + "   (held-out 95.45% coverage)"
     )
     for n_cases in train_case_counts:
@@ -204,10 +205,10 @@ def run(
             }
             band_panel(ax, x, slice_pred, truth)
             coverage_label(ax, r_test, test_pred)
-        print(f"{n_cases:5d}  " + "  ".join(f"{c:14.3f}" for c in row_cov))
+        print(f"{n_cases:5d}  " + "  ".join(f"{c:16.3f}" for c in row_cov))
 
-    for col, title in enumerate(FIGURE_METHODS):
-        axes[0, col].set_title(title, fontsize=9.5, pad=12)
+    for col, method in enumerate(FIGURE_METHODS):
+        axes[0, col].set_title(display(method), fontsize=9.5, pad=12)
     for r, n_cases in enumerate(shown):
         axes[r, 0].set_ylabel(f"N = {n_cases}\nu(x, t)", fontsize=9)
     for ax in axes.flat:

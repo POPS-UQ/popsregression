@@ -1,7 +1,7 @@
 """Runtime and peak memory against P, N and the ellipsoid rank r.
 
-Times ``BayesianRidge``, the POPS hypercube and the POPS ellipse (bare,
-Ellipse+EB and Ellipse+PAC) on
+Times ``BayesianRidge``, the POPS hypercube, POPS Ellipse, POPS Ellipse+EB and
+POPS Ellipse+PAC on
 
 - the full 267-feature ACE energy design (no PCA projection), and
 - a synthetic misspecified linear problem with ``P`` up to 2000 features,
@@ -23,6 +23,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 from comparisons import harness
+from comparisons.labels import display
 from sklearn.linear_model import BayesianRidge
 
 from popsregression import POPSEllipseRegression, POPSRegression
@@ -193,7 +194,14 @@ def plot(frame, output):
             s = sub[sub.method == method]
             if s.empty:
                 continue
-            ax.plot(s[xkey], s.seconds, marker="o", ms=3, label=method, **STYLE[method])
+            ax.plot(
+                s[xkey],
+                s.seconds,
+                marker="o",
+                ms=3,
+                label=display(method),
+                **STYLE[method],
+            )
         ax.set_xscale("log")
         ax.set_yscale("log")
         ticks = sorted(set(sub[xkey]))
