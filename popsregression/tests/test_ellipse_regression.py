@@ -213,8 +213,6 @@ def test_pac_requires_known_output_bounds():
 
 
 def test_pac_bound_decomposition():
-    from popsregression._ellipse_regression import _bernoulli_kl
-
     X, y = _quartic_data(80)
     model = _pac(pac_inequality="linear", pac_log_scale_std=1.0).fit(X, y)
     cert = model.certificate_
@@ -235,23 +233,39 @@ def test_pac_bound_decomposition():
         assert fold.mixture_empirical <= fold.empirical + 1e-12
         assert cert.loss_lower <= fold.empirical <= cert.loss_upper
         assert fold.moment_constant == 1.0
-        # Stored-mixture step: kl(q_raw || q_stored) = log(1 / xi_mix) / K.
+        # The finite predictive uses a forward Hoeffding sampling bound.
         assert fold.n_stored == model.n_hyper_samples
-        assert fold.stored_mixture >= fold.raw
-        q = (min(fold.raw, cert.loss_upper) - cert.loss_lower) / range_
-        p = (fold.stored_mixture - cert.loss_lower) / range_
-        if p < 1.0 - 1e-9:
-            assert_allclose(
-                _bernoulli_kl(q, p), np.log(2 / 0.01) / fold.n_stored, rtol=1e-6
-            )
+        assert fold.stored_mixture >= min(fold.raw, cert.loss_upper)
+        assert_allclose(
+            fold.stored_mixture,
+            min(
+                cert.loss_upper,
+                fold.raw + range_ * np.sqrt(np.log(2 / 0.01) / (2 * fold.n_stored)),
+            ),
+        )
     assert_allclose(cert.continuous_bound, np.mean([f.raw for f in cert.folds]))
     assert_allclose(cert.raw_bound, np.mean([f.stored_mixture for f in cert.folds]))
-    assert cert.raw_bound >= cert.continuous_bound
+    assert cert.raw_bound >= min(cert.continuous_bound, cert.loss_upper)
     assert_allclose(cert.failure_probability, 0.07)
     assert cert.n_units == 80
     assert model.bound_ == cert.raw_bound
     assert cert.is_nonvacuous
     assert cert.capped_bound == min(cert.raw_bound, cert.trivial_bound)
+
+
+@pytest.mark.parametrize(
+    "q,n,delta", [(0.999, 1024, 0.005), (0.2, 100, 0.05), (0.7, 1024, 0.005)]
+)
+def test_stored_bound_controls_exact_bernoulli_tail(q, n, delta):
+    from popsregression._ellipse_regression import _stored_mixture_bound
+
+    upper = _stored_mixture_bound(q, 0.0, 1.0, n, delta)
+    # Independent exact check, including the near-one counterexample.
+    assert binom.sf(np.floor(n * upper), n, q) <= delta
+    assert_allclose(_stored_mixture_bound(-3 + 7 * q, -3, 4, n, delta), -3 + 7 * upper)
+    if q == 0.999:
+        assert upper == 1.0
+        assert q**n > 0.35  # Any threshold below one fails at least this often.
 
 
 def test_maurer_constant_is_exact_and_below_two_sqrt_n():

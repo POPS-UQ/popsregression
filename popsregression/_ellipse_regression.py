@@ -109,7 +109,7 @@ class PACFoldBound:
         ``n_stored`` hyperparameter draws that ``predict*`` uses: the loss
         of the mixture is at most the draw average of ``L(Psi_k)``
         (Jensen), which exceeds its mean ``E_{pi_H} L`` by at most a
-        Chernoff--kl deviation with its own failure probability.
+        Hoeffding deviation with its own failure probability.
     n_stored : int
         Number of stored hyperparameter draws of this fold.
     """
@@ -461,6 +461,19 @@ def _kl_inverse(q, budget, n_bisect=100):
         else:
             lo = p
     return hi
+
+
+def _stored_mixture_bound(mean_upper, loss_lower, loss_upper, n_draws, delta):
+    """Upper bound for a fresh draw average, given a bound on its mean.
+
+    Jensen transfers this to the finite predictive mixture. Hoeffding's
+    inequality applies to bounded population losses, conditional on the fit.
+    The PAC-Bayes inverse kl(q || p) is not a forward sampling-tail bound.
+    """
+    deviation = (loss_upper - loss_lower) * np.sqrt(
+        np.log(1.0 / delta) / (2.0 * n_draws)
+    )
+    return float(min(loss_upper, mean_upper + deviation))
 
 
 def _empirical_bernstein(values, value_range, delta):
@@ -1161,15 +1174,10 @@ class POPSEllipseRegression(RegressorMixin, BaseEstimator):
         mixture = float(
             np.mean(-(logsumexp(-losses, axis=0) - np.log(losses.shape[0])))
         )
-        # Stored finite mixture of K fresh draws: its loss is at most the
-        # draw average of L(Psi_k) (Jensen, pointwise in y), an average of K
-        # i.i.d. values in [a, b] with mean E_q L <= raw; the Chernoff-kl
-        # tail bound (valid for [0, 1] variables) gives the deviation.
+        # Conditional on the fit, fresh population losses are iid and bounded.
+        # Jensen followed by Hoeffding controls the stored finite predictive.
         n_stored = int(self.n_hyper_samples)
-        q_raw = float(np.clip((raw - loss_lower) / loss_range, 0.0, 1.0))
-        stored = loss_lower + loss_range * _kl_inverse(
-            q_raw, np.log(1.0 / xi_mix) / n_stored
-        )
+        stored = _stored_mixture_bound(raw, loss_lower, loss_upper, n_stored, xi_mix)
         fold = PACFoldBound(
             lam=float(lam),
             n_units=n_units,
