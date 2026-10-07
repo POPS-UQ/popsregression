@@ -193,19 +193,7 @@ Without uv, `pip install -e ".[examples]"` and run the tools directly.
 
 ## Citation
 
-> *Parameter uncertainties for imperfect surrogate models in the low-noise regime*
->
-> TD Swinburne and D Perez, [Machine Learning: Science and Technology 2025](http://iopscience.iop.org/article/10.1088/2632-2153/ad9fce)
-
-```bibtex
-@article{swinburne2025,
-    author={Swinburne, Thomas and Perez, Danny},
-    title={Parameter uncertainties for imperfect surrogate models in the low-noise regime},
-    journal={Machine Learning: Science and Technology},
-    doi={10.1088/2632-2153/ad9fce},
-    year={2025}
-}
-```
+> *COMING SOON*
 
 ## AI Usage
-Claude was used to produce full documentation and some test cases. All code was reviewed by a human (Tom)
+LLM tools were used to produce fuller documentation and some test cases. All code was reviewed by a human. 
