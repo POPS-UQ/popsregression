@@ -1,6 +1,8 @@
 popsregression
 =================================================
 
+**see `POPSEllipseRegression` for PAC implementation**
+
 [![tests](https://github.com/POPS-UQ/popsregression/actions/workflows/python-app.yml/badge.svg)](https://github.com/POPS-UQ/popsregression/actions/workflows/python-app.yml)
 [![codecov](https://codecov.io/gh/POPS-UQ/popsregression/graph/badge.svg?token=L0XPWwoPLw)](https://codecov.io/gh/POPS-UQ/popsregression)
 [![docs](https://img.shields.io/badge/docs-POPS--UQ.github.io%2Fpopsregression-blue)](https://POPS-UQ.github.io/popsregression)
@@ -151,7 +153,7 @@ terms used above.
 
 ## Comparison methods and paper studies
 
-Bayesian stacking, PACm, PAC²-T, predictive variational inference and a finite
+PACm, PAC²-T, predictive variational inference and a finite
 POPS-dictionary weighting ablation are implemented in `examples/comparisons/`,
 outside the package. The scripts in `examples/` produce every figure and table
 of the accompanying paper; see [examples/README.md](examples/README.md).
