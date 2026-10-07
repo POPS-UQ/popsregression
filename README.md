@@ -131,10 +131,6 @@ pipe.fit(X_train, y_train)
 y_pred = pipe.predict(X_test)
 ```
 
-## Documentation
-
-https://POPS-UQ.github.io/popsregression
-
 ## Development
 
 The repository is managed with [uv](https://docs.astral.sh/uv/); `uv run`
