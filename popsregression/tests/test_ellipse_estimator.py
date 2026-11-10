@@ -645,3 +645,30 @@ def test_pac_bayes_is_a_tunable_parameter():
     assert clone(model).get_params() == model.get_params()
     model.set_params(pac_bayes=False)
     assert model.pac_bayes is False
+
+
+def test_param_prior_sets_unconstrained_width():
+    """A coefficient no datum touches settles at the prior variance; constrained ones barely move."""
+    import warnings
+
+    from popsregression._ellipse import _EllipsoidPosterior
+
+    rng = np.random.default_rng(1)
+    X = rng.normal(size=(400, 4))
+    X[:, 3] = 0.0
+    y = (
+        X @ np.array([1.0, -0.5, 0.3, 0.0])
+        + 0.05 * rng.normal(size=400)
+        + 0.1 * X[:, 0] ** 2
+    )
+    lam = np.array([1.0, 1.0, 1.0, 4.0])
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        bare = _EllipsoidPosterior(rank=4, random_state=0).fit(X, y)
+        pri = _EllipsoidPosterior(
+            rank=4, param_prior_precision=lam, random_state=0
+        ).fit(X, y)
+    Sb, Sp = (np.diag(e.ellipsoid_B_) / 6.0 for e in (bare, pri))
+    assert abs(Sp[3] - 0.25) < 0.01
+    np.testing.assert_allclose(Sp[:3], Sb[:3], rtol=0.05)
+    assert pri.coverage_fraction_ == 1.0 and pri.param_prior_kl_ is not None

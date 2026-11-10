@@ -112,6 +112,21 @@ def _ellipse_nll(psi, Z, y, b0, weights, delta, rho, psi0=None, prior_precision=
     return value, grad
 
 
+def _param_prior_kl(U, M, B0t, p2, trMB0):
+    """``0.5 * (tr(M B) / p2 - log det B)`` with ``B = B0t + U U^T`` (whitened), and its gradient in U."""
+    from scipy.linalg import cho_factor, cho_solve
+
+    B = B0t + U @ U.T
+    jit = 1e-12 * max(float(np.trace(B)) / B.shape[0], np.finfo(float).tiny)
+    B[np.diag_indices_from(B)] += jit
+    cf = cho_factor(B, lower=True)
+    logdet = 2.0 * float(np.sum(np.log(np.diag(cf[0]))))
+    MU = M @ U
+    value = 0.5 * ((trMB0 + float(np.sum(U * MU))) / p2 - logdet)
+    grad = MU / p2 - cho_solve(cf, U)
+    return value, grad
+
+
 def _ellipse_nll_hess_diag(psi, Z, y, b0, weights, delta, rho):
     """Exact diagonal of the Hessian of the weighted negative log likelihood.
 
@@ -243,6 +258,19 @@ class _EllipsoidPosterior(RegressorMixin, BaseEstimator):
     weights : array-like of shape (n_samples,), default=None
         Non-negative per-datum weights ``w_i`` of the empirical
         generalization error ``G_hat = mean_i(w_i * ell_i)``.
+
+    param_prior_precision : array-like of shape (n_features,) or (n_features, n_features), default=None
+        Precision ``Lambda`` of a zero-mean Gaussian prior on the parameters,
+        in the coordinates of ``X``. If given, the objective gains
+        ``KL = 0.5 * (tr(Lambda B) / (n_dim + 2) - log det B)`` (up to a
+        constant): the KL divergence from the prior to the Gaussian reading
+        ``N(mu, B / (n_dim + 2))`` of the ellipsoid, at unit weight against
+        the summed per-datum terms, as a log posterior adds the log prior.
+        Directions no datum constrains then settle at the prior width
+        ``B / (n_dim + 2) = Lambda^-1`` instead of their random start. The
+        center term is constant (the center is frozen), so it is omitted.
+        Requires ``fit_intercept=False`` and ``pac_bayes=False``. Use
+        ``rank=n_features`` so that ``B`` can be full rank.
 
     optimize_center : bool, default=False
         If False (default), the ellipsoid center is frozen at the warm
@@ -445,6 +473,7 @@ class _EllipsoidPosterior(RegressorMixin, BaseEstimator):
         "fit_intercept": ["boolean"],
         "weights": ["array-like", None],
         "optimize_center": ["boolean"],
+        "param_prior_precision": ["array-like", None],
         "random_state": ["random_state"],
         "pac_bayes": ["boolean"],
         "hyperprior_center": [StrOptions({"phase1", "warm_start"})],
@@ -476,6 +505,7 @@ class _EllipsoidPosterior(RegressorMixin, BaseEstimator):
         fit_intercept=False,
         weights=None,
         optimize_center=False,
+        param_prior_precision=None,
         random_state=None,
         pac_bayes=False,
         hyperprior_center="phase1",
@@ -500,6 +530,7 @@ class _EllipsoidPosterior(RegressorMixin, BaseEstimator):
         self.fit_intercept = fit_intercept
         self.weights = weights
         self.optimize_center = optimize_center
+        self.param_prior_precision = param_prior_precision
         self.random_state = random_state
         self.pac_bayes = pac_bayes
         self.hyperprior_center = hyperprior_center
@@ -599,12 +630,17 @@ class _EllipsoidPosterior(RegressorMixin, BaseEstimator):
         # Coordinates the optimizer (and hyperposterior) act on: all of
         # psi, or the width block only when the center is frozen.
         free = slice(None) if self.optimize_center else slice(n_dim, None)
+        prior = self._param_prior(n_dim, b0)
 
         def objective(psi_free, *args):
             psi_full = psi_free
             if not self.optimize_center:
                 psi_full = np.concatenate([c_init, psi_free])
             value, grad = _ellipse_nll(psi_full, *args)
+            if prior is not None:
+                pv, pg = _param_prior_kl(psi_full[n_dim:].reshape(n_dim, -1), *prior)
+                value += pv
+                grad[n_dim:] += pg.ravel()
             return value, grad[free]
 
         # --- Continuation L-BFGS, optional evidence outer loop ---
@@ -685,6 +721,9 @@ class _EllipsoidPosterior(RegressorMixin, BaseEstimator):
         rho_final = rho_schedule[-1]
         value, _ = _ellipse_nll(psi, Z, yc, b0, sample_weight, self.delta, rho_final)
         self.objective_ = value / n_samples
+        self.param_prior_kl_ = (
+            None if prior is None else float(_param_prior_kl(U, *prior)[0])
+        )
         resid = yc - Z @ c_t
         v = b0 + np.sum((Z @ U) ** 2, axis=1) + self.delta**2
         self.coverage_fraction_ = float(np.mean(resid * resid < v))
@@ -695,6 +734,36 @@ class _EllipsoidPosterior(RegressorMixin, BaseEstimator):
             )
         self._pac_bayes_fitted = bool(self.pac_bayes)
         return self
+
+    def _param_prior(self, n_dim, b0):
+        """(M, B0_t, n_dim + 2, tr(M B0_t)) for ``_param_prior_kl``; M = W Lambda W, whitened."""
+        if self.param_prior_precision is None:
+            return None
+        if self._with_intercept or self.pac_bayes:
+            raise ValueError(
+                "param_prior_precision requires fit_intercept=False and pac_bayes=False"
+            )
+        lam = np.asarray(self.param_prior_precision, dtype=np.float64)
+        W = self._whiten_W
+        if lam.ndim == 1:
+            M = W @ (lam[:, None] * W)
+        else:
+            M = W @ lam @ W
+        M = 0.5 * (M + M.T)
+        if self.baseline == "pops":
+            Ft = self._sqrt_G @ self._baseline_factor
+            B0t = Ft @ Ft.T
+        elif self.baseline == "ridge":
+            B0t = self.baseline_ridge * np.eye(n_dim)
+        else:
+            B0t = np.zeros((n_dim, n_dim))
+        if self.rank < n_dim:
+            warnings.warn(
+                "param_prior_precision with rank < n_dim: B can be singular, and "
+                "log det B is then set by a jitter",
+                UserWarning,
+            )
+        return M, B0t, float(n_dim + 2), float(np.sum(M * B0t))
 
     def _setup_baseline(self, design, yc, Z, sample_weight, sqrt_G):
         """Baseline squared widths ``b0_i`` and whitened warm-start center.
