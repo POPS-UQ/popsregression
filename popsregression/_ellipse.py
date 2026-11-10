@@ -631,6 +631,14 @@ class _EllipsoidPosterior(RegressorMixin, BaseEstimator):
         # psi, or the width block only when the center is frozen.
         free = slice(None) if self.optimize_center else slice(n_dim, None)
         prior = self._param_prior(n_dim, b0)
+        if prior is not None:
+            # Start the widths at the prior optimum U U^T = (n_dim + 2) M^-1 (its top-rank eigenpairs), not at a
+            # 1e-3 random factor: there B0_t + U U^T is near-singular off B0's span, the log det gradient B^-1 U is
+            # ~1e3 x U, and L-BFGS overshoots by orders of magnitude.
+            mev, mvec = eigh(prior[0])
+            mev = np.maximum(mev, np.finfo(float).tiny)
+            U0 = mvec[:, :rank] * np.sqrt(prior[2] / mev[:rank])
+            psi = np.concatenate([c_init, U0.ravel()])
 
         def objective(psi_free, *args):
             psi_full = psi_free
