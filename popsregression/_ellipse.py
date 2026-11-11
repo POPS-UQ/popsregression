@@ -211,6 +211,12 @@ class _EllipsoidPosterior(BaseEstimator):
         coordinate is appended to the whitened design (after whitening;
         the intercept column is never whitened).
 
+    prior_precision : array-like of shape (n_features,) or \
+            (n_features, n_features), default=None
+        Shape of the Gaussian prior of the POPS pre-fit (see
+        :class:`POPSRegression`), which sets the frozen center and the
+        baseline. Used with ``baseline='pops'`` only.
+
     weights : array-like of shape (n_samples,), default=None
         Non-negative per-datum weights ``w_i`` of the empirical
         generalization error ``G_hat = mean_i(w_i * ell_i)``.
@@ -350,6 +356,7 @@ class _EllipsoidPosterior(BaseEstimator):
         tol=1e-8,
         max_iter=500,
         fit_intercept=False,
+        prior_precision=None,
         weights=None,
         optimize_center=False,
         random_state=None,
@@ -368,6 +375,7 @@ class _EllipsoidPosterior(BaseEstimator):
         self.tol = tol
         self.max_iter = max_iter
         self.fit_intercept = fit_intercept
+        self.prior_precision = prior_precision
         self.weights = weights
         self.optimize_center = optimize_center
         self.random_state = random_state
@@ -388,6 +396,8 @@ class _EllipsoidPosterior(BaseEstimator):
         check_scalar("hyperprior_scale", self.hyperprior_scale, low=0.0, low_open=True)
         check_scalar("hess_floor", self.hess_floor, low=0.0, low_open=True)
         check_scalar("bound_xi", self.bound_xi, 0.0, 1.0, low_open=True, high_open=True)
+        if self.prior_precision is not None and self.baseline != "pops":
+            raise ValueError("prior_precision requires baseline='pops'.")
         rho_schedule = np.atleast_1d(np.asarray(self.rho_schedule, dtype=float))
         if rho_schedule.ndim != 1 or rho_schedule.size == 0:
             raise ValueError("rho_schedule must be a non-empty 1d sequence.")
@@ -500,7 +510,8 @@ class _EllipsoidPosterior(BaseEstimator):
             design = Xc
             if self._with_intercept:
                 design = np.hstack([Xc, np.ones((Xc.shape[0], 1))])
-            pops = POPSRegression(fit_intercept=False)
+            pops = POPSRegression(prior_precision=self.prior_precision)
+            pops.n_features_in_ = Xc.shape[1]
             mu0 = pops._fit_hypercube(design, yc, sample_weight)
             support = pops._hypercube_support
             low, high = pops._hypercube_bounds

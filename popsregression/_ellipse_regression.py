@@ -788,6 +788,15 @@ class POPSEllipseRegression(BaseEstimator):
     fit_intercept : bool, default=False
         Center the data and append an unwhitened intercept coordinate.
 
+    prior_precision : array-like of shape (n_features,) or \
+            (n_features, n_features), default=None
+        Shape ``Lambda`` of the Gaussian prior of the Bayesian ridge fit
+        that gives the ellipsoid its center and its POPS baseline (see
+        :class:`POPSRegression`; the scale of the prior is learned).
+        Requires ``baseline='pops'``. It does not constrain the fitted
+        ellipsoid shape itself. With a ``preprocessor`` it refers to the
+        transformed features.
+
     preprocessor : transformer, default=None
         Optional object with ``fit(X, y)`` and ``transform(X)`` methods (for
         example a PCA projection, or any scikit-learn transformer) applied
@@ -973,6 +982,7 @@ class POPSEllipseRegression(BaseEstimator):
         baseline="pops",
         optimize_center=False,
         fit_intercept=False,
+        prior_precision=None,
         preprocessor=None,
         rho_schedule=(1e-1, 1e-2, 1e-3, 1e-4),
         tol=1e-8,
@@ -1001,6 +1011,7 @@ class POPSEllipseRegression(BaseEstimator):
         self.baseline = baseline
         self.optimize_center = optimize_center
         self.fit_intercept = fit_intercept
+        self.prior_precision = prior_precision
         self.preprocessor = preprocessor
         self.rho_schedule = rho_schedule
         self.tol = tol
@@ -1061,6 +1072,7 @@ class POPSEllipseRegression(BaseEstimator):
             tol=self.tol,
             max_iter=self.max_iter,
             fit_intercept=self.fit_intercept,
+            prior_precision=self.prior_precision,
             weights=weights,
             optimize_center=self.optimize_center,
             random_state=seed,

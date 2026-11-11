@@ -196,6 +196,23 @@ def test_preprocessor_is_fitted_on_pilot_units_only():
         model.sample(3)
 
 
+def test_prior_precision_sets_the_center_and_baseline():
+    from popsregression import POPSRegression
+
+    X, y = _quartic_data(40)
+    prior = np.array([1.0, 1.0, 10.0, 100.0, 1000.0])
+    model = POPSEllipseRegression(prior_precision=prior, random_state=0).fit(X, y)
+    reference = POPSRegression(prior_precision=prior).fit(X, y)
+    assert_allclose(model.coef_, reference.coef_, rtol=1e-6, atol=1e-9)
+    plain = POPSEllipseRegression(random_state=0).fit(X, y)
+    assert not np.allclose(model.coef_, plain.coef_, rtol=1e-3)
+    assert model.coverage_fraction_ == 1.0
+    lo, hi = model.predict_interval(X)
+    assert np.all(lo < hi)
+    with pytest.raises(ValueError, match="baseline='pops'"):
+        POPSEllipseRegression(prior_precision=prior, baseline="ridge").fit(X, y)
+
+
 # --- regularization='PAC' ------------------------------------------------------
 
 

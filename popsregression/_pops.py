@@ -79,26 +79,78 @@ def pointwise_corrections(X, y, weights, fit, leverage_regularization):
 
 
 @jax.jit
-def _select_and_bound(corrections, active, threshold, clipping):
+def _select_and_bound(corrections, basis, active, threshold, clipping):
     """Prune negligible corrections, then fit the PCA-aligned box.
 
-    Points are kept when their Euclidean correction norm ``||d_i||`` is at
+    ``corrections @ basis.T`` are the corrections ``d_i`` in parameter
+    coordinates. Points are kept when their Euclidean norm ``||d_i||`` is at
     least ``threshold`` times the root-mean-square norm: these are the rows
     that determine the singular decomposition of the correction matrix.
 
-    Returns the selection mask, the eigenvalues and eigenvectors of the
-    (pruned) second-moment matrix and the box bounds along every eigenvector.
+    Returns the selection mask, the eigenvalues and eigenvectors (in
+    parameter coordinates) of the pruned second-moment matrix and the box
+    bounds along every eigenvector.
     """
-    norm2 = jnp.sum(corrections**2, axis=1)
+    norm2 = jnp.sum((corrections @ (basis.T @ basis)) * corrections, axis=1)
     mean_norm2 = jnp.sum(jnp.where(active, norm2, 0.0)) / jnp.sum(active)
     keep = active & (norm2 >= threshold**2 * mean_norm2)
     keep = jnp.where(jnp.any(keep), keep, active)
     kept = jnp.where(keep[:, None], corrections, 0.0)
-    eigenvalues, eigenvectors = jnp.linalg.eigh(kept.T @ kept)
-    projected = jnp.where(keep[:, None], corrections @ eigenvectors, jnp.nan)
+    eigenvalues, eigenvectors = jnp.linalg.eigh(basis @ (kept.T @ kept) @ basis.T)
+    projected = corrections @ (basis.T @ eigenvectors)
+    projected = jnp.where(keep[:, None], projected, jnp.nan)
     low = jnp.nanpercentile(projected, clipping, axis=0)
     high = jnp.nanpercentile(projected, 100.0 - clipping, axis=0)
     return keep, eigenvalues, eigenvectors, low, high
+
+
+def prior_whitening(prior_precision, n_design, n_features):
+    """Map ``T`` from whitened to parameter coordinates, ``T T^T = Lambda^-1``.
+
+    With ``theta = T phi`` a Gaussian prior ``N(0, (lambda Lambda)^-1)`` on
+    ``theta`` is the isotropic prior ``N(0, 1 / lambda)`` on ``phi``, so the
+    fit of the design ``X @ T`` is the fit with prior shape ``Lambda``.
+
+    ``prior_precision`` is a vector (diagonal ``Lambda``) or a symmetric
+    positive definite matrix, over the ``n_design`` columns of the design or
+    over its first ``n_features`` columns; any remaining column (the
+    intercept) then gets unit precision. Returns ``None`` for no prior
+    shape, a vector for a diagonal ``T`` and a matrix otherwise.
+    """
+    if prior_precision is None:
+        return None
+    precision = np.asarray(prior_precision, dtype=np.float64)
+    size = precision.shape[0] if precision.ndim in (1, 2) else -1
+    square = precision.ndim == 2 and precision.shape[0] == precision.shape[1]
+    if size not in (n_design, n_features) or not (precision.ndim == 1 or square):
+        raise ValueError(
+            "prior_precision must have shape (n_features,) or (n_features, "
+            f"n_features) with n_features = {n_features}, got {precision.shape}."
+        )
+    if not np.all(np.isfinite(precision)):
+        raise ValueError("prior_precision contains NaN or infinite values.")
+    if precision.ndim == 1:
+        if np.any(precision <= 0):
+            raise ValueError("prior_precision must be positive.")
+        scale = np.ones(n_design)
+        scale[:size] = 1.0 / np.sqrt(precision)
+        return scale
+    if not np.allclose(precision, precision.T, rtol=1e-10, atol=0.0):
+        raise ValueError("prior_precision must be symmetric.")
+    try:
+        factor = np.linalg.cholesky(0.5 * (precision + precision.T))
+    except np.linalg.LinAlgError as err:
+        raise ValueError("prior_precision must be positive definite.") from err
+    T = np.eye(n_design)
+    T[:size, :size] = np.linalg.solve(factor.T, np.eye(size))
+    return T
+
+
+def _from_whitened(T, M):
+    """``T @ M`` for the map of :func:`prior_whitening`."""
+    if T is None:
+        return M
+    return T[:, None] * M if T.ndim == 1 else T @ M
 
 
 class POPSRegression(BaseEstimator):
@@ -152,6 +204,19 @@ class POPSRegression(BaseEstimator):
         Whether to fit an intercept. If True, a constant column is appended
         to X (rather than centering) so that the intercept participates in
         the POPS posterior estimation.
+
+    prior_precision : array-like of shape (n_features,) or \
+            (n_features, n_features), default=None
+        Shape ``Lambda`` of the Gaussian prior ``N(0, (lambda_ *
+        Lambda)^-1)`` on the coefficients: a vector for a diagonal
+        ``Lambda`` or a symmetric positive definite matrix. Only the shape
+        is fixed; the overall scale ``lambda_`` is still learned by evidence
+        maximization, so ``Lambda`` and ``c * Lambda`` give the same fit.
+        The mean fit, the leverages and the pointwise corrections all use
+        the metric ``A = X^T X + (lambda_ / alpha_) * Lambda``. ``None`` is
+        the isotropic prior ``Lambda = I``. With ``fit_intercept=True`` the
+        intercept keeps unit prior precision, unless ``Lambda`` is given
+        with one more row (and column) for it.
 
     mode_threshold : float, default=1e-8
         Eigenvalue threshold (relative to max) for determining the effective
@@ -232,7 +297,7 @@ class POPSRegression(BaseEstimator):
         Estimated precision of the noise. Not used for prediction.
 
     lambda_ : float
-        Estimated precision of the weights.
+        Estimated precision of the weights (the scale of the prior).
 
     sigma_ : ndarray of shape (n_features, n_features)
         Estimated epistemic variance-covariance matrix of the weights. If
@@ -299,6 +364,7 @@ class POPSRegression(BaseEstimator):
         alpha_init=None,
         lambda_init=None,
         fit_intercept=False,
+        prior_precision=None,
         mode_threshold=1.0e-8,
         resample_density=1.0,
         resampling_method="uniform",
@@ -318,6 +384,7 @@ class POPSRegression(BaseEstimator):
         self.alpha_init = alpha_init
         self.lambda_init = lambda_init
         self.fit_intercept = fit_intercept
+        self.prior_precision = prior_precision
         self.mode_threshold = mode_threshold
         self.resample_density = resample_density
         self.resampling_method = resampling_method
@@ -405,6 +472,12 @@ class POPSRegression(BaseEstimator):
         """
         threshold = self._validate()
         hyper = jnp.array([self.alpha_1, self.alpha_2, self.lambda_1, self.lambda_2])
+        # A prior shape Lambda is an isotropic prior in the coordinates
+        # phi = T^-1 theta: fit there, then map back.
+        n_features = getattr(self, "n_features_in_", X.shape[1])
+        T = prior_whitening(self.prior_precision, X.shape[1], n_features)
+        if T is not None:
+            X = X * T if T.ndim == 1 else X @ T
         fit = bayesian_ridge(
             X,
             y,
@@ -418,24 +491,30 @@ class POPSRegression(BaseEstimator):
         corrections, errors, leverage = pointwise_corrections(
             X, y, weights, fit, float(self.leverage_regularization)
         )
+        basis = _from_whitened(T, np.asarray(fit.V))
         keep, eigenvalues, eigenvectors, low, high = _select_and_bound(
-            corrections, weights > 0, float(threshold), float(self.percentile_clipping)
+            corrections,
+            basis,
+            weights > 0,
+            float(threshold),
+            float(self.percentile_clipping),
         )
 
         self.alpha_ = float(fit.alpha)
         self.lambda_ = float(fit.lam)
         self.n_iter_ = int(fit.n_iter)
-        self.sigma_ = np.asarray(scaled_covariance(fit)) / self.alpha_
+        covariance = np.asarray(scaled_covariance(fit)) / self.alpha_
+        self.sigma_ = _from_whitened(T, _from_whitened(T, covariance).T)
         self.leverage_ = np.asarray(leverage)
         self.selected_ = np.asarray(keep)
-        self._basis = np.asarray(fit.V)
+        self._basis = basis
         self._corrections = corrections
 
         eigenvalues = np.asarray(eigenvalues)
         modes = eigenvalues > self.mode_threshold * eigenvalues.max()
-        self._hypercube_support = self._basis @ np.asarray(eigenvectors)[:, modes]
+        self._hypercube_support = np.asarray(eigenvectors)[:, modes]
         self._hypercube_bounds = [np.asarray(low)[modes], np.asarray(high)[modes]]
-        return np.asarray(fit.coef)
+        return _from_whitened(T, np.asarray(fit.coef)[:, None])[:, 0]
 
     @property
     def pointwise_corrections_(self):

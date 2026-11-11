@@ -461,3 +461,133 @@ def test_get_set_params_and_repr():
 def test_importing_the_package_does_not_import_scikit_learn():
     code = "import sys, popsregression; sys.exit('sklearn' in sys.modules)"
     assert subprocess.run([sys.executable, "-c", code]).returncode == 0
+
+
+# --- Prior shape ---
+
+
+def _prior_problem(seed=0, n_samples=80, n_features=6):
+    rng = np.random.RandomState(seed)
+    X = rng.randn(n_samples, n_features)
+    y = X @ rng.randn(n_features) + 0.3 * np.sin(3 * X[:, 0])
+    root = rng.randn(n_features, n_features)
+    return X, y, root @ root.T + 0.1 * np.eye(n_features), rng
+
+
+@pytest.mark.parametrize("diagonal", [True, False])
+def test_prior_precision_sets_the_metric_of_the_fit(diagonal):
+    """A = X^T X + (lambda / alpha) Lambda for the mean and the corrections."""
+    X, y, precision, _ = _prior_problem()
+    prior = np.diag(precision).copy() if diagonal else precision
+    Lambda = np.diag(prior) if diagonal else prior
+    model = POPSRegression(prior_precision=prior, leverage_regularization=0.0)
+    model.fit(X, y)
+
+    A = X.T @ X + (model.lambda_ / model.alpha_) * Lambda
+    assert_allclose(model.coef_, np.linalg.solve(A, X.T @ y), rtol=1e-8)
+    assert_allclose(model.sigma_, np.linalg.inv(A) / model.alpha_, rtol=1e-7)
+    solved = np.linalg.solve(A, X.T).T
+    leverage = np.einsum("ij,ij->i", X, solved)
+    expected = ((y - X @ model.coef_) / leverage)[:, None] * solved
+    assert_allclose(model.leverage_, leverage, rtol=1e-7)
+    assert_allclose(model.pointwise_corrections_, expected, rtol=1e-6, atol=1e-10)
+    # The corrections are still the exact pointwise fits.
+    fitted = np.einsum("ij,ij->i", X, model.coef_ + model.pointwise_corrections_)
+    assert_allclose(fitted, y, rtol=1e-7, atol=1e-8)
+
+
+def test_prior_precision_is_the_isotropic_fit_of_the_whitened_design():
+    X, y, precision, _ = _prior_problem()
+    factor = np.linalg.cholesky(precision)
+    T = np.linalg.inv(factor).T
+    kwargs = dict(posterior="ensemble", minimum_relative_correction=0.0)
+    prior = POPSRegression(prior_precision=precision, **kwargs).fit(X, y)
+    whitened = POPSRegression(**kwargs).fit(X @ T, y)
+    assert prior.n_iter_ == whitened.n_iter_
+    assert_allclose(prior.lambda_, whitened.lambda_, rtol=1e-8)
+    assert_allclose(prior.coef_, T @ whitened.coef_, rtol=1e-8)
+    assert_allclose(prior.predict(X), whitened.predict(X @ T), rtol=1e-8)
+    assert_allclose(
+        prior.pointwise_corrections_, whitened.pointwise_corrections_ @ T.T, atol=1e-9
+    )
+
+
+def test_prior_precision_scale_is_learned():
+    """Only the shape of Lambda matters; identity is the default prior."""
+    X, y, precision, _ = _prior_problem()
+    kwargs = dict(posterior="ensemble", minimum_relative_correction=0.0)
+    base = POPSRegression(prior_precision=precision, **kwargs).fit(X, y)
+    scaled = POPSRegression(prior_precision=100.0 * precision, **kwargs).fit(X, y)
+    assert_allclose(scaled.lambda_, base.lambda_ / 100.0, rtol=1e-6)
+    assert_allclose(scaled.coef_, base.coef_, rtol=1e-8)
+    assert_allclose(
+        scaled.misspecification_sigma_, base.misspecification_sigma_, rtol=1e-7
+    )
+
+    default = POPSRegression(**kwargs).fit(X, y)
+    identity = POPSRegression(prior_precision=np.ones(X.shape[1]), **kwargs).fit(X, y)
+    assert_allclose(identity.coef_, default.coef_, rtol=1e-10)
+    assert_allclose(
+        identity.misspecification_sigma_, default.misspecification_sigma_, rtol=1e-8
+    )
+
+
+def test_prior_precision_shrinks_the_penalized_direction():
+    rng = np.random.RandomState(0)
+    X = rng.randn(8, 4)
+    y = X @ np.array([1.0, 1.0, 1.0, 1.0]) + 0.5 * rng.randn(8)
+    flat = POPSRegression().fit(X, y)
+    stiff = POPSRegression(prior_precision=[1.0, 1.0, 1.0, 1e6]).fit(X, y)
+    assert abs(stiff.coef_[3]) < 0.05 * abs(flat.coef_[3])
+    assert stiff.sigma_[3, 3] < 1e-3 * flat.sigma_[3, 3]
+
+
+def test_hypercube_with_a_prior_is_the_box_of_its_corrections():
+    X, y, precision, _ = _prior_problem()
+    model = POPSRegression(prior_precision=precision, random_state=0).fit(X, y)
+    support = model._hypercube_support
+    low, high = model._hypercube_bounds
+    assert_allclose(support.T @ support, np.eye(support.shape[1]), atol=1e-10)
+    projected = model.pointwise_corrections_[model.selected_] @ support
+    assert_allclose(projected.min(axis=0), low, rtol=1e-8, atol=1e-12)
+    assert_allclose(projected.max(axis=0), high, rtol=1e-8, atol=1e-12)
+
+
+def test_prior_precision_with_intercept():
+    X, y, precision, _ = _prior_problem()
+    y = y + 4.0
+    design = np.hstack([X, np.ones((X.shape[0], 1))])
+    augmented = np.eye(X.shape[1] + 1)
+    augmented[:-1, :-1] = precision
+
+    # Given for the features only, the intercept gets unit prior precision.
+    model = POPSRegression(prior_precision=precision, fit_intercept=True).fit(X, y)
+    explicit = POPSRegression(prior_precision=augmented).fit(design, y)
+    assert_allclose(model.coef_, explicit.coef_[:-1], rtol=1e-8)
+    assert_allclose(model.intercept_, explicit.coef_[-1], rtol=1e-8)
+    assert model.posterior_samples_.shape[0] == X.shape[1] + 1
+
+    # It can also be given with a row and column for the intercept.
+    loose = augmented.copy()
+    loose[-1, -1] = 1e-8
+    free = POPSRegression(prior_precision=loose, fit_intercept=True).fit(X, y)
+    explicit = POPSRegression(prior_precision=loose).fit(design, y)
+    assert_allclose(free.intercept_, explicit.coef_[-1], rtol=1e-8)
+    assert not np.isclose(free.intercept_, model.intercept_, rtol=1e-6)
+
+
+@pytest.mark.parametrize(
+    "prior",
+    [
+        np.ones(3),
+        -np.ones(6),
+        np.ones((6, 5)),
+        np.arange(36.0).reshape(6, 6),
+        -np.eye(6),
+        np.full(6, np.nan),
+    ],
+)
+def test_invalid_prior_precision(prior):
+    X, y, _, _ = _prior_problem()
+    with pytest.raises(ValueError, match="prior_precision"):
+        POPSRegression(prior_precision=prior).fit(X, y)

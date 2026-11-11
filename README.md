@@ -44,6 +44,7 @@ y_pred, y_std, y_max, y_min, y_epistemic_std = model.predict(
 | `random_state` | `None` | Seed for the posterior resampling; `None` uses the global NumPy state |
 | `resampling_method` | `'uniform'` | Sampling method: `'uniform'`, `'sobol'`, `'latin'`, `'halton'` |
 | `resample_density` | `1.0` | Number of posterior samples per training point |
+| `prior_precision` | `None` | Shape `Λ` (vector or matrix) of the Gaussian prior `N(0, (λΛ)⁻¹)` on the coefficients; the scale `λ` is learned. `None` is the isotropic prior |
 | `leverage_regularization` | `0.001` | Regularizes the leverage in the pointwise corrections, `e_i A⁻¹x_i / (h_i + eps)` with `eps` this times the mean leverage; `0.0` is the exact (unstable for low-leverage points) pointwise fit |
 | `minimum_relative_correction` | `0.01` | Relative threshold on the correction norm: only points with \|\|dθ_i\|\| >= this times the RMS norm enter the singular decomposition and bounds of the POPS posterior |
 | `mode_threshold` | `1e-8` | Eigenvalue threshold for hypercube dimensionality |

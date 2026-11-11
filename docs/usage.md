@@ -105,12 +105,42 @@ The Bayesian ridge parameters of the mean fit (`max_iter`, `tol`, `alpha_1`,
 |---|---|---|
 | `posterior` | `'hypercube'` | `'hypercube'` fits a PCA-aligned box to the pointwise corrections and resamples it; `'ensemble'` uses the raw corrections as samples |
 | `random_state` | `None` | Seed for the posterior resampling; `None` keeps the global NumPy state |
+| `prior_precision` | `None` | Shape of the Gaussian prior on the coefficients (see below) |
 | `leverage_regularization` | `0.001` | Regularization of the leverage in the pointwise corrections, in units of the mean leverage (see below) |
 | `minimum_relative_correction` | `0.01` | Relative correction-norm threshold for selecting training points (see below) |
 | `resampling_method` | `'uniform'` | `'uniform'`, `'sobol'`, `'latin'` or `'halton'`; hypercube posterior only |
 | `resample_density` | `1.0` | Posterior samples per training point; the count is floored at 100 |
 | `percentile_clipping` | `0.0` | Percentile trimmed from each end of the hypercube bounds, in `[0, 50]` |
 | `mode_threshold` | `1e-8` | Relative eigenvalue cutoff setting the effective dimension of the hypercube |
+
+### `prior_precision`
+
+By default the coefficients have the isotropic Gaussian prior of Bayesian
+ridge regression, `N(0, I / λ)`, whose precision `λ` is learned by evidence
+maximization. `prior_precision` replaces the identity by a shape `Λ` of your
+choice, a vector (diagonal `Λ`) or a symmetric positive definite matrix:
+
+```text
+θ ~ N(0, (λ Λ)⁻¹),        A = XᵀX + (λ/α) Λ
+```
+
+```python
+# Penalize the last two coefficients a thousand times more than the others
+model = POPSRegression(prior_precision=[1, 1, 1, 1e3, 1e3])
+
+# A full precision matrix, e.g. a smoothness prior
+model = POPSRegression(prior_precision=Lambda)
+```
+
+Only the shape is fixed: the scale `λ` (`lambda_`) is still learned, so `Λ`
+and `c·Λ` give the same fit. The mean fit, the leverages and the pointwise
+corrections all use the metric `A`, so the prior also decides which direction
+a pointwise correction takes. With `fit_intercept=True` the intercept keeps
+unit prior precision unless `Λ` is given with one more row and column for it.
+
+[`POPSEllipseRegression`][popsregression.POPSEllipseRegression] takes the same
+argument. There it sets the center and the POPS baseline of the ellipsoid; it
+does not constrain the fitted ellipsoid shape.
 
 ### `leverage_regularization`
 
