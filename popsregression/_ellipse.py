@@ -113,7 +113,10 @@ def _ellipse_nll(psi, Z, y, b0, weights, delta, rho, psi0=None, prior_precision=
 
 
 def _param_prior_kl(U, M, B0t, p2, trMB0):
-    """``0.5 * (tr(M B) / p2 - log det B)`` with ``B = B0t + U U^T`` (whitened), and its gradient in U."""
+    """KL term ``0.5 * (tr(M B) / p2 - log det B)`` and its gradient in U.
+
+    ``B = B0t + U U^T`` in whitened coordinates.
+    """
     from scipy.linalg import cho_factor, cho_solve
 
     B = B0t + U @ U.T
@@ -259,7 +262,8 @@ class _EllipsoidPosterior(RegressorMixin, BaseEstimator):
         Non-negative per-datum weights ``w_i`` of the empirical
         generalization error ``G_hat = mean_i(w_i * ell_i)``.
 
-    param_prior_precision : array-like of shape (n_features,) or (n_features, n_features), default=None
+    param_prior_precision : array-like of shape (n_features,) or \
+            (n_features, n_features), default=None
         Precision ``Lambda`` of a zero-mean Gaussian prior on the parameters,
         in the coordinates of ``X``. If given, the objective gains
         ``KL = 0.5 * (tr(Lambda B) / (n_dim + 2) - log det B)`` (up to a
@@ -632,9 +636,11 @@ class _EllipsoidPosterior(RegressorMixin, BaseEstimator):
         free = slice(None) if self.optimize_center else slice(n_dim, None)
         prior = self._param_prior(n_dim, b0)
         if prior is not None:
-            # Start the widths at the prior optimum U U^T = (n_dim + 2) M^-1 (its top-rank eigenpairs), not at a
-            # 1e-3 random factor: there B0_t + U U^T is near-singular off B0's span, the log det gradient B^-1 U is
-            # ~1e3 x U, and L-BFGS overshoots by orders of magnitude.
+            # Start the widths at the prior optimum U U^T = (n_dim + 2) M^-1
+            # (its top-rank eigenpairs), not at a 1e-3 random factor: there
+            # B0_t + U U^T is near-singular off B0's span, the log det
+            # gradient B^-1 U is ~1e3 x U, and L-BFGS overshoots by orders
+            # of magnitude.
             mev, mvec = eigh(prior[0])
             mev = np.maximum(mev, np.finfo(float).tiny)
             U0 = mvec[:, :rank] * np.sqrt(prior[2] / mev[:rank])
@@ -754,7 +760,10 @@ class _EllipsoidPosterior(RegressorMixin, BaseEstimator):
         return self
 
     def _param_prior(self, n_dim, b0):
-        """(M, B0_t, n_dim + 2, tr(M B0_t)) for ``_param_prior_kl``; M = W Lambda W, whitened."""
+        """``(M, B0_t, n_dim + 2, tr(M B0_t))`` for ``_param_prior_kl``.
+
+        ``M = W Lambda W`` is the prior precision in whitened coordinates.
+        """
         if self.param_prior_precision is None:
             return None
         if self._with_intercept or self.pac_bayes:

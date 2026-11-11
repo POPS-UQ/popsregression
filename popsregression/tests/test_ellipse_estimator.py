@@ -648,7 +648,10 @@ def test_pac_bayes_is_a_tunable_parameter():
 
 
 def test_param_prior_sets_unconstrained_width():
-    """A coefficient no datum touches settles at the prior variance; constrained ones barely move."""
+    """An unconstrained coefficient settles at the prior variance.
+
+    Coefficients the data constrain barely move.
+    """
     import warnings
 
     from popsregression._ellipse import _EllipsoidPosterior
