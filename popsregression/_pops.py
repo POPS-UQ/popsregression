@@ -9,47 +9,122 @@ Bayesian regression for low-noise data accounting for model misspecification.
 # SPDX-License-Identifier: BSD-3-Clause
 
 import warnings
-from numbers import Real
 
+import jax
+import jax.numpy as jnp
 import numpy as np
-from scipy.linalg import eigh
 from scipy.stats import qmc
-from sklearn.base import _fit_context
-from sklearn.linear_model._base import _preprocess_data
-from sklearn.linear_model._bayes import BayesianRidge
-from sklearn.utils import check_random_state
-from sklearn.utils._param_validation import Hidden, Interval, StrOptions
-from sklearn.utils.validation import (
-    _check_sample_weight,
+
+from ._base import (
+    BaseEstimator,
     check_is_fitted,
-    validate_data,
+    check_option,
+    check_random_state,
+    check_sample_weight,
+    check_scalar,
+    check_X,
+    check_X_y,
 )
+from ._bayes import as_nan, bayesian_ridge, scaled_covariance
+
+_RESAMPLING = {"latin": qmc.LatinHypercube, "sobol": qmc.Sobol, "halton": qmc.Halton}
 
 
-class POPSRegression(BayesianRidge):
+@jax.jit
+def pointwise_corrections(X, y, weights, fit, leverage_regularization):
+    """Pointwise optimal parameter corrections with regularized leverage.
+
+    The correction of training point ``i`` is the smallest parameter move, in
+    the metric ``A = X^T W X + lambda / alpha`` of the mean fit, after which
+    the model passes through ``y_i``. In closed form it is ``e_i A^-1 x_i /
+    h_i`` with residual ``e_i`` and leverage ``h_i = x_i^T A^-1 x_i``, which
+    diverges for points of vanishing leverage. Asking instead for the
+    minimizer of ``w_i (x_i @ d - e_i)**2 / eps + d^T A d`` gives
+
+        d_i = e_i A^-1 x_i * w_i / (w_i h_i + eps),
+
+    which is bounded: ``||d_i||_A <= |e_i| sqrt(w_i / eps) / 2``. ``eps`` is
+    ``leverage_regularization`` times the mean (weighted) leverage, so the
+    regularization is dimensionless and only acts on points far less
+    informative than the typical one.
+
+    Parameters
+    ----------
+    X, y, weights : arrays of ``n_samples`` rows
+        Design, targets and non-negative sample weights.
+    fit : RidgeFit
+        The mean fit.
+    leverage_regularization : float
+        Regularization, in units of the mean leverage.
+
+    Returns
+    -------
+    corrections : array of shape (n_samples, n_modes)
+        Corrections in the right singular basis ``fit.V`` of the design (an
+        orthonormal basis, so row norms are the Euclidean ``||d_i||``).
+    errors : array of shape (n_samples,)
+        Residuals of the mean fit.
+    leverage : array of shape (n_samples,)
+        Weighted leverages ``w_i h_i``.
+    """
+    T = X @ fit.V
+    inverse_gram = 1.0 / (fit.S**2 + fit.lam / fit.alpha)
+    errors = y - X @ fit.coef
+    leverage = weights * jnp.sum(T * T * inverse_gram, axis=1)
+    active = weights > 0
+    mean_leverage = jnp.sum(jnp.where(active, leverage, 0.0)) / jnp.sum(active)
+    denominator = leverage + leverage_regularization * mean_leverage
+    scale = jnp.where(denominator > 0, weights * errors / denominator, 0.0)
+    return (scale[:, None] * T) * inverse_gram, errors, leverage
+
+
+@jax.jit
+def _select_and_bound(corrections, active, threshold, clipping):
+    """Prune negligible corrections, then fit the PCA-aligned box.
+
+    Points are kept when their Euclidean correction norm ``||d_i||`` is at
+    least ``threshold`` times the root-mean-square norm: these are the rows
+    that determine the singular decomposition of the correction matrix.
+
+    Returns the selection mask, the eigenvalues and eigenvectors of the
+    (pruned) second-moment matrix and the box bounds along every eigenvector.
+    """
+    norm2 = jnp.sum(corrections**2, axis=1)
+    mean_norm2 = jnp.sum(jnp.where(active, norm2, 0.0)) / jnp.sum(active)
+    keep = active & (norm2 >= threshold**2 * mean_norm2)
+    keep = jnp.where(jnp.any(keep), keep, active)
+    kept = jnp.where(keep[:, None], corrections, 0.0)
+    eigenvalues, eigenvectors = jnp.linalg.eigh(kept.T @ kept)
+    projected = jnp.where(keep[:, None], corrections @ eigenvectors, jnp.nan)
+    low = jnp.nanpercentile(projected, clipping, axis=0)
+    high = jnp.nanpercentile(projected, 100.0 - clipping, axis=0)
+    return keep, eigenvalues, eigenvectors, low, high
+
+
+class POPSRegression(BaseEstimator):
     """Bayesian regression for low-noise data with misspecification uncertainty.
 
-    Fits a linear model using BayesianRidge, then estimates weight
+    Fits a linear model by Bayesian ridge regression, then estimates weight
     uncertainties accounting for model misspecification using the POPS
     (Pointwise Optimal Parameter Sets) algorithm [1]_. Unlike standard
     Bayesian regression, the aleatoric noise precision ``alpha_`` is not
     used for predictions, as it should be negligible in the low-noise regime.
 
     Standard Bayesian regression can only estimate epistemic and aleatoric
-    uncertainties. In the low-noise limit, weight uncertainties (``sigma_``
-    in :class:`BayesianRidge`) are significantly underestimated as they only
-    account for epistemic uncertainties that decay with increasing data.
-    POPS corrects this by estimating misspecification uncertainty from
-    pointwise optimal parameter sets.
+    uncertainties. In the low-noise limit, the weight uncertainties
+    ``sigma_`` are significantly underestimated as they only account for
+    epistemic uncertainties that decay with increasing data. POPS corrects
+    this by estimating misspecification uncertainty from pointwise optimal
+    parameter sets.
 
     Parameters
     ----------
     max_iter : int, default=300
-        Maximum number of iterations for the BayesianRidge convergence loop.
+        Maximum number of evidence iterations of the Bayesian ridge fit.
 
     tol : float, default=1e-3
-        Convergence threshold. Stop the algorithm if the coefficient vector
-        has converged.
+        Convergence threshold. Stop the evidence iterations once the
+        coefficient vector has converged.
 
     alpha_1 : float, default=1e-6
         Shape parameter for the Gamma distribution prior over ``alpha_``.
@@ -73,19 +148,10 @@ class POPSRegression(BayesianRidge):
         Initial value for ``lambda_`` (precision of the weights). If None,
         ``lambda_init`` is 1.
 
-    compute_score : bool, default=False
-        If True, compute the log marginal likelihood at each step.
-
     fit_intercept : bool, default=False
         Whether to fit an intercept. If True, a constant column is appended
         to X (rather than centering) so that the intercept participates in
         the POPS posterior estimation.
-
-    copy_X : bool, default=True
-        If True, X will be copied; else, it may be overwritten.
-
-    verbose : bool, default=False
-        Verbose mode when fitting the model.
 
     mode_threshold : float, default=1e-8
         Eigenvalue threshold (relative to max) for determining the effective
@@ -106,16 +172,31 @@ class POPSRegression(BayesianRidge):
         The hypercube spans the ``[percentile_clipping,
         100 - percentile_clipping]`` range. Should be between 0 and 50.
 
-    minimum_relative_error : float, default=0.01
-        Relative residual threshold for training point selection, in units
-        of the root-mean-square error of the mean fit. Only training points
-        whose residual satisfies ``|y - X @ coef_| >= minimum_relative_error
-        * rmse`` contribute to the POPS posterior; a value of ``0.01`` thus
-        discards points fit a hundred times better than the typical training
-        point. Larger values accelerate fitting by focusing on the points the
-        model fits worst, which are the ones that carry misspecification
-        information. Use ``0.0`` to keep every training point. If no point
-        passes the threshold, all points are used.
+    leverage_regularization : float, default=1e-3
+        Regularization of the leverage in the pointwise corrections, in
+        units of the mean leverage of the training points. The correction
+        of point ``i`` is ``e_i A^-1 x_i / (h_i + eps)`` with ``eps =
+        leverage_regularization * mean(h)``: the exact pointwise fit
+        (``eps = 0``) divides by the leverage ``h_i`` alone and is unstable
+        for points the model is barely sensitive to. With ``eps > 0`` the
+        correction is the minimizer of ``(x_i @ d - e_i)**2 / eps + d^T A
+        d``, so the pointwise fit is satisfied up to the relative residual
+        ``eps / (h_i + eps)``: about ``leverage_regularization`` for a
+        typical point, and a large fraction only for points of leverage
+        a thousand times below the mean at the default. ``0.0`` recovers
+        the exact pointwise fit. The corrections of low-leverage points can
+        dominate the posterior, so on designs whose leverages span many
+        orders of magnitude this parameter sets its width: see
+        ``leverage_``.
+
+    minimum_relative_correction : float, default=1e-2
+        Relative threshold for training point selection, in units of the
+        root-mean-square Euclidean norm of the pointwise corrections. Only
+        training points with ``||d_i|| >= minimum_relative_correction *
+        rms(||d||)`` enter the singular decomposition and bounds of the
+        POPS posterior; the others are too small to affect either. Use
+        ``0.0`` to keep every training point. If no point passes the
+        threshold, all points are used.
 
     posterior : {'hypercube', 'ensemble'}, default='hypercube'
         Form of the POPS parameter posterior:
@@ -125,20 +206,18 @@ class POPSRegression(BayesianRidge):
 
         The uniform-ellipsoid posterior, with its empirical-Bayes and PAC
         regularizations, is :class:`~popsregression.POPSEllipseRegression`.
+
     random_state : int, RandomState instance or None, default=None
         Seed for the posterior resampling. ``None`` uses the global NumPy
-        random state, which is the historical behaviour of the ``'uniform'``
-        hypercube resampling.
+        random state for ``'uniform'`` resampling and fresh entropy for the
+        quasi-random methods.
 
-    leverage_percentile : float, default='deprecated'
-        Deprecated. Training points used to be selected by leverage score
-        percentile; they are now selected by residual magnitude through
-        ``minimum_relative_error``. Passing this parameter raises a
-        :class:`FutureWarning` and has no effect.
-
-        .. deprecated:: 0.5
-            ``leverage_percentile`` is deprecated and will be removed in
-            0.7. Use ``minimum_relative_error`` instead.
+    minimum_relative_error : float, default='deprecated'
+        Deprecated. Training points used to be selected by the size of
+        their residual; they are now selected by the size of their
+        pointwise correction through ``minimum_relative_correction``, to
+        which a value passed here is forwarded with a
+        :class:`FutureWarning`.
 
     Attributes
     ----------
@@ -156,7 +235,8 @@ class POPSRegression(BayesianRidge):
         Estimated precision of the weights.
 
     sigma_ : ndarray of shape (n_features, n_features)
-        Estimated epistemic variance-covariance matrix of the weights.
+        Estimated epistemic variance-covariance matrix of the weights. If
+        ``fit_intercept=True`` the last row and column are the intercept.
 
     misspecification_sigma_ : ndarray of shape (n_features, n_features)
         Estimated misspecification variance-covariance matrix from POPS.
@@ -165,25 +245,23 @@ class POPSRegression(BayesianRidge):
         Samples from the POPS posterior, representing plausible weight
         perturbations.
 
-    scores_ : ndarray of shape (n_iter_,)
-        Value of the log marginal likelihood at each iteration.
-        Only available if ``compute_score=True``.
+    pointwise_corrections_ : ndarray of shape (n_samples, n_features)
+        Pointwise corrections of every training point (lazy).
+
+    leverage_ : ndarray of shape (n_samples,)
+        Leverage of every training point in the mean fit.
+
+    selected_ : ndarray of shape (n_samples,), dtype=bool
+        Training points that entered the POPS posterior.
 
     n_iter_ : int
         The actual number of iterations to reach convergence.
 
     n_features_in_ : int
-        Number of features seen during :term:`fit`.
-
-    feature_names_in_ : ndarray of shape (`n_features_in_`,)
-        Names of features seen during :term:`fit`. Defined only when `X`
-        has feature names that are all strings.
+        Number of features seen during ``fit``.
 
     See Also
     --------
-    sklearn.linear_model.BayesianRidge : Bayesian ridge regression without
-        misspecification correction.
-    sklearn.linear_model.ARDRegression : Bayesian ARD regression.
     popsregression.POPSEllipseRegression : Uniform-ellipsoid POPS posterior
         with an exact predictive density.
 
@@ -209,21 +287,6 @@ class POPSRegression(BayesianRidge):
     array([...])
     """
 
-    _parameter_constraints: dict = {
-        **BayesianRidge._parameter_constraints,
-        "mode_threshold": [Interval(Real, 0, None, closed="neither")],
-        "resample_density": [Interval(Real, 0, None, closed="neither")],
-        "resampling_method": [StrOptions({"uniform", "sobol", "latin", "halton"})],
-        "percentile_clipping": [Interval(Real, 0, 50.0, closed="both")],
-        "minimum_relative_error": [Interval(Real, 0.0, None, closed="left")],
-        "posterior": [StrOptions({"hypercube", "ensemble"})],
-        "random_state": ["random_state"],
-        "leverage_percentile": [
-            Interval(Real, 0.0, 100.0, closed="left"),
-            Hidden(StrOptions({"deprecated"})),
-        ],
-    }
-
     def __init__(
         self,
         *,
@@ -235,43 +298,65 @@ class POPSRegression(BayesianRidge):
         lambda_2=1.0e-6,
         alpha_init=None,
         lambda_init=None,
-        compute_score=False,
         fit_intercept=False,
-        copy_X=True,
-        verbose=False,
         mode_threshold=1.0e-8,
         resample_density=1.0,
         resampling_method="uniform",
         percentile_clipping=0.0,
-        minimum_relative_error=1.0e-2,
+        leverage_regularization=1.0e-3,
+        minimum_relative_correction=1.0e-2,
         posterior="hypercube",
         random_state=None,
-        leverage_percentile="deprecated",
+        minimum_relative_error="deprecated",
     ):
-        super().__init__(
-            max_iter=max_iter,
-            tol=tol,
-            alpha_1=alpha_1,
-            alpha_2=alpha_2,
-            lambda_1=lambda_1,
-            lambda_2=lambda_2,
-            alpha_init=alpha_init,
-            lambda_init=lambda_init,
-            compute_score=compute_score,
-            fit_intercept=fit_intercept,
-            copy_X=copy_X,
-            verbose=verbose,
-        )
+        self.max_iter = max_iter
+        self.tol = tol
+        self.alpha_1 = alpha_1
+        self.alpha_2 = alpha_2
+        self.lambda_1 = lambda_1
+        self.lambda_2 = lambda_2
+        self.alpha_init = alpha_init
+        self.lambda_init = lambda_init
+        self.fit_intercept = fit_intercept
         self.mode_threshold = mode_threshold
         self.resample_density = resample_density
         self.resampling_method = resampling_method
         self.percentile_clipping = percentile_clipping
-        self.minimum_relative_error = minimum_relative_error
+        self.leverage_regularization = leverage_regularization
+        self.minimum_relative_correction = minimum_relative_correction
         self.posterior = posterior
         self.random_state = random_state
-        self.leverage_percentile = leverage_percentile
+        self.minimum_relative_error = minimum_relative_error
 
-    @_fit_context(prefer_skip_nested_validation=True)
+    def _validate(self):
+        check_scalar("max_iter", self.max_iter, low=1)
+        check_scalar("tol", self.tol, low=0.0)
+        for name in ("alpha_1", "alpha_2", "lambda_1", "lambda_2"):
+            check_scalar(name, getattr(self, name), low=0.0)
+        check_scalar("mode_threshold", self.mode_threshold, low=0.0, low_open=True)
+        check_scalar("resample_density", self.resample_density, low=0.0, low_open=True)
+        check_option(
+            "resampling_method", self.resampling_method, {"uniform", *_RESAMPLING}
+        )
+        check_scalar(
+            "percentile_clipping", self.percentile_clipping, low=0.0, high=50.0
+        )
+        check_scalar("leverage_regularization", self.leverage_regularization, low=0.0)
+        check_option("posterior", self.posterior, {"hypercube", "ensemble"})
+        threshold = self.minimum_relative_correction
+        if not isinstance(self.minimum_relative_error, str):
+            warnings.warn(
+                (
+                    "'minimum_relative_error' is deprecated: training points are "
+                    "now selected by the norm of their pointwise correction. Its "
+                    "value is forwarded to 'minimum_relative_correction'."
+                ),
+                FutureWarning,
+                stacklevel=3,
+            )
+            threshold = self.minimum_relative_error
+        return check_scalar("minimum_relative_correction", threshold, low=0.0)
+
     def fit(self, X, y, sample_weight=None):
         """Fit the POPS regression model.
 
@@ -284,138 +369,79 @@ class POPSRegression(BayesianRidge):
             Target values.
 
         sample_weight : array-like of shape (n_samples,), default=None
-            Individual weights for each sample.
+            Individual weights for each sample. They weight the mean fit
+            and the leverage regularization; points of zero weight do not
+            contribute to the POPS posterior.
 
         Returns
         -------
         self : object
             Returns the instance itself.
         """
-        if not isinstance(self.leverage_percentile, str):
-            warnings.warn(
-                (
-                    "'leverage_percentile' was deprecated in 0.5 and will be "
-                    "removed in 0.7. Training points are now selected by residual "
-                    "magnitude: use 'minimum_relative_error' instead. The value "
-                    "passed to 'leverage_percentile' is ignored."
-                ),
-                FutureWarning,
-            )
-
-        pops_fit_intercept = self.fit_intercept
+        X, y = check_X_y(X, y)
+        weights = check_sample_weight(sample_weight, X.shape[0])
+        self.n_features_in_ = X.shape[1]
         if self.fit_intercept:
-            X = np.asarray(X)
             X = np.hstack([X, np.ones((X.shape[0], 1))])
-            self.fit_intercept = False
-
-        try:
-            super().fit(X, y, sample_weight=sample_weight)
-
-            X_valid, y_valid = validate_data(
-                self, X, y, dtype=[np.float64, np.float32], reset=False
-            )
-
-            if sample_weight is not None:
-                sw = _check_sample_weight(sample_weight, X_valid, dtype=X_valid.dtype)
-            else:
-                sw = None
-
-            # Note this rescales X and y by sqrt(sample_weight), so the
-            # pointwise corrections below live in the reweighted space.
-            preprocess_result = _preprocess_data(
-                X_valid,
-                y_valid,
-                fit_intercept=False,
-                copy=True,
-                sample_weight=sw,
-            )
-            X_pp, y_pp = preprocess_result[0], preprocess_result[1]
-
-            n_samples = X_pp.shape[0]
-
-            scaled_sigma_ = self.alpha_ * self.sigma_
-
-            errors = y_pp - X_pp @ self.coef_
-            pointwise_correction = np.dot(X_pp, scaled_sigma_)
-
-            leverage_scores = np.sum(pointwise_correction * X_pp, axis=1)
-            safe_leverage = np.where(leverage_scores > 1e-6, leverage_scores, 1e-6)
-            pointwise_correction *= (errors / safe_leverage)[:, None]
-
-            rmse = np.sqrt(np.mean(errors**2))
-            filtering_mask = np.abs(errors) >= self.minimum_relative_error * rmse
-            if not np.any(filtering_mask):
-                filtering_mask = np.ones(n_samples, dtype=bool)
-
-            self._pointwise_correction = pointwise_correction
-            self._filtering_mask = filtering_mask
-
-            self.posterior_samples_, self.misspecification_sigma_ = (
-                self._build_posterior()
-            )
-            self._fitted_with_intercept = pops_fit_intercept
-
-        finally:
-            self.fit_intercept = pops_fit_intercept
-
-        return self
-
-    def _build_posterior(self):
-        """Build the POPS posterior from pointwise corrections.
-
-        Returns
-        -------
-        samples : ndarray of shape (n_features, n_samples)
-            Posterior samples (weight perturbations).
-
-        sigma : ndarray of shape (n_features, n_features)
-            Misspecification covariance matrix.
-        """
-        pc = self._pointwise_correction[self._filtering_mask]
+        coef = self._fit_hypercube(X, y, weights)
+        if self.fit_intercept:
+            self.coef_, self.intercept_ = coef[:-1], float(coef[-1])
+        else:
+            self.coef_, self.intercept_ = coef, 0.0
 
         if self.posterior == "ensemble":
-            sigma = pc.T @ pc / pc.shape[0]
-            return pc.T, sigma
+            samples = self.pointwise_corrections_[self.selected_].T
+            sigma = samples @ samples.T / samples.shape[1]
+        else:
+            samples, sigma = self._sample_hypercube()
+        self.posterior_samples_, self.misspecification_sigma_ = samples, sigma
+        return self
 
-        elif self.posterior == "hypercube":
-            self._hypercube_support, self._hypercube_bounds = self._fit_hypercube(pc)
-            return self._sample_hypercube()
+    def _fit_hypercube(self, X, y, weights):
+        """Mean fit, pointwise corrections and the PCA-aligned box.
 
-    def _n_resample(self):
-        """Number of posterior draws implied by ``resample_density``."""
-        return max(int(self.resample_density * len(self._pointwise_correction)), 100)
-
-    def _fit_hypercube(self, pointwise_correction):
-        """Fit a hypercube to the pointwise corrections via PCA.
-
-        Parameters
-        ----------
-        pointwise_correction : ndarray of shape (n_samples, n_features)
-            Pointwise corrections from the selected training points.
-
-        Returns
-        -------
-        projections : ndarray of shape (n_features, n_active_modes)
-            Principal component vectors defining the hypercube space.
-
-        bounds : list of ndarray
-            Two arrays [low, high] giving the min/max bounds along each
-            principal component.
+        ``X`` is the full design (any intercept column included). Returns
+        the coefficients of that design; no posterior samples are drawn.
         """
-        e_values, e_vectors = eigh(pointwise_correction.T @ pointwise_correction)
+        threshold = self._validate()
+        hyper = jnp.array([self.alpha_1, self.alpha_2, self.lambda_1, self.lambda_2])
+        fit = bayesian_ridge(
+            X,
+            y,
+            weights,
+            as_nan(self.alpha_init),
+            as_nan(self.lambda_init),
+            hyper,
+            float(self.tol),
+            int(self.max_iter),
+        )
+        corrections, errors, leverage = pointwise_corrections(
+            X, y, weights, fit, float(self.leverage_regularization)
+        )
+        keep, eigenvalues, eigenvectors, low, high = _select_and_bound(
+            corrections, weights > 0, float(threshold), float(self.percentile_clipping)
+        )
 
-        mask = e_values > self.mode_threshold * e_values.max()
-        e_vectors = e_vectors[:, mask]
+        self.alpha_ = float(fit.alpha)
+        self.lambda_ = float(fit.lam)
+        self.n_iter_ = int(fit.n_iter)
+        self.sigma_ = np.asarray(scaled_covariance(fit)) / self.alpha_
+        self.leverage_ = np.asarray(leverage)
+        self.selected_ = np.asarray(keep)
+        self._basis = np.asarray(fit.V)
+        self._corrections = corrections
 
-        projections = e_vectors.copy()
-        projected = pointwise_correction @ projections
+        eigenvalues = np.asarray(eigenvalues)
+        modes = eigenvalues > self.mode_threshold * eigenvalues.max()
+        self._hypercube_support = self._basis @ np.asarray(eigenvectors)[:, modes]
+        self._hypercube_bounds = [np.asarray(low)[modes], np.asarray(high)[modes]]
+        return np.asarray(fit.coef)
 
-        bounds = [
-            np.percentile(projected, self.percentile_clipping, axis=0),
-            np.percentile(projected, 100.0 - self.percentile_clipping, axis=0),
-        ]
-
-        return projections, bounds
+    @property
+    def pointwise_corrections_(self):
+        """Pointwise corrections of every training point, one per row."""
+        check_is_fitted(self, "_corrections")
+        return np.asarray(self._corrections) @ self._basis.T
 
     def _sample_hypercube(self, size=None, resampling_method=None):
         """Sample points from the fitted POPS hypercube.
@@ -436,38 +462,34 @@ class POPSRegression(BayesianRidge):
         sigma : ndarray of shape (n_features, n_features)
             Misspecification covariance estimated from the samples.
         """
-        if resampling_method is None:
-            resampling_method = self.resampling_method
-
-        low = self._hypercube_bounds[0]
-        high = self._hypercube_bounds[1]
-
-        n_resample = self._n_resample() if size is None else max(size, 100)
-
-        # random_state=None keeps NumPy's global RNG for 'uniform' and the
-        # sampler's own entropy for the QMC methods: the historical defaults.
-        seed = self.random_state
-        if resampling_method == "latin":
-            sampler = qmc.LatinHypercube(d=low.size, seed=seed)
-            samples = sampler.random(n_resample).T
-        elif resampling_method == "sobol":
-            sampler = qmc.Sobol(d=low.size, seed=seed)
-            n_resample = 2 ** int(np.log2(n_resample))
-            samples = sampler.random(n_resample).T
-        elif resampling_method == "halton":
-            sampler = qmc.Halton(d=low.size, seed=seed)
-            samples = sampler.random(n_resample).T
-        elif resampling_method == "uniform":
-            samples = check_random_state(seed).uniform(size=(low.size, n_resample))
-
-        samples = low[:, None] + (high - low)[:, None] * samples
-
-        hypercube_samples = self._hypercube_support @ samples
-        hypercube_sigma = (
-            hypercube_samples @ hypercube_samples.T / hypercube_samples.shape[1]
+        method = (
+            self.resampling_method if resampling_method is None else resampling_method
         )
+        low, high = self._hypercube_bounds
+        if size is None:
+            size = int(self.resample_density * self.selected_.size)
+        n_resample = max(size, 100)
 
-        return hypercube_samples, hypercube_sigma
+        # random_state=None keeps NumPy's global state for 'uniform' and the
+        # sampler's own entropy for the quasi-random methods.
+        seed = self.random_state
+        if method == "uniform":
+            unit = check_random_state(seed).uniform(size=(low.size, n_resample))
+        else:
+            if method == "sobol":
+                n_resample = 2 ** int(np.log2(n_resample))
+            unit = _RESAMPLING[method](d=low.size, seed=seed).random(n_resample).T
+
+        samples = self._hypercube_support @ (
+            low[:, None] + (high - low)[:, None] * unit
+        )
+        return samples, samples @ samples.T / samples.shape[1]
+
+    def _design(self, X):
+        X = check_X(X, self.n_features_in_)
+        if self.fit_intercept:
+            X = np.hstack([X, np.ones((X.shape[0], 1))])
+        return X
 
     def predict(
         self,
@@ -477,10 +499,6 @@ class POPSRegression(BayesianRidge):
         return_epistemic_std=False,
     ):
         """Predict using the POPS regression model.
-
-        In addition to the standard ``return_std`` from
-        :class:`BayesianRidge`, this method can return prediction bounds
-        (min/max over the posterior) and epistemic-only uncertainty.
 
         Parameters
         ----------
@@ -521,32 +539,34 @@ class POPSRegression(BayesianRidge):
             ``return_epistemic_std=True``.
         """
         check_is_fitted(self)
-
-        if getattr(self, "_fitted_with_intercept", False):
-            X = np.asarray(X)
-            X = np.hstack([X, np.ones((X.shape[0], 1))])
-
-        y_mean = self._decision_function(X)
+        X = self._design(X)
+        y_mean = X[:, : self.n_features_in_] @ self.coef_ + self.intercept_
         result = [y_mean]
 
-        if return_std or return_bounds or return_epistemic_std:
-            y_epistemic_var = (np.dot(X, self.sigma_) * X).sum(axis=1)
-
-            if return_std:
-                y_misspecification_var = (
-                    np.dot(X, self.misspecification_sigma_) * X
-                ).sum(axis=1)
-                result.append(np.sqrt(y_misspecification_var + y_epistemic_var))
-
-            if return_bounds:
-                y_posterior = X @ self.posterior_samples_
-                y_max = y_posterior.max(axis=1) + y_mean
-                y_min = y_posterior.min(axis=1) + y_mean
-                result.extend([y_max, y_min])
-
-            if return_epistemic_std:
-                result.append(np.sqrt(y_epistemic_var))
+        if return_std or return_epistemic_std:
+            epistemic_var = np.einsum("ij,ij->i", X @ self.sigma_, X)
+        if return_std:
+            misspecification_var = np.einsum(
+                "ij,ij->i", X @ self.misspecification_sigma_, X
+            )
+            result.append(np.sqrt(misspecification_var + epistemic_var))
+        if return_bounds:
+            upper, lower = _sample_extrema(X, self.posterior_samples_)
+            result.extend([y_mean + upper, y_mean + lower])
+        if return_epistemic_std:
+            result.append(np.sqrt(epistemic_var))
 
         if len(result) == 1:
             return result[0]
         return tuple(result)
+
+
+def _sample_extrema(X, samples, block=4096):
+    """Row-wise max and min of ``X @ samples``, in blocks of posterior samples."""
+    upper = np.full(X.shape[0], -np.inf)
+    lower = np.full(X.shape[0], np.inf)
+    for start in range(0, samples.shape[1], block):
+        values = X @ samples[:, start : start + block]
+        np.maximum(upper, values.max(axis=1), out=upper)
+        np.minimum(lower, values.min(axis=1), out=lower)
+    return upper, lower

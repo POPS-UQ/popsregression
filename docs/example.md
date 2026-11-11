@@ -42,7 +42,7 @@ from sklearn.linear_model import BayesianRidge
 from popsregression import POPSEllipseRegression, POPSRegression
 
 ridge = BayesianRidge(fit_intercept=False).fit(X_train, y_train)
-hypercube = POPSRegression(minimum_relative_error=0.0).fit(X_train, y_train)
+hypercube = POPSRegression(minimum_relative_correction=0.0).fit(X_train, y_train)
 ellipse = POPSEllipseRegression().fit(X_train, y_train)
 eb = POPSEllipseRegression(regularization="empirical-bayes").fit(X_train, y_train)
 # The target lies in [-144.4, 136.9] on [-10, 10]; y_bounds is known in advance.

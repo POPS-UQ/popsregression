@@ -465,7 +465,7 @@ def fit_predictive(method, problem, seed, X_eval=None):
 
     if method == "POPS hypercube":
         model = POPSRegression(
-            minimum_relative_error=0.0,
+            minimum_relative_correction=0.0,
             resample_density=N_DRAWS / y.size,
             random_state=seed,
         ).fit(X, y)
@@ -670,7 +670,7 @@ def parameter_draws(method, problem, seed, n_draws=2000, info=None):
         return model.coef_[:, None] + L @ rng.randn(X.shape[1], n_draws), zeros
     if method == "POPS hypercube":
         model = POPSRegression(
-            minimum_relative_error=0.0,
+            minimum_relative_correction=0.0,
             resample_density=n_draws / y.size,
             random_state=seed,
         ).fit(X, y)

@@ -4,19 +4,18 @@
 #          Danny Perez <danny_perez@lanl.gov>
 # SPDX-License-Identifier: BSD-3-Clause
 
-import warnings
-
+import jax
 import numpy as np
 import pytest
 from numpy.testing import assert_allclose
 from scipy.integrate import trapezoid
 from scipy.stats import beta as beta_dist
 from scipy.stats import binom
-from sklearn.utils.estimator_checks import parametrize_with_checks
 
 from popsregression import POPSEllipseRegression
-from popsregression._ellipse import DiagnosticBoundWarning, _EllipsoidPosterior
-from popsregression._projected_ball import projected_ball_logpdf
+from popsregression._ellipse import _EllipsoidPosterior
+from popsregression._ellipse_regression import _axis_hess_diag, _axis_loss
+from popsregression._projected_ball import ball_constants, projected_ball_logpdf
 
 Y_BOUNDS = (-4.0, 4.0)
 
@@ -29,9 +28,20 @@ def _quartic_data(n, seed=0):
     return X, y
 
 
-@parametrize_with_checks([POPSEllipseRegression()])
-def test_sklearn_compatible(estimator, check):
-    check(estimator)
+class _Projection:
+    """Minimal transformer: centers and keeps the leading principal axes."""
+
+    def __init__(self, n_components):
+        self.n_components = n_components
+
+    def fit(self, X, y=None):
+        self.mean_ = X.mean(axis=0)
+        _, _, Vt = np.linalg.svd(X - self.mean_, full_matrices=False)
+        self.components_ = Vt[: self.n_components]
+        return self
+
+    def transform(self, X):
+        return (X - self.mean_) @ self.components_.T
 
 
 # --- regularization=None and 'empirical-bayes' -------------------------------
@@ -66,15 +76,11 @@ def test_bare_interval_is_exact_projected_ball_quantile():
 def test_empirical_bayes_matches_engine_and_broadens():
     X, y = _quartic_data(30)
     rng = np.random.RandomState(0)
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", DiagnosticBoundWarning)
-        engine = _EllipsoidPosterior(
-            random_state=int(rng.randint(2**31 - 1)), pac_bayes=True
-        ).fit(X, y)
+    engine = _EllipsoidPosterior(
+        random_state=int(rng.randint(2**31 - 1)), pac_bayes=True
+    ).fit(X, y)
     model = POPSEllipseRegression(regularization="empirical-bayes", random_state=0)
-    with warnings.catch_warnings():
-        warnings.simplefilter("error", DiagnosticBoundWarning)
-        model.fit(X, y)
+    model.fit(X, y)
     assert model.certificate_status_ == "diagnostic_empirical_bayes"
     assert not hasattr(model, "bound_")
     assert_allclose(model.diagnostic_bound_, engine.bound_)
@@ -161,14 +167,12 @@ def test_offset_coordinate_sets_the_ball_dimension():
 
 
 def test_preprocessor_is_fitted_on_pilot_units_only():
-    from sklearn.decomposition import PCA
-
     rng = np.random.RandomState(0)
     raw = rng.randn(60, 8)
     y = raw[:, 0] - 0.5 * raw[:, 1] + 0.1 * np.sin(3 * raw[:, 2])
     model = POPSEllipseRegression(
         regularization="PAC",
-        preprocessor=PCA(n_components=4),
+        preprocessor=_Projection(n_components=4),
         y_bounds=(-10, 10),
         n_bound_samples=300,
         random_state=0,
@@ -376,29 +380,43 @@ def test_axis_kernel_reproduces_the_pilot_ellipsoid_and_gradients():
     assert_allclose(mean[0], ref_mean, atol=1e-8)
     assert_allclose(half[0], ref_max - ref_mean, rtol=1e-6, atol=1e-8)
     rng = np.random.RandomState(0)
-    psi = 0.3 * rng.randn(2 * kernel.n_dim)
+    n_dim = kernel.n_dim
+    psi = 0.3 * rng.randn(2 * n_dim)
     w = rng.uniform(0.5, 1.5, y.size)
-    prec = rng.uniform(0.1, 1.0, psi.size)
+    constants = ball_constants(kernel.ball_dim)
+
+    def loss(psi, rho):
+        return _axis_loss(
+            psi[:n_dim], psi[n_dim:], design, y, w, kernel.delta**2, rho, *constants
+        )
+
+    eps = 1e-6
     for rho in (1e-1, 1e-3):
-        _, grad = kernel.objective(psi, design, y, w, rho, prec)
-        eps = 1e-6
+        grad = jax.grad(loss)(psi, rho)
         fd = np.array(
             [
-                (
-                    kernel.objective(psi + eps * e, design, y, w, rho, prec)[0]
-                    - kernel.objective(psi - eps * e, design, y, w, rho, prec)[0]
-                )
-                / (2 * eps)
+                (loss(psi + eps * e, rho) - loss(psi - eps * e, rho)) / (2 * eps)
                 for e in np.eye(psi.size)
             ]
         )
         assert_allclose(grad, fd, rtol=1e-4, atol=1e-6)
-        hd = kernel.hess_diag(psi, design, y, w, rho)
+        hd = np.concatenate(
+            _axis_hess_diag(
+                psi[:n_dim],
+                psi[n_dim:],
+                design,
+                y,
+                w,
+                kernel.delta**2,
+                rho,
+                *constants,
+            )
+        )
         fd2 = np.array(
             [
                 (
-                    kernel.objective(psi + eps * e, design, y, w, rho, 0 * prec)[1]
-                    - kernel.objective(psi - eps * e, design, y, w, rho, 0 * prec)[1]
+                    jax.grad(loss)(psi + eps * e, rho)
+                    - jax.grad(loss)(psi - eps * e, rho)
                 )[i]
                 / (2 * eps)
                 for i, e in enumerate(np.eye(psi.size))

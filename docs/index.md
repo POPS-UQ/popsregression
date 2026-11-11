@@ -2,12 +2,12 @@
 
 The Python implementation of the POPS (Pointwise Optimal Parameter Sets)
 approach to misspecification-aware linear regression for near-deterministic
-surrogate models. Two [scikit-learn](https://scikit-learn.org) compatible
-estimators are provided:
+surrogate models. Two estimators with the familiar `fit` / `predict` usage
+are provided; their numerical kernels are written in
+[JAX](https://jax.readthedocs.io) (see [Usage](usage.md#backend)):
 
-- [`POPSRegression`][popsregression.POPSRegression] extends
-  [`BayesianRidge`](https://scikit-learn.org/stable/modules/generated/sklearn.linear_model.BayesianRidge.html)
-  with the POPS hypercube or ensemble posterior.
+- [`POPSRegression`][popsregression.POPSRegression] extends Bayesian ridge
+  regression with the POPS hypercube or ensemble posterior.
 - [`POPSEllipseRegression`][popsregression.POPSEllipseRegression] fits a
   uniform-ellipsoid posterior with an exact predictive density. It has an
   optional empirical-Bayes layer, and a PAC construction that comes with a
@@ -24,8 +24,8 @@ package. Specialised terms are defined in the [glossary](glossary.md).
 pip install popsregression
 ```
 
-Requires Python >= 3.9. Dependencies: `scikit-learn>=1.6.1`, `scipy>=1.6.0`,
-`numpy>=1.20.0`.
+Requires Python >= 3.10. Dependencies: `jax>=0.4.35`, `scipy>=1.7.0`,
+`numpy>=1.22.0`. scikit-learn is not required.
 
 ## Quick start
 

@@ -16,14 +16,136 @@ log-barrier of the ellipsoid fit, and the floor-contaminated density of the
 PAC construction (``POPSEllipseRegression(regularization='PAC')``), which
 mixes the exact projected-ball density with a uniform density on a known
 bounded output interval so that its log loss is bounded.
+
+The functions without a leading underscore take and return NumPy arrays.
+The ``jx_`` functions are their JAX counterparts, used inside the compiled
+fitting and prediction kernels; the per-datum loss :func:`jx_ball_loss` is
+the single definition from which every objective, gradient and curvature of
+the ellipsoid fits is derived by automatic differentiation.
 """
 
 # Authors: Thomas D Swinburne <tswin@umich.edu>
 #          Danny Perez <danny_perez@lanl.gov>
 # SPDX-License-Identifier: BSD-3-Clause
 
+import jax
+import jax.numpy as jnp
 import numpy as np
-from scipy.special import betainc, gammaln
+from scipy.special import betainc, betaincinv, gammaln
+
+# ---------------------------------------------------------------------------
+# JAX kernels
+# ---------------------------------------------------------------------------
+
+
+def jx_smooth_log(q, rho):
+    """``L_rho(q)``: ``log(q)`` above ``rho``, its 2nd-order Taylor below."""
+    above = q >= rho
+    t = q - rho
+    return jnp.where(
+        above,
+        jnp.log(jnp.where(above, q, 1.0)),
+        jnp.log(rho) + t / rho - t * t / (2.0 * rho * rho),
+    )
+
+
+def jx_ball_loss(r, v, rho, k, log_c):
+    """Smooth-barrier negative log projected-ball density of one datum.
+
+    ``r`` is the residual from the pushforward mean, ``v`` the squared
+    support half-width, ``k = (P - 1) / 2`` and ``log_c = log(C_P)``.
+    """
+    return 0.5 * jnp.log(v) - log_c - k * jx_smooth_log(1.0 - r * r / v, rho)
+
+
+def jx_ball_curvature(r, v, rho, k, log_c):
+    """``d2l/dr2``, ``d2l/dv2`` and ``dl/dv`` of :func:`jx_ball_loss`."""
+    d_r = jax.grad(jx_ball_loss, argnums=0)
+    d_v = jax.grad(jx_ball_loss, argnums=1)
+    batched = lambda f: jax.vmap(f, in_axes=(0, 0, None, None, None))  # noqa: E731
+    return (
+        batched(jax.grad(d_r, argnums=0))(r, v, rho, k, log_c),
+        batched(jax.grad(d_v, argnums=1))(r, v, rho, k, log_c),
+        batched(d_v)(r, v, rho, k, log_c),
+    )
+
+
+def jx_logpdf(t, half_width, k, log_c):
+    """Log projected-ball density; ``-inf`` outside the support."""
+    u = 1.0 - (t / half_width) ** 2
+    inside = u > 0.0
+    logp = log_c - jnp.log(half_width) + k * jnp.log(jnp.where(inside, u, 1.0))
+    return jnp.where(inside, logp, -jnp.inf)
+
+
+def cdf_table(n_dim, n_nodes=8193):
+    """Tabulated CDF of the standardized projected ball, for interpolation.
+
+    The CDF ``F`` of ``s = t / a`` has a square-root-like endpoint
+    singularity for small ``P``. In the coordinate ``tau`` with ``s = tau *
+    (2 - |tau|)``, i.e. ``1 - |s| = (1 - |tau|)**2``, the derivative
+    ``dF/dtau`` vanishes like ``(1 - |tau|)**P`` at the endpoints, so a
+    cubic Hermite interpolant in ``tau`` converges at fourth order for
+    every ``P >= 1``, and ``tau`` costs one square root. (``F`` is only
+    twice differentiable at ``tau = 0``, which is a grid node.) The grid
+    covers the range where ``F`` differs from 0 or 1 by more than ``1e-19``
+    and the interpolation error is below ``1e-12``.
+
+    Returns ``(tau_max, values, slopes, density)``: the grid half-width and,
+    at the nodes of the uniform grid on ``[-tau_max, tau_max]``, the CDF,
+    its ``tau`` derivative in grid units and the density ``dF/ds``.
+    """
+    if n_nodes % 2 == 0:
+        raise ValueError("n_nodes must be odd, so that tau = 0 is a node.")
+    s_max = min(1.0, 9.5 / np.sqrt(n_dim))
+    tau_max = 1.0 - np.sqrt(1.0 - s_max)
+    tau = np.linspace(-tau_max, tau_max, n_nodes)
+    s = tau * (2.0 - np.abs(tau))
+    a = 0.5 * (n_dim + 1)
+    density = np.exp(projected_ball_logpdf(s, 1.0, n_dim))
+    values = betainc(a, a, 0.5 * (s + 1.0))
+    slopes = density * 2.0 * (1.0 - np.abs(tau)) * (2.0 * tau_max / (n_nodes - 1))
+    return float(tau_max), values, slopes, density
+
+
+def jx_cdf_pdf(s, table):
+    """CDF and density of the standardized projected ball at ``s = t / a``.
+
+    The CDF is the cubic Hermite interpolant of :func:`cdf_table`; the
+    density is interpolated linearly, which is all a Newton step on the CDF
+    needs. Use :func:`jx_logpdf` for an exact density.
+    """
+    tau_max, values, slopes, density = table
+    n_nodes = values.shape[0]
+    magnitude = jnp.minimum(jnp.abs(s), 1.0)
+    tau = jnp.sign(s) * (1.0 - jnp.sqrt(1.0 - magnitude))
+    x = (jnp.clip(tau, -tau_max, tau_max) + tau_max) * ((n_nodes - 1) / (2.0 * tau_max))
+    i = jnp.clip(x.astype(jnp.int32), 0, n_nodes - 2)
+    u = x - i
+    u2 = u * u
+    u3 = u2 * u
+    cdf = (
+        (2.0 * u3 - 3.0 * u2 + 1.0) * values[i]
+        + (u3 - 2.0 * u2 + u) * slopes[i]
+        + (3.0 * u2 - 2.0 * u3) * values[i + 1]
+        + (u3 - u2) * slopes[i + 1]
+    )
+    pdf = (1.0 - u) * density[i] + u * density[i + 1]
+    below, above = tau <= -tau_max, tau >= tau_max
+    return (
+        jnp.where(below, 0.0, jnp.where(above, 1.0, cdf)),
+        jnp.where(below | above, 0.0, pdf),
+    )
+
+
+def jx_cdf(s, table):
+    """CDF of the standardized projected ball at ``s = t / a``."""
+    return jx_cdf_pdf(s, table)[0]
+
+
+# ---------------------------------------------------------------------------
+# NumPy interface
+# ---------------------------------------------------------------------------
 
 
 def log_norm_constant(n_dim):
@@ -52,7 +174,12 @@ def log_norm_constant(n_dim):
     True
     """
     half = 0.5 * n_dim
-    return gammaln(half + 1.0) - 0.5 * np.log(np.pi) - gammaln(half + 0.5)
+    return float(gammaln(half + 1.0) - 0.5 * np.log(np.pi) - gammaln(half + 0.5))
+
+
+def ball_constants(n_dim):
+    """``(k, log C_P)`` of a projected ball of dimension ``n_dim``."""
+    return 0.5 * (n_dim - 1), log_norm_constant(n_dim)
 
 
 def smooth_log(q, rho):
@@ -97,18 +224,14 @@ def smooth_log(q, rho):
     >>> bool(np.isfinite(val[1]))
     True
     """
-    q = np.asarray(q, dtype=float)
-    above = q >= rho
-    q_safe = np.where(above, q, 1.0)
-    t = q - rho
-    value = np.where(
-        above,
-        np.log(q_safe),
-        np.log(rho) + t / rho - t * t / (2.0 * rho * rho),
+    q = jnp.asarray(q, dtype=jnp.float64)
+    shape = q.shape
+    flat = q.ravel()
+    first = jax.grad(jx_smooth_log)
+    return tuple(
+        np.asarray(jax.vmap(f, in_axes=(0, None))(flat, rho)).reshape(shape)
+        for f in (jx_smooth_log, first, jax.grad(first))
     )
-    grad = np.where(above, 1.0 / q_safe, (1.0 - t / rho) / rho)
-    hess = np.where(above, -1.0 / (q_safe * q_safe), -1.0 / (rho * rho))
-    return value, grad, hess
 
 
 def projected_ball_logpdf(t, half_width, n_dim):
@@ -226,6 +349,18 @@ def projected_ball_cdf(t, half_width, n_dim):
     u = np.clip(0.5 * (t / half_width + 1.0), 0.0, 1.0)
     a = 0.5 * (n_dim + 1)
     return betainc(a, a, u)
+
+
+def projected_ball_quantile(prob, n_dim):
+    """Quantile of the standardized projected ball (unit half-width).
+
+    Examples
+    --------
+    >>> bool(abs(projected_ball_quantile(0.5, 4)) < 1e-12)
+    True
+    """
+    a = 0.5 * (n_dim + 1)
+    return 2.0 * betaincinv(a, a, prob) - 1.0
 
 
 def floor_contaminated_logpdf(

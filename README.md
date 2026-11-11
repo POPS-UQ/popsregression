@@ -5,7 +5,7 @@ FULL README / DOCS REMOVED FOR ANONYMOUS REVIEW
 
 SEE `POPSEllipseRegression` BELOW FOR PAC IMPLEMENTATION
 
-**Dependencies**: scikit-learn >= 1.6.1, scipy >= 1.6.0, numpy >= 1.20.0
+**Dependencies**: jax >= 0.4.35, scipy >= 1.7.0, numpy >= 1.22.0 (Python >= 3.10). scikit-learn is not required.
 
 ## Quick start
 
@@ -44,29 +44,32 @@ y_pred, y_std, y_max, y_min, y_epistemic_std = model.predict(
 | `random_state` | `None` | Seed for the posterior resampling; `None` uses the global NumPy state |
 | `resampling_method` | `'uniform'` | Sampling method: `'uniform'`, `'sobol'`, `'latin'`, `'halton'` |
 | `resample_density` | `1.0` | Number of posterior samples per training point |
-| `minimum_relative_error` | `0.01` | Relative residual threshold: only points with \|y - Xw\| >= this times the fit RMSE contribute to the POPS posterior |
+| `leverage_regularization` | `0.001` | Regularizes the leverage in the pointwise corrections, `e_i A⁻¹x_i / (h_i + eps)` with `eps` this times the mean leverage; `0.0` is the exact (unstable for low-leverage points) pointwise fit |
+| `minimum_relative_correction` | `0.01` | Relative threshold on the correction norm: only points with \|\|dθ_i\|\| >= this times the RMS norm enter the singular decomposition and bounds of the POPS posterior |
 | `mode_threshold` | `1e-8` | Eigenvalue threshold for hypercube dimensionality |
 | `percentile_clipping` | `0.0` | Percentile to clip from hypercube bounds (0–50) |
 
-All `BayesianRidge` parameters (`max_iter`, `tol`, `alpha_1`, `alpha_2`,
-`lambda_1`, `lambda_2`, `fit_intercept`, etc.) are also supported.
+The Bayesian ridge parameters of the mean fit (`max_iter`, `tol`, `alpha_1`,
+`alpha_2`, `lambda_1`, `lambda_2`, `alpha_init`, `lambda_init`,
+`fit_intercept`) are also supported.
 
 > [!WARNING]
-> `leverage_percentile` is deprecated since 0.5 and will be removed in 0.7.
-> Training points are now selected by relative residual magnitude: use
-> `minimum_relative_error` instead (`leverage_percentile=0.0` becomes
-> `minimum_relative_error=0.0`). Passing it raises a `FutureWarning` and has
-> no effect.
+> `minimum_relative_error` is deprecated: training points are now selected by
+> the norm of their pointwise correction rather than by their residual. A
+> value passed to it is forwarded to `minimum_relative_correction` with a
+> `FutureWarning`. `leverage_percentile`, `compute_score`, `copy_X` and
+> `verbose` have been removed.
 
 ## Key attributes (after fitting)
 
 | Attribute | Description |
 |---|---|
-| `coef_` | Regression coefficients (posterior mean) |
+| `coef_`, `intercept_` | Regression coefficients (posterior mean) and intercept |
 | `sigma_` | Epistemic variance-covariance matrix |
 | `misspecification_sigma_` | Misspecification variance-covariance matrix from POPS |
 | `posterior_samples_` | Samples from the POPS posterior |
 | `alpha_` | Estimated noise precision (not used for prediction) |
+| `pointwise_corrections_`, `leverage_`, `selected_` | Pointwise corrections, leverages and the points kept for the posterior |
 
 ## Ellipsoid posteriors: `POPSEllipseRegression`
 
@@ -115,13 +118,31 @@ POPS-dictionary weighting ablation are implemented in `examples/comparisons/`,
 outside the package. The scripts in `examples/` produce every figure and table
 of the accompanying paper; see [examples/README.md](examples/README.md).
 
+## Backend
+
+All numerical kernels (the Bayesian ridge fit, the pointwise corrections, the
+ellipsoid optimization, the PAC certification and the mixture predictives) are
+written in [JAX](https://jax.readthedocs.io) and compiled on first use.
+
+- The first call for a given problem shape pays a compilation cost of about a
+  second; later calls with the same shapes reuse the compiled kernel.
+- Importing the package enables JAX double precision
+  (`jax_enable_x64`), a process-wide JAX setting.
+- With a GPU build of JAX the same code runs on the accelerator.
+- Inputs and fitted attributes (`coef_`, `sigma_`, ...) are NumPy arrays.
+
+scikit-learn is not required. The estimators keep the familiar
+`fit` / `predict` / `get_params` / `set_params` usage, so they still work
+inside scikit-learn pipelines and parameter searches when it is installed.
+
 ## Pipeline compatibility
 
-`POPSRegression` is fully compatible with scikit-learn pipelines and
+If scikit-learn is installed, both estimators can be used in its pipelines and
 hyperparameter search:
 
 ```python
 from sklearn.pipeline import make_pipeline
+from sklearn.preprocessing import PolynomialFeatures
 
 pipe = make_pipeline(
     PolynomialFeatures(degree=4),

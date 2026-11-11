@@ -1,5 +1,5 @@
 """
-POPS ellipsoid regression.
+POPS ellipsoid fitting engine.
 
 Misspecification-aware regression with a uniform-ellipsoid parameter
 posterior, fit by direct minimization of the empirical generalization error
@@ -12,6 +12,11 @@ parameter selects the bare fit, the empirical-Bayes layer or the pilot-split
 PAC-Bayes construction. The Laplace layer here is a *diagnostic*: its
 whitening, baseline, center and hyperprior are all estimated from the one
 sample it is evaluated on, so its ``bound_`` is not a PAC bound.
+
+The objective is written once, as the per-datum loss
+:func:`~popsregression._projected_ball.jx_ball_loss`; its gradient and the
+diagonal curvature of the Laplace layer come from automatic differentiation,
+and the whole continuation over the barrier schedule is one compiled kernel.
 """
 
 # Authors: Thomas D Swinburne <tswin@umich.edu>
@@ -19,164 +24,105 @@ sample it is evaluated on, so its ``bound_`` is not a PAC bound.
 # SPDX-License-Identifier: BSD-3-Clause
 
 import warnings
-from numbers import Integral, Real
+from functools import partial
 
+import jax
+import jax.numpy as jnp
 import numpy as np
-from scipy.linalg import eigh
-from scipy.optimize import minimize
-from sklearn.base import BaseEstimator, RegressorMixin, _fit_context
-from sklearn.utils import check_random_state
-from sklearn.utils._param_validation import Interval, Options, StrOptions
-from sklearn.utils.validation import (
-    _check_sample_weight,
+
+from ._base import (
+    BaseEstimator,
     check_is_fitted,
-    validate_data,
+    check_option,
+    check_random_state,
+    check_sample_weight,
+    check_scalar,
+    check_X,
+    check_X_y,
 )
-
+from ._optimize import lbfgs
 from ._pops import POPSRegression
-from ._projected_ball import log_norm_constant, smooth_log
+from ._projected_ball import ball_constants, jx_ball_curvature, jx_ball_loss
 
 
-class DiagnosticBoundWarning(UserWarning):
-    """The empirical-Bayes ``bound_`` is a diagnostic, not a certificate."""
+def _nll(center, U, Z, y, b0, weights, delta2, rho, k, log_c):
+    """Weighted smooth-barrier negative log projected-ball likelihood.
+
+    ``sum_i w_i l(r_i, v_i)`` with residuals ``r = y - Z @ center`` and
+    squared half-widths ``v_i = b0_i + ||U^T z_i||^2 + delta**2``. All
+    operations are ``O(n_samples * n_dim * rank)``; no dense ``(n_dim,
+    n_dim)`` matrix is formed.
+    """
+    H = Z @ U
+    v = b0 + jnp.sum(H * H, axis=1) + delta2
+    return weights @ jx_ball_loss(y - Z @ center, v, rho, k, log_c)
 
 
-def _unpack(psi, n_dim):
-    """Split a packed parameter vector into center and low-rank factor."""
-    c = psi[:n_dim]
-    U = psi[n_dim:].reshape(n_dim, -1)
-    return c, U
-
-
-def _ellipse_nll(
-    psi, Z, y, b0, weights, delta, rho, psi0=None, prior_precision=0.0, ball_dim=None
+@partial(jax.jit, static_argnames=("optimize_center",))
+def _fit_ellipsoid(
+    center, U, Z, y, b0, weights, delta2, rhos, k, log_c, tol, max_iter, optimize_center
 ):
-    """Weighted negative log projected-ball likelihood and exact gradient.
+    """Continuation L-BFGS over the barrier schedule ``rhos``.
 
-    Objective ``L = sum_i w_i * (0.5*log(v_i) - log(C_P) - k*L_rho(q_i))``
-    with ``v_i = b0_i + ||U^T z_i||^2 + delta**2`` and
-    ``q_i = 1 - r_i**2 / v_i``, optionally plus the Gaussian hyperprior
-    ridge ``0.5 * prior_precision * ||psi - psi0||^2``.
-
-    All operations are O(n_samples * n_dim * rank); no dense
-    (n_dim, n_dim) matrix is formed.
-
-    Parameters
-    ----------
-    psi : ndarray of shape (n_dim * (1 + rank),)
-        Packed parameters ``(c, vec(U))`` in whitened coordinates.
-
-    Z : ndarray of shape (n_samples, n_dim)
-        Whitened design matrix.
-
-    y : ndarray of shape (n_samples,)
-        Centered targets.
-
-    b0 : ndarray of shape (n_samples,)
-        Baseline squared widths ``z_i^T B0 z_i``.
-
-    weights : ndarray of shape (n_samples,)
-        Non-negative per-datum weights.
-
-    delta : float
-        Radius of the output-offset coordinate; ``delta**2`` is added to
-        squared widths.
-
-    rho : float
-        Continuation threshold of the smooth log-barrier.
-
-    psi0 : ndarray of shape (n_dim * (1 + rank),), default=None
-        Hyperprior center. Only used when ``prior_precision > 0``.
-
-    prior_precision : float, default=0.0
-        Ridge strength ``1 / tau2`` of the Gaussian hyperprior.
-
-    ball_dim : int, default=None
-        Dimension of the uniform ball whose projection gives the
-        pushforward shape: ``n_dim + 1`` when the output-offset coordinate
-        of radius ``delta`` is present, ``n_dim`` otherwise (the default).
-
-    Returns
-    -------
-    value : float
-        Objective value.
-
-    grad : ndarray of shape (n_dim * (1 + rank),)
-        Exact gradient with respect to ``psi``.
+    Returns the optimized center and factor, the objective at the last
+    stage and the number of iterations of every stage.
     """
-    n_dim = Z.shape[1]
-    c, U = _unpack(psi, n_dim)
-    d = n_dim if ball_dim is None else int(ball_dim)
-    k = 0.5 * (d - 1)
+    n_dim, rank = U.shape
+    if optimize_center:
+        x0 = jnp.concatenate([center, U.ravel()])
 
-    resid = y - Z @ c
-    H = Z @ U
-    s = b0 + np.einsum("ij,ij->i", H, H)
-    v = s + delta * delta
-    q = 1.0 - resid * resid / v
+        def split(x):
+            return x[:n_dim], x[n_dim:].reshape(n_dim, rank)
 
-    log_q, d_log_q, _ = smooth_log(q, rho)
-    ell = 0.5 * np.log(v) - log_norm_constant(d) - k * log_q
-    value = float(weights @ ell)
+    else:
+        x0 = U.ravel()
 
-    g_r = weights * (2.0 * k * resid * d_log_q / v)
-    g_s = weights * (0.5 / v - k * resid * resid * d_log_q / (v * v))
-    grad_c = -(Z.T @ g_r)
-    grad_U = 2.0 * (Z.T @ (g_s[:, None] * H))
-    grad = np.concatenate([grad_c, grad_U.ravel()])
+        def split(x):
+            return center, x.reshape(n_dim, rank)
 
-    if prior_precision > 0.0:
-        dpsi = psi - psi0
-        value += 0.5 * prior_precision * float(dpsi @ dpsi)
-        grad += prior_precision * dpsi
-    return value, grad
+    def stage(x, rho):
+        def loss(x):
+            return _nll(*split(x), Z, y, b0, weights, delta2, rho, k, log_c)
+
+        x, value, n_iter = lbfgs(
+            jax.value_and_grad(loss), x, max_iter=max_iter, tol=tol
+        )
+        return x, (value, n_iter)
+
+    x, (values, n_iter) = jax.lax.scan(stage, x0, rhos)
+    center, U = split(x)
+    return center, U, values[-1], n_iter
 
 
-def _ellipse_nll_hess_diag(psi, Z, y, b0, weights, delta, rho, ball_dim=None):
-    """Exact diagonal of the Hessian of the weighted negative log likelihood.
+@jax.jit
+def _hess_diag(center, U, Z, y, b0, weights, delta2, rho, k, log_c):
+    """Exact diagonal Hessian of :func:`_nll` in ``(center, U)``.
 
-    The per-datum loss depends on ``psi`` only through ``(r_i, s_i)``, so
-    the diagonal is a 2x2 inner Hessian chained through the (diagonal-free)
-    Jacobian, plus the ``g_s * d2s/dU^2`` curvature term. The hyperprior
-    ridge is NOT included.
-
-    Parameters
-    ----------
-    See :func:`_ellipse_nll`.
-
-    Returns
-    -------
-    hess_diag : ndarray of shape (n_dim * (1 + rank),)
-        Diagonal Hessian entries, packed like ``psi``.
+    The per-datum loss depends on the parameters only through ``(r_i,
+    v_i)``, so the diagonal is its 2x2 curvature chained through the
+    Jacobian, plus the ``dl/dv * d2v/dU2`` term.
     """
-    n_dim = Z.shape[1]
-    c, U = _unpack(psi, n_dim)
-    d = n_dim if ball_dim is None else int(ball_dim)
-    k = 0.5 * (d - 1)
-
-    resid = y - Z @ c
     H = Z @ U
-    s = b0 + np.einsum("ij,ij->i", H, H)
-    v = s + delta * delta
-    q = 1.0 - resid * resid / v
-
-    _, d1, d2 = smooth_log(q, rho)
-    r2 = resid * resid
-    v2 = v * v
-    # d2 l / dr2, d2 l / ds2 and dl / ds of the per-datum loss; on the
-    # exact-log branch d1 = 1/q, d2 = -1/q**2 recover the closed forms.
-    a_rr = 2.0 * k * d1 / v - 4.0 * k * r2 * d2 / v2
-    a_ss = -0.5 / v2 + 2.0 * k * d1 * r2 / (v2 * v) - k * d2 * r2 * r2 / (v2 * v2)
-    g_s = 0.5 / v - k * r2 * d1 / v2
-
+    v = b0 + jnp.sum(H * H, axis=1) + delta2
+    a_rr, a_vv, g_v = jx_ball_curvature(y - Z @ center, v, rho, k, log_c)
     Z2 = Z * Z
-    hd_c = Z2.T @ (weights * a_rr)
-    hd_U = 4.0 * (Z2.T @ ((weights * a_ss)[:, None] * (H * H)))
-    hd_U += 2.0 * (Z2.T @ (weights * g_s))[:, None]
-    return np.concatenate([hd_c, hd_U.ravel()])
+    hd_center = Z2.T @ (weights * a_rr)
+    hd_U = 4.0 * (Z2.T @ ((weights * a_vv)[:, None] * (H * H)))
+    hd_U = hd_U + 2.0 * (Z2.T @ (weights * g_v))[:, None]
+    return hd_center, hd_U
 
 
-class _EllipsoidPosterior(RegressorMixin, BaseEstimator):
+@jax.jit
+def _whitening(Xc, ridge, mode_threshold):
+    """Symmetric whitening transform of the centered design and its inverse."""
+    G = Xc.T @ Xc / Xc.shape[0] + ridge * jnp.eye(Xc.shape[1])
+    evals, evecs = jnp.linalg.eigh(G)
+    evals = jnp.maximum(evals, mode_threshold * evals.max())
+    W = (evecs / jnp.sqrt(evals)) @ evecs.T
+    return W, (evecs * jnp.sqrt(evals)) @ evecs.T
+
+
+class _EllipsoidPosterior(BaseEstimator):
     """Uniform-ellipsoid POPS posterior (internal engine).
 
     This class implements the ellipsoid posterior and its Ellipse+EB layer.
@@ -200,18 +146,16 @@ class _EllipsoidPosterior(RegressorMixin, BaseEstimator):
     factor ``U``; all fit operations are O(n_samples * n_features * rank).
 
     With ``pac_bayes=True`` a hierarchical empirical-Bayes layer
-    ("Ellipse+EB") is added in closed form (no sampling anywhere): the
-    Catoni/Gibbs hyperposterior is followed via its Laplace approximation,
-    a diagonal Gaussian whose mode is the ridge-regularized optimum and
-    whose covariance is a ridge-regularized inverse Hessian diagonal. The
-    layer is PAC-motivated but its ``bound_`` is a **diagnostic, not a
+    ("Ellipse+EB") is added in closed form (no sampling anywhere): a
+    diagonal Gaussian (Laplace) hyperposterior centered on the fitted
+    optimum, with a Gaussian hyperprior centered there too. The fit itself
+    is unchanged; the layer only broadens the predictive. Its ``bound_``
+    has the form of a PAC-Bayes right side but is a **diagnostic, not a
     certificate**: the whitening, the POPS baseline, the frozen center and
     the hyperprior center are all estimated from the same sample the bound
-    is evaluated on, ``empirical_H_`` is a second-order approximation
-    rather than an exact hyperposterior expectation, the smooth barrier is
-    not the exact compact-support log loss, and ``subgamma_const=0`` is not
-    a proved moment constant. ``certificate_status_`` records this. A
-    PAC bound requires the pilot-split protocol of
+    is evaluated on, ``empirical_H_`` is a second-order approximation and
+    the smooth barrier is not the exact compact-support log loss. A PAC
+    bound requires the pilot-split protocol of
     ``POPSEllipseRegression(regularization='PAC')``.
 
     Parameters
@@ -228,16 +172,15 @@ class _EllipsoidPosterior(RegressorMixin, BaseEstimator):
         so ``delta**2`` is added to every squared pushforward width and the
         pushforward is a projected ball of dimension ``n_dim + 1``. It is a
         parameter coordinate, not observation noise. ``delta=0`` removes
-        the coordinate and is valid only if
-        ``rho_schedule`` does not approach 0 (the barrier diverges
-        otherwise); a warning is raised if both are ~0.
+        the coordinate and is valid only if ``rho_schedule`` does not
+        approach 0 (the barrier diverges otherwise); a warning is raised if
+        both are ~0.
 
     baseline : {'pops', 'ridge', 'zero'}, default='pops'
         Fixed baseline ``B0_t``:
 
         - ``'pops'``: whitened covariance of the POPS hypercube posterior
-          from a :class:`POPSRegression` pre-fit (also used as warm start
-          and hyperprior center).
+          from a :class:`POPSRegression` pre-fit (also used as warm start).
         - ``'ridge'``: ``baseline_ridge * I`` in whitened coordinates.
         - ``'zero'``: no baseline.
 
@@ -258,8 +201,7 @@ class _EllipsoidPosterior(RegressorMixin, BaseEstimator):
         convergence at each stage.
 
     tol : float, default=1e-8
-        Convergence tolerance passed to each L-BFGS stage (and used for
-        the ``update_hyperprior`` outer loop).
+        Convergence tolerance of each L-BFGS stage.
 
     max_iter : int, default=500
         Maximum L-BFGS iterations per continuation stage.
@@ -276,14 +218,13 @@ class _EllipsoidPosterior(RegressorMixin, BaseEstimator):
     optimize_center : bool, default=False
         If False (default), the ellipsoid center is frozen at the warm
         start (the POPS pre-fit coefficients for ``baseline='pops'``, so
-        ``coef_`` matches the familiar BayesianRidge-style mean) and
-        only the widths are optimized; with ``pac_bayes=True`` the
-        hyperposterior is then over the width parameters only. If True,
-        the center is optimized jointly with the widths; its
-        stationarity condition is a heteroscedastic weighted least
-        squares under the fitted widths (weights ``1/(q_i v_i)``), so
-        ``coef_`` then deliberately differs from an OLS/BayesianRidge
-        mean and the fit is tighter but less conservative at small N.
+        ``coef_`` matches the familiar Bayesian ridge mean) and only the
+        widths are optimized; with ``pac_bayes=True`` the hyperposterior is
+        then over the width parameters only. If True, the center is
+        optimized jointly with the widths; its stationarity condition is a
+        heteroscedastic weighted least squares under the fitted widths, so
+        ``coef_`` then deliberately differs from a least-squares mean and
+        the fit is tighter but less conservative at small N.
 
     random_state : int, RandomState instance or None, default=None
         Seed of the small random initialization of ``U``. For
@@ -292,56 +233,16 @@ class _EllipsoidPosterior(RegressorMixin, BaseEstimator):
 
     pac_bayes : bool, default=False
         Enable the closed-form Ellipse+EB layer: diagonal Laplace
-        hyperposterior covariance, KL and bound components, and analytic
-        hyperposterior spread in prediction. ``pac_bayes=False`` is the
-        ``tau2 -> inf`` limit and leaves phase-1 results unchanged.
-
-    hyperprior_center : {'phase1', 'warm_start'}, default='phase1'
-        Center ``psi_0`` of the Gaussian hyperprior.
-
-        - ``'phase1'``: the phase-1 optimum itself (empirical-Bayes
-          centering). The MAP then coincides with the unregularized fit
-          — ``pac_bayes=True`` never changes ``coef_``/``U_`` — and the
-          hyperposterior spread strictly broadens the predictive
-          uncertainty, concentrating on the phase-1 values at rate N:
-          strictly broader at low N, never narrower than the bare fit.
-          The prior center is chosen after seeing the data (empirical
-          Bayes), so ``bound_`` is a diagnostic, not a certificate.
-        - ``'warm_start'``: the POPS warm start with a zero low-rank
-          block (the handoff construction). The MAP is then ridge-shrunk
-          toward the baseline ellipsoid, which can make the fit
-          *narrower* than the bare optimum at small N; required for
-          ``update_hyperprior=True`` (the evidence update is ill-posed
-          at ``'phase1'`` centering and is ignored there with a
-          warning).
+        hyperposterior covariance, KL and diagnostic bound components, and
+        analytic hyperposterior spread in prediction.
 
     hyperprior_scale : float, default=1.0
         Relative variance of the isotropic Gaussian hyperprior
-        ``N(psi_0, tau2 * I)`` centered on the POPS warm start. The
-        effective variance is scaled to the warm start,
+        ``N(psi_0, tau2 * I)`` centered on the fitted optimum ``psi_0``:
         ``tau2 = hyperprior_scale * max(||psi_0||^2 / d, 1e-12)`` with
         ``d`` the parameter count, so the default is independent of the
-        units of ``y`` (an absolute ``tau2`` would over-shrink data with
-        large targets). The effective value is stored in ``tau2_``.
-        ``np.inf`` is allowed and recovers the ``pac_bayes=False``
-        optimum exactly (the prior ridge vanishes); in that improper
-        limit ``kl_`` and ``bound_`` are infinite.
-
-    update_hyperprior : bool, default=False
-        If True (and ``pac_bayes=True``), update ``tau2`` by a
-        Tipping/MacKay evidence iteration with Gamma hyper-hyperprior,
-        following the conventions of
-        :class:`sklearn.linear_model.BayesianRidge`.
-
-    hh_lambda_1 : float, default=1e-6
-        Shape parameter of the Gamma hyper-hyperprior over ``1/tau2``.
-
-    hh_lambda_2 : float, default=1e-6
-        Rate parameter of the Gamma hyper-hyperprior over ``1/tau2``.
-
-    n_outer : int, default=5
-        Maximum number of outer evidence iterations when
-        ``update_hyperprior=True``.
+        units of ``y``. ``np.inf`` is allowed; ``kl_`` and ``bound_`` are
+        then infinite.
 
     hess_floor : float, default=1e-12
         Floor applied to (possibly negative) diagonal Hessian entries
@@ -349,17 +250,7 @@ class _EllipsoidPosterior(RegressorMixin, BaseEstimator):
         1% of coordinates.
 
     bound_xi : float, default=0.05
-        Confidence parameter ``xi`` of the PAC bound: ``bound_`` holds
-        with probability at least ``1 - xi``.
-
-    subgamma_const : float, default=0.0
-        Optional user-supplied sub-gamma (variance/tail) constant added to
-        ``bound_``. Zero is **not** a proved moment constant: deterministic
-        outputs do not make the loss fluctuations vanish, and compact
-        support can make the unmodified loss infinite. With the default a
-        :class:`DiagnosticBoundWarning` is raised and the value is a
-        diagnostic offset only. A supplied constant does not repair the
-        data-dependence of the kernel and hyperprior either.
+        Confidence parameter of the diagnostic ``bound_``.
 
     Attributes
     ----------
@@ -379,8 +270,8 @@ class _EllipsoidPosterior(RegressorMixin, BaseEstimator):
         Dense ellipsoid shape matrix ``B`` in original coordinates
         (augmented with the intercept coordinate if
         ``fit_intercept=True``). Computed lazily on first access. Note
-        that the posterior covariance is ``B / (d + 2)``, not ``B``, with ``d`` the
-        ball dimension (``n_dim + 1`` when ``delta > 0``).
+        that the posterior covariance is ``B / (d + 2)``, not ``B``, with
+        ``d`` the ball dimension (``n_dim + 1`` when ``delta > 0``).
 
     baseline_B0_ : ndarray of shape (n_dim, n_dim)
         Dense fixed baseline ``B0_t`` in whitened coordinates. Computed
@@ -395,17 +286,14 @@ class _EllipsoidPosterior(RegressorMixin, BaseEstimator):
         pushforward support) at the optimum.
 
     n_iter_ : int
-        Total number of L-BFGS iterations over all continuation stages
-        (and outer evidence iterations).
+        Total number of L-BFGS iterations over all continuation stages.
 
-    n_outer_iter_ : int
-        Number of outer evidence iterations performed (1 unless
-        ``pac_bayes=True`` and ``update_hyperprior=True``).
+    stage_iterations_ : ndarray of shape (n_stages,)
+        L-BFGS iterations of each continuation stage.
 
     tau2_ : float
-        Final effective (absolute) hyperprior variance, i.e.
-        ``hyperprior_scale`` times the warm-start scale, after any
-        evidence updates (only if ``pac_bayes=True``).
+        Effective (absolute) hyperprior variance (only if
+        ``pac_bayes=True``).
 
     hyper_sigma_diag_ : ndarray of shape (n_dim * (1 + rank_),)
         Diagonal of the Laplace hyperposterior covariance ``Sigma_H``
@@ -417,33 +305,20 @@ class _EllipsoidPosterior(RegressorMixin, BaseEstimator):
 
     empirical_H_ : float
         Second-order (delta-method) approximation of the
-        hyperposterior-averaged empirical error ``H[pi_H]``; not an exact
-        hyperposterior expectation (only if ``pac_bayes=True``).
+        hyperposterior-averaged empirical error (only if
+        ``pac_bayes=True``).
 
-    bound_ : float
+    bound_, diagnostic_bound_ : float
         Empirical-Bayes diagnostic ``empirical_H_ + kl_/N -
-        log(bound_xi)/N + subgamma_const`` (only if ``pac_bayes=True``).
-        It has the form of a PAC-Bayes right side but is **not** a
-        certificate (see the class description); ``diagnostic_bound_`` is
-        the same value under its honest name.
-
-    diagnostic_bound_ : float
-        Alias of ``bound_`` (only if ``pac_bayes=True``).
-
-    certificate_status_ : str
-        ``'diagnostic_empirical_bayes'`` (only if ``pac_bayes=True``).
-        This estimator never produces a certified result.
+        log(bound_xi)/N`` (only if ``pac_bayes=True``). **Not** a
+        certificate.
 
     gamma_ : float
         Effective number of well-determined parameters
         ``sum_j hd_j / (hd_j + 1/tau2)`` (only if ``pac_bayes=True``).
 
     n_features_in_ : int
-        Number of features seen during :term:`fit`.
-
-    feature_names_in_ : ndarray of shape (`n_features_in_`,)
-        Names of features seen during :term:`fit`. Defined only when `X`
-        has feature names that are all strings.
+        Number of features seen during ``fit``.
 
     See Also
     --------
@@ -462,35 +337,6 @@ class _EllipsoidPosterior(RegressorMixin, BaseEstimator):
            :doi:`10.1088/2632-2153/ad9fce`
     """
 
-    _parameter_constraints: dict = {
-        "rank": [Interval(Integral, 1, None, closed="left")],
-        "delta": [Interval(Real, 0, None, closed="left")],
-        "baseline": [StrOptions({"pops", "ridge", "zero"})],
-        "baseline_ridge": [Interval(Real, 0, None, closed="left")],
-        "whiten_ridge": [Interval(Real, 0, None, closed="neither")],
-        "mode_threshold": [Interval(Real, 0, None, closed="neither")],
-        "rho_schedule": ["array-like"],
-        "tol": [Interval(Real, 0, None, closed="neither")],
-        "max_iter": [Interval(Integral, 1, None, closed="left")],
-        "fit_intercept": ["boolean"],
-        "weights": ["array-like", None],
-        "optimize_center": ["boolean"],
-        "random_state": ["random_state"],
-        "pac_bayes": ["boolean"],
-        "hyperprior_center": [StrOptions({"phase1", "warm_start"})],
-        "hyperprior_scale": [
-            Interval(Real, 0, None, closed="neither"),
-            Options(Real, {np.inf}),
-        ],
-        "update_hyperprior": ["boolean"],
-        "hh_lambda_1": [Interval(Real, 0, None, closed="left")],
-        "hh_lambda_2": [Interval(Real, 0, None, closed="left")],
-        "n_outer": [Interval(Integral, 1, None, closed="left")],
-        "hess_floor": [Interval(Real, 0, None, closed="neither")],
-        "bound_xi": [Interval(Real, 0, 1, closed="neither")],
-        "subgamma_const": [Interval(Real, 0, None, closed="left")],
-    }
-
     def __init__(
         self,
         *,
@@ -508,15 +354,9 @@ class _EllipsoidPosterior(RegressorMixin, BaseEstimator):
         optimize_center=False,
         random_state=None,
         pac_bayes=False,
-        hyperprior_center="phase1",
         hyperprior_scale=1.0,
-        update_hyperprior=False,
-        hh_lambda_1=1e-6,
-        hh_lambda_2=1e-6,
-        n_outer=5,
         hess_floor=1e-12,
         bound_xi=0.05,
-        subgamma_const=0.0,
     ):
         self.rank = rank
         self.delta = delta
@@ -532,17 +372,38 @@ class _EllipsoidPosterior(RegressorMixin, BaseEstimator):
         self.optimize_center = optimize_center
         self.random_state = random_state
         self.pac_bayes = pac_bayes
-        self.hyperprior_center = hyperprior_center
         self.hyperprior_scale = hyperprior_scale
-        self.update_hyperprior = update_hyperprior
-        self.hh_lambda_1 = hh_lambda_1
-        self.hh_lambda_2 = hh_lambda_2
-        self.n_outer = n_outer
         self.hess_floor = hess_floor
         self.bound_xi = bound_xi
-        self.subgamma_const = subgamma_const
 
-    @_fit_context(prefer_skip_nested_validation=True)
+    def _validate(self):
+        check_scalar("rank", self.rank, low=1)
+        check_scalar("delta", self.delta, low=0.0)
+        check_option("baseline", self.baseline, {"pops", "ridge", "zero"})
+        check_scalar("baseline_ridge", self.baseline_ridge, low=0.0)
+        check_scalar("whiten_ridge", self.whiten_ridge, low=0.0, low_open=True)
+        check_scalar("mode_threshold", self.mode_threshold, low=0.0, low_open=True)
+        check_scalar("tol", self.tol, low=0.0, low_open=True)
+        check_scalar("max_iter", self.max_iter, low=1)
+        check_scalar("hyperprior_scale", self.hyperprior_scale, low=0.0, low_open=True)
+        check_scalar("hess_floor", self.hess_floor, low=0.0, low_open=True)
+        check_scalar("bound_xi", self.bound_xi, 0.0, 1.0, low_open=True, high_open=True)
+        rho_schedule = np.atleast_1d(np.asarray(self.rho_schedule, dtype=float))
+        if rho_schedule.ndim != 1 or rho_schedule.size == 0:
+            raise ValueError("rho_schedule must be a non-empty 1d sequence.")
+        if np.any(rho_schedule <= 0):
+            raise ValueError("rho_schedule entries must be positive.")
+        if self.delta == 0.0 and rho_schedule.min() <= 1e-8:
+            warnings.warn(
+                (
+                    "delta=0 with rho_schedule reaching ~0 can make the "
+                    "log-barrier diverge on exactly-covered points; use a "
+                    "positive delta or a larger final rho."
+                ),
+                UserWarning,
+            )
+        return rho_schedule
+
     def fit(self, X, y):
         """Fit the ellipsoid posterior by continuation L-BFGS.
 
@@ -559,154 +420,55 @@ class _EllipsoidPosterior(RegressorMixin, BaseEstimator):
         self : object
             Returns the instance itself.
         """
-        X, y = validate_data(self, X, y, dtype=[np.float64, np.float32], y_numeric=True)
-        X = np.asarray(X, dtype=np.float64)
-        y = np.asarray(y, dtype=np.float64).ravel()
-        n_samples = X.shape[0]
-
-        rho_schedule = np.atleast_1d(np.asarray(self.rho_schedule, dtype=float))
-        if rho_schedule.ndim != 1 or rho_schedule.size == 0:
-            raise ValueError("rho_schedule must be a non-empty 1d sequence.")
-        if np.any(rho_schedule <= 0):
-            raise ValueError("rho_schedule entries must be positive.")
-        if self.delta == 0.0 and rho_schedule.min() <= 1e-8:
-            warnings.warn(
-                (
-                    "delta=0 with rho_schedule reaching ~0 can make the "
-                    "log-barrier diverge on exactly-covered points; use a "
-                    "positive delta or a larger final rho."
-                ),
-                UserWarning,
-            )
-
-        if self.weights is not None:
-            sample_weight = _check_sample_weight(
-                self.weights, X, dtype=X.dtype, ensure_non_negative=True
-            )
-        else:
-            sample_weight = np.ones(n_samples)
-
+        rho_schedule = self._validate()
+        X, y = check_X_y(X, y)
+        n_samples, self.n_features_in_ = X.shape
+        sample_weight = check_sample_weight(self.weights, n_samples)
         rng = check_random_state(0 if self.random_state is None else self.random_state)
 
         # --- Preprocess: center, whiten, append intercept coordinate ---
-        if self.fit_intercept:
+        self._with_intercept = bool(self.fit_intercept)
+        if self._with_intercept:
             self._x_offset = X.mean(axis=0)
             self._y_offset = float(y.mean())
         else:
             self._x_offset = np.zeros(X.shape[1])
             self._y_offset = 0.0
-        self._with_intercept = bool(self.fit_intercept)
         Xc = X - self._x_offset
         yc = y - self._y_offset
+        W, sqrt_G = _whitening(Xc, float(self.whiten_ridge), float(self.mode_threshold))
+        self._whiten_W, self._sqrt_G = np.asarray(W), np.asarray(sqrt_G)
 
-        G = Xc.T @ Xc / n_samples
-        G[np.diag_indices_from(G)] += self.whiten_ridge
-        evals, evecs = eigh(G)
-        evals = np.maximum(evals, self.mode_threshold * evals.max())
-        self._whiten_W = (evecs / np.sqrt(evals)) @ evecs.T
-        sqrt_G = (evecs * np.sqrt(evals)) @ evecs.T
-
-        Z = Xc @ self._whiten_W
-        if self._with_intercept:
-            Z = np.hstack([Z, np.ones((n_samples, 1))])
+        _, Z = self._whitened_design(X)
         n_dim = Z.shape[1]
         self._ball_dim = n_dim
         # The width floor is an output-offset coordinate of radius delta:
         # the posterior is uniform on an ellipsoid in (theta, offset), so
         # the pushforward is a projected ball of dimension n_dim + 1.
         self._projection_dim = n_dim + int(self.delta > 0)
-        rank = min(self.rank, n_dim)
-        self.rank_ = rank
+        self.rank_ = rank = min(int(self.rank), n_dim)
 
-        if self._with_intercept:
-            design = np.hstack([Xc, np.ones((n_samples, 1))])
-        else:
-            design = Xc
-
-        # --- Baseline B0 and warm start ---
-        b0, c_init = self._setup_baseline(design, yc, Z, sample_weight, sqrt_G)
-        if self.baseline == "pops":
-            self._sqrt_G = sqrt_G
-
-        psi0 = np.concatenate([c_init, np.zeros(n_dim * rank)])
-        psi = np.concatenate([c_init, 1e-3 * rng.randn(n_dim * rank)])
-        # Coordinates the optimizer (and hyperposterior) act on: all of
-        # psi, or the width block only when the center is frozen.
-        free = slice(None) if self.optimize_center else slice(n_dim, None)
-
-        def objective(psi_free, *args):
-            psi_full = psi_free
-            if not self.optimize_center:
-                psi_full = np.concatenate([c_init, psi_free])
-            value, grad = _ellipse_nll(psi_full, *args, ball_dim=self._projection_dim)
-            return value, grad[free]
-
-        # --- Continuation L-BFGS, optional evidence outer loop ---
-        # The hyperprior variance is scaled to the hyperprior center so
-        # that hyperprior_scale is independent of the units of y. With
-        # 'phase1' centering the hyperprior is centered at the phase-1
-        # optimum itself: the MAP coincides with the unregularized fit
-        # (no prior ridge is applied), so pac_bayes=True never narrows
-        # the fitted ellipsoid, and the Laplace spread only broadens the
-        # predictive, concentrating on the phase-1 values at rate N.
-        center_on_phase1 = self.hyperprior_center == "phase1"
-        if center_on_phase1 and self.pac_bayes and self.update_hyperprior:
-            warnings.warn(
-                (
-                    "update_hyperprior is ill-posed with "
-                    "hyperprior_center='phase1' (the prior center coincides "
-                    "with the mode, so the evidence update collapses tau2); "
-                    "ignoring it. Use hyperprior_center='warm_start' for "
-                    "evidence updates."
-                ),
-                UserWarning,
-            )
-        scale2 = max(float(psi0 @ psi0) / psi0.size, 1e-12)
-        tau2 = float(self.hyperprior_scale) * scale2
-        update_mode = self.pac_bayes and self.update_hyperprior and not center_on_phase1
-        n_outer = self.n_outer if update_mode else 1
-        self.n_iter_ = 0
-        self.n_outer_iter_ = 0
-        for outer in range(n_outer):
-            prec = 1.0 / tau2 if self.pac_bayes and not center_on_phase1 else 0.0
-            for rho in rho_schedule:
-                res = minimize(
-                    objective,
-                    psi[free],
-                    args=(Z, yc, b0, sample_weight, self.delta, rho, psi0, prec),
-                    method="L-BFGS-B",
-                    jac=True,
-                    tol=self.tol,
-                    options={"maxiter": self.max_iter},
-                )
-                psi[free] = res.x
-                self.n_iter_ += int(res.nit)
-            self.n_outer_iter_ += 1
-            if not update_mode or outer == n_outer - 1:
-                break
-            hd = self._clipped_hess_diag(
-                psi, Z, yc, b0, sample_weight, rho_schedule[-1], warn=False
-            )[free]
-            gamma = float(np.sum(hd / (hd + 1.0 / tau2)))
-            dpsi = psi - psi0
-            tau2_new = (float(dpsi @ dpsi) + 2.0 * self.hh_lambda_2) / (
-                gamma + 2.0 * self.hh_lambda_1
-            )
-            rel_change = abs(tau2_new - tau2) / max(tau2, np.finfo(float).tiny)
-            tau2 = tau2_new
-            if rel_change < self.tol:
-                break
-
-        if center_on_phase1 and self.pac_bayes:
-            psi0 = psi.copy()
-            scale2 = max(float(psi0 @ psi0) / psi0.size, 1e-12)
-            tau2 = float(self.hyperprior_scale) * scale2
+        # --- Baseline B0, warm start and optimization ---
+        b0, center = self._setup_baseline(Xc, yc, Z, sample_weight)
+        U0 = 1e-3 * rng.randn(n_dim * rank).reshape(n_dim, rank)
+        constants = ball_constants(self._projection_dim)
+        data = (jnp.asarray(Z), yc, b0, sample_weight, float(self.delta) ** 2)
+        center, U, value, stage_iterations = _fit_ellipsoid(
+            center,
+            U0,
+            *data,
+            rho_schedule,
+            *constants,
+            float(self.tol),
+            int(self.max_iter),
+            optimize_center=bool(self.optimize_center),
+        )
 
         # --- Recover fitted attributes ---
-        c_t, U = _unpack(psi, n_dim)
-        self.center_whitened_ = c_t
-        self.U_ = U
-        self._psi0 = psi0
+        self.center_whitened_ = c_t = np.asarray(center)
+        self.U_ = np.asarray(U)
+        self.stage_iterations_ = np.asarray(stage_iterations)
+        self.n_iter_ = int(self.stage_iterations_.sum())
         if self._with_intercept:
             self.coef_ = self._whiten_W @ c_t[:-1]
             self.intercept_ = float(
@@ -715,31 +477,18 @@ class _EllipsoidPosterior(RegressorMixin, BaseEstimator):
         else:
             self.coef_ = self._whiten_W @ c_t
             self.intercept_ = 0.0
-
-        rho_final = rho_schedule[-1]
-        value, _ = _ellipse_nll(
-            psi,
-            Z,
-            yc,
-            b0,
-            sample_weight,
-            self.delta,
-            rho_final,
-            ball_dim=self._projection_dim,
-        )
-        self.objective_ = value / n_samples
+        self.objective_ = float(value) / n_samples
         resid = yc - Z @ c_t
-        v = b0 + np.sum((Z @ U) ** 2, axis=1) + self.delta**2
+        v = b0 + np.sum((Z @ self.U_) ** 2, axis=1) + self.delta**2
         self.coverage_fraction_ = float(np.mean(resid * resid < v))
 
-        if self.pac_bayes:
-            self._finalize_pac_bayes(
-                psi, psi0, Z, yc, b0, sample_weight, rho_final, tau2, n_samples, free
-            )
         self._pac_bayes_fitted = bool(self.pac_bayes)
+        if self.pac_bayes:
+            hess = _hess_diag(center, U, *data, rho_schedule[-1], *constants)
+            self._finalize_pac_bayes(hess, n_samples)
         return self
 
-    def _setup_baseline(self, design, yc, Z, sample_weight, sqrt_G):
+    def _setup_baseline(self, Xc, yc, Z, sample_weight):
         """Baseline squared widths ``b0_i`` and whitened warm-start center.
 
         For ``baseline='pops'`` the POPS hypercube covariance is expressed
@@ -748,39 +497,41 @@ class _EllipsoidPosterior(RegressorMixin, BaseEstimator):
         """
         self._baseline_factor = None
         if self.baseline == "pops":
+            design = Xc
+            if self._with_intercept:
+                design = np.hstack([Xc, np.ones((Xc.shape[0], 1))])
             pops = POPSRegression(fit_intercept=False)
-            pops.fit(design, yc, sample_weight=sample_weight)
+            mu0 = pops._fit_hypercube(design, yc, sample_weight)
             support = pops._hypercube_support
             low, high = pops._hypercube_bounds
             mid = 0.5 * (low + high)
             std = (high - low) / np.sqrt(12.0)
             # Covariance (about zero) of the hypercube posterior:
             # S diag(var) S^T + (S mid)(S mid)^T = F F^T.
-            F = np.hstack([support * std, (support @ mid)[:, None]])
-            self._baseline_factor = F
-            b0 = np.einsum("ij,ij->i", design @ F, design @ F)
-            mu0 = pops.coef_
+            self._baseline_factor = np.hstack([support * std, (support @ mid)[:, None]])
             if self._with_intercept:
-                c_init = np.concatenate([sqrt_G @ mu0[:-1], mu0[-1:]])
+                center = np.concatenate([self._sqrt_G @ mu0[:-1], mu0[-1:]])
             else:
-                c_init = sqrt_G @ mu0
+                center = self._sqrt_G @ mu0
         else:
-            if self.baseline == "ridge":
-                b0 = self.baseline_ridge * np.einsum("ij,ij->i", Z, Z)
-            else:
-                b0 = np.zeros(Z.shape[0])
-            # Whitened (approximate) ridge/OLS center: Z has near-identity
-            # second-moment matrix by construction.
-            c_init = Z.T @ (sample_weight * yc) / sample_weight.sum()
-        return b0, np.asarray(c_init, dtype=np.float64)
+            # Whitened (approximate) least-squares center: Z has
+            # near-identity second-moment matrix by construction.
+            center = Z.T @ (sample_weight * yc) / sample_weight.sum()
+        return self._baseline_widths(Xc, Z), np.asarray(center, dtype=np.float64)
 
-    def _clipped_hess_diag(self, psi, Z, yc, b0, sample_weight, rho, warn=True):
-        """Diagonal Hessian of the unpenalized objective, floored."""
-        hd = _ellipse_nll_hess_diag(
-            psi, Z, yc, b0, sample_weight, self.delta, rho, self._projection_dim
-        )
+    def _finalize_pac_bayes(self, hess, n_samples):
+        """Closed-form Laplace hyperposterior, KL and diagnostic bound.
+
+        The hyperprior is centered on the fitted optimum, so the fit is
+        unchanged and the hyperposterior only broadens the predictive. It
+        covers the optimized coordinates only: with
+        ``optimize_center=False`` the frozen center block gets zero
+        variance and is excluded from the KL and effective-dof sums.
+        """
+        n_dim = self._ball_dim
+        hd = np.concatenate([np.asarray(hess[0]), np.asarray(hess[1]).ravel()])
         n_clipped = int(np.sum(hd < self.hess_floor))
-        if warn and n_clipped > 0.01 * hd.size:
+        if n_clipped > 0.01 * hd.size:
             warnings.warn(
                 (
                     f"Hessian diagonal floor activated on {n_clipped}/{hd.size} "
@@ -789,56 +540,25 @@ class _EllipsoidPosterior(RegressorMixin, BaseEstimator):
                 ),
                 UserWarning,
             )
-        return np.maximum(hd, self.hess_floor)
-
-    def _finalize_pac_bayes(
-        self, psi, psi0, Z, yc, b0, sample_weight, rho, tau2, n_samples, free
-    ):
-        """Closed-form Laplace hyperposterior, KL and PAC bound components.
-
-        The hyperposterior covers the optimized coordinates only: with
-        ``optimize_center=False`` the frozen center block gets zero
-        variance and is excluded from the KL and effective-dof sums.
-        """
-        n_dim = Z.shape[1]
-        hd = self._clipped_hess_diag(psi, Z, yc, b0, sample_weight, rho)
+        hd = np.maximum(hd, self.hess_floor)
+        free = slice(None) if self.optimize_center else slice(n_dim, None)
+        psi = np.concatenate([self.center_whitened_, self.U_.ravel()])
+        tau2 = float(self.hyperprior_scale) * max(float(psi @ psi) / psi.size, 1e-12)
         sigma = np.zeros_like(hd)
         sigma[free] = 1.0 / (hd[free] + 1.0 / tau2)
-        dpsi = psi - psi0
-        self.tau2_ = float(tau2)
+        self.tau2_ = tau2
         self.hyper_sigma_diag_ = sigma
         self.gamma_ = float(np.sum(hd[free] * sigma[free]))
         self.kl_ = 0.5 * float(
-            np.sum(
-                sigma[free] / tau2
-                + dpsi[free] * dpsi[free] / tau2
-                - 1.0
-                + np.log(tau2 / sigma[free])
-            )
+            np.sum(sigma[free] / tau2 - 1.0 + np.log(tau2 / sigma[free]))
         )
         # Second-order (delta-method) hyperposterior average of G_hat.
         self.empirical_H_ = (
             self.objective_ + 0.5 * float(np.sum(sigma * hd)) / n_samples
         )
-        self.bound_ = (
-            self.empirical_H_
-            + self.kl_ / n_samples
-            - np.log(self.bound_xi) / n_samples
-            + self.subgamma_const
-        )
+        self.bound_ = self.empirical_H_ + (self.kl_ - np.log(self.bound_xi)) / n_samples
         self.diagnostic_bound_ = self.bound_
         self.certificate_status_ = "diagnostic_empirical_bayes"
-        if self.subgamma_const == 0.0:
-            warnings.warn(
-                (
-                    "bound_ is an empirical-Bayes diagnostic (Ellipse+EB), not a "
-                    "PAC certificate: subgamma_const=0.0 is a diagnostic offset, "
-                    "not a proved moment constant, and the kernel and hyperprior "
-                    "were estimated from the evaluation sample. Use "
-                    "POPSEllipseRegression(regularization='PAC') for a PAC bound."
-                ),
-                DiagnosticBoundWarning,
-            )
         self._sigma_c = sigma[:n_dim]
         self._sigma_U = sigma[n_dim:].reshape(n_dim, -1)
 
@@ -874,10 +594,10 @@ class _EllipsoidPosterior(RegressorMixin, BaseEstimator):
         squared support half-width ``v = x^T B x + delta**2``. The
         returned standard deviation is the predictive standard deviation
         of that density, ``sqrt(v / (d + 2))`` (``d = n_dim + 1`` when
-        ``delta > 0``) — note this is the
-        pushforward standard deviation, NOT the support half-width. For a
-        model fitted without ``pac_bayes`` the bounds are the support of
-        the fitted ellipsoid, ``mean +/- sqrt(v)`` (the ellipse max/min).
+        ``delta > 0``) — note this is the pushforward standard deviation,
+        NOT the support half-width. For a model fitted without
+        ``pac_bayes`` the bounds are the support of the fitted ellipsoid,
+        ``mean +/- sqrt(v)`` (the ellipse max/min).
 
         If the model was fitted with ``pac_bayes=True``, the analytic
         hyperposterior spread enters, with no sampling anywhere:
@@ -938,8 +658,7 @@ class _EllipsoidPosterior(RegressorMixin, BaseEstimator):
             returned if ``return_bound_std=True``.
         """
         check_is_fitted(self)
-        X = validate_data(self, X, dtype=[np.float64, np.float32], reset=False)
-        Xc, Z = self._whitened_design(np.asarray(X, dtype=np.float64))
+        Xc, Z = self._whitened_design(check_X(X, self.n_features_in_))
         y_mean = Z @ self.center_whitened_ + self._y_offset
         if not (return_std or return_bounds or return_bound_std):
             return y_mean
@@ -991,8 +710,8 @@ class _EllipsoidPosterior(RegressorMixin, BaseEstimator):
         If ``fit_intercept=True`` the matrix is augmented: the last
         row/column corresponds to the intercept coordinate of the
         (centered) affine design ``[x - x_mean, 1]``. The posterior
-        covariance of the parameters is ``B / (d + 2)`` (``d = n_dim + 1`` when
-        ``delta > 0``).
+        covariance of the parameters is ``B / (d + 2)`` (``d = n_dim + 1``
+        when ``delta > 0``).
         """
         check_is_fitted(self)
         if self._with_intercept:
@@ -1042,8 +761,7 @@ class _EllipsoidPosterior(RegressorMixin, BaseEstimator):
         rng = check_random_state(random_state)
         n_dim = self._ball_dim
         d = self._projection_dim
-        B_t = self.baseline_B0_ + self.U_ @ self.U_.T
-        evals, evecs = eigh(B_t)
+        evals, evecs = np.linalg.eigh(self.baseline_B0_ + self.U_ @ self.U_.T)
         L = evecs * np.sqrt(np.maximum(evals, 0.0))
         g = rng.randn(d, n_samples)
         g /= np.linalg.norm(g, axis=0, keepdims=True)

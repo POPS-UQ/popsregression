@@ -12,8 +12,8 @@ the [glossary](glossary.md).
 
 ## Fitting
 
-`POPSRegression` follows the scikit-learn estimator API: construct, `fit`,
-`predict`.
+`POPSRegression` follows the familiar estimator usage: construct, `fit`,
+`predict`. It does not depend on scikit-learn.
 
 ```python
 import numpy as np
@@ -24,17 +24,20 @@ model.fit(X_train, y_train)      # X: (n_samples, n_features), y: (n_samples,)
 ```
 
 The estimator expects an explicit design matrix — features are not generated
-for you. For a polynomial fit, build `X` with
+for you. For a polynomial fit, build `X` yourself (for example with
+`numpy.vander`), or with scikit-learn's
 [`PolynomialFeatures`](https://scikit-learn.org/stable/modules/generated/sklearn.preprocessing.PolynomialFeatures.html)
-or a pipeline (see [below](#pipelines-and-model-selection)).
+in a pipeline (see [below](#pipelines-and-model-selection)).
 
 ### Intercept handling
 
-`fit_intercept` defaults to `False`, unlike `BayesianRidge`. When set to
-`True`, a constant column is **appended to `X`** rather than the data being
-centred, so that the intercept participates in the POPS posterior and carries
-its own misspecification uncertainty. The same column is appended
-automatically at prediction time.
+`fit_intercept` defaults to `False`. When set to `True`, a constant column is
+**appended to `X`** rather than the data being centred, so that the intercept
+participates in the POPS posterior and carries its own misspecification
+uncertainty. The same column is appended automatically at prediction time.
+The fitted intercept is `intercept_` and `coef_` holds the feature
+coefficients only; `sigma_`, `misspecification_sigma_` and
+`posterior_samples_` keep the intercept as their last coordinate.
 
 ```python
 model = POPSRegression(fit_intercept=True)
@@ -49,8 +52,9 @@ If your design matrix already contains a bias column (for example
 model.fit(X_train, y_train, sample_weight=w)
 ```
 
-Weights are passed through to the underlying `BayesianRidge` fit and to the
-preprocessing used for the POPS corrections.
+Weights enter the Bayesian ridge fit (as fractional observation counts) and
+the leverage regularization of the POPS corrections. Points of zero weight do
+not contribute to the POPS posterior.
 
 ## Prediction
 
@@ -93,59 +97,103 @@ than a tuple.
 
 ## Choosing parameters
 
-All `BayesianRidge` parameters (`max_iter`, `tol`, `alpha_1`, `alpha_2`,
-`lambda_1`, `lambda_2`, `alpha_init`, `lambda_init`, `compute_score`,
-`fit_intercept`, `copy_X`, `verbose`) are accepted and forwarded. The
-POPS-specific parameters are:
+The Bayesian ridge parameters of the mean fit (`max_iter`, `tol`, `alpha_1`,
+`alpha_2`, `lambda_1`, `lambda_2`, `alpha_init`, `lambda_init`,
+`fit_intercept`) keep their usual meaning. The POPS-specific parameters are:
 
 | Parameter | Default | Notes |
 |---|---|---|
 | `posterior` | `'hypercube'` | `'hypercube'` fits a PCA-aligned box to the pointwise corrections and resamples it; `'ensemble'` uses the raw corrections as samples |
 | `random_state` | `None` | Seed for the posterior resampling; `None` keeps the global NumPy state |
-| `minimum_relative_error` | `0.01` | Relative residual threshold for selecting training points (see below) |
+| `leverage_regularization` | `0.001` | Regularization of the leverage in the pointwise corrections, in units of the mean leverage (see below) |
+| `minimum_relative_correction` | `0.01` | Relative correction-norm threshold for selecting training points (see below) |
 | `resampling_method` | `'uniform'` | `'uniform'`, `'sobol'`, `'latin'` or `'halton'`; hypercube posterior only |
 | `resample_density` | `1.0` | Posterior samples per training point; the count is floored at 100 |
 | `percentile_clipping` | `0.0` | Percentile trimmed from each end of the hypercube bounds, in `[0, 50]` |
 | `mode_threshold` | `1e-8` | Relative eigenvalue cutoff setting the effective dimension of the hypercube |
 
-### `minimum_relative_error`
+### `leverage_regularization`
 
-A training point contributes to the POPS posterior only if its residual is
-large relative to the typical residual of the mean fit:
+The pointwise correction of training point `i` is the smallest parameter
+move, in the metric `A = XᵀX + λ/α` of the mean fit, after which the model
+passes through `y_i`:
 
 ```text
-|y - X @ coef_|  >=  minimum_relative_error * rmse
+dθ_i = e_i A⁻¹x_i / h_i,      e_i = y_i - x_i·coef_,   h_i = x_iᵀA⁻¹x_i
 ```
 
-where `rmse` is the root-mean-square error of the fitted mean over the
-training set. Points the model already reproduces carry no misspecification
-information, so discarding them speeds up the posterior construction without
-widening or narrowing it meaningfully.
+It divides by the leverage `h_i`, so a training point the model is barely
+sensitive to (`h_i → 0`) demands an arbitrarily large correction, and a
+handful of such points can dominate the posterior. `leverage_regularization`
+replaces the exact pointwise fit by the minimizer of
+`(x_i·d - e_i)² / eps + dᵀA d`:
 
-Because the threshold is **relative**, it is invariant to the scale of `y` and
-needs no tuning when you change units or targets:
+```text
+dθ_i = e_i A⁻¹x_i / (h_i + eps),      eps = leverage_regularization * mean(h)
+```
+
+The correction is then bounded, `‖dθ_i‖_A ≤ |e_i| / (2 √eps)`, and the
+pointwise fit is satisfied up to the relative residual `eps / (h_i + eps)`:
+about `leverage_regularization` for a typical point, and a large fraction only
+for points whose leverage is a thousand times below the mean at the default.
 
 ```python
-# Discard points fit a hundred times better than the typical point (default)
-model = POPSRegression(minimum_relative_error=0.01)
+# Default: mild regularization relative to the mean leverage
+model = POPSRegression(leverage_regularization=1e-3)
+
+# The exact pointwise fits of the original algorithm
+model = POPSRegression(leverage_regularization=0.0)
+```
+
+!!! note "Designs with very uneven leverage"
+    On a badly scaled design (for example raw monomials `1, x, ..., x⁴` over
+    `x ∈ [-10, 10]`) the leverages of the training points span many orders of
+    magnitude, and the corrections of the low-leverage points set much of the
+    width of the hypercube. Regularizing them narrows it: in the quartic
+    example of these pages with 100 training points, the hypercube bounds
+    cover 90% of a dense test grid with `leverage_regularization=0.0`, 76%
+    with the default `1e-3` and 63% with `1e-2` (the ellipse posteriors, which
+    optimize coverage directly, are unaffected). Rescale the features, or set
+    the parameter explicitly, if you need the exact pointwise fits there. The
+    leverages are available as `leverage_`.
+
+### `minimum_relative_correction`
+
+A training point enters the singular decomposition and the bounds of the POPS
+posterior only if its correction is not negligible next to the typical one:
+
+```text
+‖dθ_i‖  >=  minimum_relative_correction * rms(‖dθ‖)
+```
+
+with the Euclidean norm, the one the singular decomposition of the correction
+matrix sees. Points with a negligible correction cannot change the principal
+directions or widen the bounds, so discarding them does not alter the
+posterior meaningfully; it only matters for the bounds when
+`percentile_clipping > 0`.
+
+Because the threshold is **relative**, it is invariant to the scale of `y`:
+
+```python
+# Discard corrections a hundred times smaller than the typical one (default)
+model = POPSRegression(minimum_relative_correction=0.01)
 
 # Keep every training point
-model = POPSRegression(minimum_relative_error=0.0)
+model = POPSRegression(minimum_relative_correction=0.0)
 
-# Aggressive: keep only points fit worse than half the RMSE
-model = POPSRegression(minimum_relative_error=0.5)
+# Aggressive: keep only corrections above half the RMS norm
+model = POPSRegression(minimum_relative_correction=0.5)
 ```
 
 If no point clears the threshold, all points are used, so an over-large value
-degrades to the unfiltered fit rather than failing.
+degrades to the unfiltered fit rather than failing. The selected points are
+`selected_`.
 
-!!! warning "`leverage_percentile` is deprecated"
-    Earlier releases selected training points by leverage score percentile.
-    That parameter is deprecated since 0.5, is ignored, raises a
-    `FutureWarning`, and will be removed in 0.7. Replace
-    `leverage_percentile=0.0` (use all points) with
-    `minimum_relative_error=0.0`; otherwise the default
-    `minimum_relative_error=0.01` is a reasonable starting point.
+!!! warning "`minimum_relative_error` is deprecated"
+    Earlier releases selected training points by the size of their residual,
+    `|y - X @ coef_| >= minimum_relative_error * rmse`. A value passed to
+    `minimum_relative_error` is forwarded to `minimum_relative_correction`
+    with a `FutureWarning`. `leverage_percentile` has been removed.
 
 ### Sampling the hypercube posterior
 
@@ -190,7 +238,9 @@ See [Ellipse posteriors](ellipse.md).
 | `posterior_samples_` | POPS posterior samples, shape `(n_features, n_posterior_samples)` |
 | `alpha_` | Estimated noise precision — fitted, but not used for prediction |
 | `lambda_` | Estimated weight precision |
-| `scores_` | Log marginal likelihood per iteration; requires `compute_score=True` |
+| `pointwise_corrections_` | Pointwise corrections `dθ_i`, shape `(n_samples, n_features)` |
+| `leverage_` | Leverage `h_i` of every training point |
+| `selected_` | Boolean mask of the points that entered the posterior |
 | `n_iter_` | Iterations to convergence |
 
 `posterior_samples_` holds weight *perturbations* around `coef_`, so a
@@ -198,8 +248,9 @@ parameter ensemble is `coef_[:, None] + model.posterior_samples_`.
 
 ## Pipelines and model selection
 
-`POPSRegression` clones, gets and sets parameters like any scikit-learn
-estimator, so it drops into pipelines and search:
+scikit-learn is not a dependency, but both estimators provide `get_params`
+and `set_params`, so when scikit-learn is installed they drop into its
+pipelines and search:
 
 ```python
 from sklearn.model_selection import GridSearchCV
@@ -223,15 +274,28 @@ search = GridSearchCV(
 search.fit(X_train, y_train)
 ```
 
-Note that `predict` inside a pipeline returns the mean only; call the
-estimator step directly (`pipe[-1].predict(X_transformed, return_std=True)`)
-when you need the uncertainty outputs.
+A pipeline forwards keyword arguments of `predict` to the estimator, so
+`pipe.predict(X_test, return_std=True)` returns the uncertainty outputs. A
+search object does not; use `search.best_estimator_.predict(...)`.
+
+## Backend
+
+All numerical kernels (the Bayesian ridge fit, the pointwise corrections, the
+ellipsoid optimization, the PAC certification and the mixture predictives) are
+written in [JAX](https://jax.readthedocs.io) and compiled on first use.
+
+- The first call for a given problem shape pays a compilation cost of about a
+  second; later calls with the same shapes reuse the compiled kernel.
+- Importing the package enables JAX double precision
+  (`jax_enable_x64`), a process-wide JAX setting.
+- With a GPU build of JAX the same code runs on the accelerator.
+- Inputs and fitted attributes (`coef_`, `sigma_`, ...) are NumPy arrays.
 
 ## Deprecations
 
-| Since | Removed in | Parameter | Replacement |
-|---|---|---|---|
-| 0.5 | 0.7 | `leverage_percentile` | `minimum_relative_error` |
+| Parameter | Replacement |
+|---|---|
+| `minimum_relative_error` | `minimum_relative_correction` |
 
 Importing the top-level `POPSRegression` module (`import POPSRegression`) is
 also deprecated; use `from popsregression import POPSRegression`.

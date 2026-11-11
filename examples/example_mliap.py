@@ -129,7 +129,7 @@ def fit_models(problem):
 
     pops_hypercube = POPSRegression(
         fit_intercept=False,
-        minimum_relative_error=0.0,
+        minimum_relative_correction=0.0,
         posterior="hypercube",
         resample_density=resample_density,
         random_state=SEED,

@@ -51,7 +51,8 @@ reaches the edge of the support. The optimization therefore enforces
 - `delta` is the [width floor](glossary.md#width-floor): an output-offset
   coordinate of the parameter distribution, so the projected-ball dimension is
   `P + 1` and every half-width is at least `delta`.
-- `preprocessor` optionally applies a scikit-learn transformer (e.g. a PCA
+- `preprocessor` optionally applies a transformer, any object with `fit` and
+  `transform` such as a scikit-learn one (e.g. a PCA
   projection) first; see [preprocessor](glossary.md#preprocessor-pilot-only-features).
 
 Covering the training data does not imply covering new data. At small N a

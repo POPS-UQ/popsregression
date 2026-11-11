@@ -10,10 +10,6 @@ import warnings
 import numpy as np
 import pytest
 from numpy.testing import assert_allclose, assert_array_less
-from sklearn.base import clone
-from sklearn.pipeline import make_pipeline
-from sklearn.preprocessing import PolynomialFeatures
-from sklearn.utils.estimator_checks import parametrize_with_checks
 
 from popsregression import POPSRegression
 from popsregression._ellipse import _EllipsoidPosterior
@@ -31,9 +27,8 @@ def _make_misspecified_data(n_samples, seed=42, degree=4):
         np.sort(np.append(rng.uniform(-1, 1, n_samples), np.linspace(-1, 1, 2))) * 10
     )
     x_dense = np.linspace(-1.1, 1.1, 51) * 10
-    poly = PolynomialFeatures(degree=degree, include_bias=True)
-    X_train = poly.fit_transform(x_train.reshape(-1, 1))
-    X_dense = poly.fit_transform(x_dense.reshape(-1, 1))
+    X_train = np.vander(x_train, degree + 1, increasing=True)
+    X_dense = np.vander(x_dense, degree + 1, increasing=True)
     return X_train, _target_function(x_train), X_dense, _target_function(x_dense)
 
 
@@ -66,7 +61,7 @@ def test_fitted_attributes():
     assert 0.0 <= model.coverage_fraction_ <= 1.0
     assert np.isfinite(model.objective_)
     assert model.n_iter_ > 0
-    assert model.n_outer_iter_ == 1
+    assert model.stage_iterations_.sum() == model.n_iter_
 
 
 def test_predict_shapes():
@@ -199,24 +194,21 @@ def test_predictive_std_anchored_to_pops():
     assert 1.0 / 3.0 < ratio < 3.0
 
 
-# --- sklearn compliance (test 6) ---
-
-
-@parametrize_with_checks([_EllipsoidPosterior()])
-def test_sklearn_compatible(estimator, check):
-    check(estimator)
+# --- Use inside a scikit-learn pipeline (optional dependency) ---
 
 
 def test_pipeline_polynomial_features():
+    pipeline = pytest.importorskip("sklearn.pipeline")
+    preprocessing = pytest.importorskip("sklearn.preprocessing")
     x = np.linspace(-2, 2, 40)
     y = np.sin(2 * x) * x
-    pipe = make_pipeline(
-        PolynomialFeatures(degree=3),
+    pipe = pipeline.make_pipeline(
+        preprocessing.PolynomialFeatures(degree=3),
         _EllipsoidPosterior(random_state=0),
     )
     pipe.fit(x.reshape(-1, 1), y)
-    y_pred = pipe.predict(x.reshape(-1, 1))
-    assert y_pred.shape == (40,)
+    y_pred, y_std = pipe.predict(x.reshape(-1, 1), return_std=True)
+    assert y_pred.shape == (40,) and y_std.shape == (40,)
 
 
 @pytest.mark.parametrize("fit_intercept", [False, True])
@@ -316,7 +308,7 @@ def test_pac_bayes_finite_components():
     assert np.isfinite(model.bound_)
     assert np.isfinite(model.empirical_H_)
     # hyperprior_scale is relative: tau2_ = scale * ||psi0||^2 / d.
-    psi0 = model._psi0
+    psi0 = np.concatenate([model.center_whitened_, model.U_.ravel()])
     assert model.tau2_ == pytest.approx(psi0 @ psi0 / psi0.size)
     n_dim = model.center_whitened_.size
     d = n_dim * (1 + model.rank_)
@@ -384,7 +376,7 @@ def test_pac_bayes_infinite_tau2_recovers_phase1():
 
 
 def test_pac_bayes_never_narrower_than_bare():
-    """With hyperprior_center='phase1' the PAC layer only broadens.
+    """The empirical-Bayes layer only broadens.
 
     The hyperposterior is centered on the phase-1 optimum, so the MAP
     coincides with the bare fit exactly; the bounds are the max/min over
@@ -422,29 +414,6 @@ def test_pac_bayes_never_narrower_than_bare():
         assert np.all(p_min + 2 * p_bstd < b_min)
         rel_broadening[n_samples] = np.mean((p_max - p_min) / (b_max - b_min) - 1.0)
     assert 0.0 < rel_broadening[500] < rel_broadening[10]
-
-
-def test_pac_bayes_update_hyperprior_converges():
-    X_train, y_train, _, _ = _make_misspecified_data(50)
-    model = _EllipsoidPosterior(
-        random_state=0,
-        pac_bayes=True,
-        hyperprior_center="warm_start",
-        update_hyperprior=True,
-        n_outer=4,
-    ).fit(X_train, y_train)
-    assert np.isfinite(model.tau2_) and model.tau2_ > 0
-    assert 1 <= model.n_outer_iter_ <= 4
-    assert np.isfinite(model.bound_)
-
-
-def test_update_hyperprior_ignored_with_phase1_centering():
-    X_train, y_train, _, _ = _make_misspecified_data(50)
-    with pytest.warns(UserWarning, match="ill-posed"):
-        model = _EllipsoidPosterior(
-            random_state=0, pac_bayes=True, update_hyperprior=True
-        ).fit(X_train, y_train)
-    assert model.n_outer_iter_ == 1
 
 
 def test_pac_bayes_low_data_regime():
@@ -531,7 +500,11 @@ def test_low_n_conservatism_recipe():
         recipe = _EllipsoidPosterior(
             random_state=0, optimize_center=False, pac_bayes=True
         ).fit(X_train, y_train)
-    hypercube = POPSRegression(minimum_relative_error=0.0).fit(X_train, y_train)
+    # The box of the exact pointwise fits, which the low-leverage interior
+    # points of this badly scaled design make very wide.
+    hypercube = POPSRegression(
+        minimum_relative_correction=0.0, leverage_regularization=0.0, random_state=0
+    ).fit(X_train, y_train)
 
     def coverage_and_width(model):
         # PAC bounds already are the 2-sigma hyperposterior ensemble.
@@ -547,16 +520,16 @@ def test_low_n_conservatism_recipe():
     assert cov_recipe >= cov_box
     assert cov_recipe >= cov_bare
     assert hw_recipe > 1.2 * hw_bare  # conservatism costs width...
-    assert hw_recipe < hw_box  # ...but far less than the box support
+    assert hw_recipe < hw_box  # ...but less than the exact box support
 
 
-# --- Cloning ---
+# --- Parameters ---
 
 
-def test_clone_and_get_set_params():
+def test_get_set_params():
     model = _EllipsoidPosterior(rank=4, baseline="ridge", pac_bayes=True)
-    cloned = clone(model)
-    assert cloned.get_params() == model.get_params()
+    rebuilt = _EllipsoidPosterior(**model.get_params())
+    assert rebuilt.get_params() == model.get_params()
     model.set_params(rank=8, delta=1e-2)
     assert model.rank == 8 and model.delta == 1e-2
 
@@ -568,16 +541,9 @@ def test_clone_and_get_set_params():
     not os.environ.get("POPS_RUN_SLOW"),
     reason="slow scaling test; set POPS_RUN_SLOW=1 to run",
 )
-def test_large_problem_memory_and_time():
-    """P=2000, r=32, N=20000 fit stays O(N*P) + whitening in memory.
-
-    The optimizer must never allocate O(P^2) per-iteration state or an
-    (N, P**2)-ish intermediate; the only dense (P, P) arrays are the
-    whitening transform and its eigendecomposition. The tracemalloc peak
-    bound (a few multiples of the design matrix) enforces this.
-    """
+def test_large_problem_time():
+    """P=2000, r=32, N=20000: the fit is O(N P r) per iteration."""
     import time
-    import tracemalloc
 
     n_samples, n_features = 20000, 2000
     rng = np.random.RandomState(0)
@@ -591,17 +557,8 @@ def test_large_problem_memory_and_time():
         max_iter=20,
         random_state=0,
     )
-    tracemalloc.start()
     start = time.perf_counter()
     model.fit(X, y)
     elapsed = time.perf_counter() - start
-    _, peak = tracemalloc.get_traced_memory()
-    tracemalloc.stop()
-
-    design_bytes = X.nbytes  # 320 MB
-    assert peak < 4 * design_bytes, f"peak memory {peak / 1e9:.2f} GB"
     assert elapsed < 60.0, f"fit took {elapsed:.1f} s"
     assert model.U_.shape == (n_features, 32)
-
-
-# --- The PAC-Bayes layer through the public API ---

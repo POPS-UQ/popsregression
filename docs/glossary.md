@@ -160,7 +160,8 @@ the hyperprior is independent of the data the bound is computed on. Any
 half only.
 
 ### Preprocessor (pilot-only features)
-`POPSEllipseRegression(preprocessor=...)` accepts a scikit-learn transformer,
+`POPSEllipseRegression(preprocessor=...)` accepts a transformer (any object
+with `fit` and `transform`, for example a scikit-learn one),
 such as a PCA projection, applied before the ellipsoid model. On the PAC path
 it is cloned and fitted on each [pilot split](#pilot-split), so the
 certification units never influence the features, which is what the bound

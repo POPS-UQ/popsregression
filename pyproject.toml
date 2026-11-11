@@ -11,18 +11,19 @@ authors = [
 ]
 description = "Bayesian regression for low-noise data with misspecification uncertainty (POPS algorithm)."
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 dependencies = [
-  "scikit-learn>=1.6.1",
-  "scipy>=1.6.0",
-  "numpy>=1.20.0",
+  "jax>=0.4.35",
+  # scipy.stats.qmc, used by the hypercube resampling, was added in 1.7.0.
+  "scipy>=1.7.0",
+  "numpy>=1.22.0",
 ]
 classifiers = [
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "License :: OSI Approved :: BSD License",
     "Operating System :: POSIX",
     "Operating System :: Unix",
@@ -52,6 +53,9 @@ lint = [
 test = [
   "pytest",
   "pytest-cov",
+  # Not a dependency of the package: used by the comparison studies under
+  # examples/ and by the optional interoperability tests.
+  "scikit-learn>=1.6.1",
 ]
 doc = [
   "black",  # used by mkdocstrings to format rendered signatures
@@ -66,7 +70,7 @@ dev = [
 
 [tool.black]
 line-length = 88
-target_version = ['py38', 'py39', 'py310']
+target_version = ['py310', 'py311']
 preview = true
 exclude = '''
 /(
@@ -80,7 +84,7 @@ force-exclude = "popsregression/_version.py"
 [tool.ruff]
 # max line length for black
 line-length = 88
-target-version = "py38"
+target-version = "py310"
 exclude=[
     ".git",
     "__pycache__",
@@ -115,4 +119,5 @@ doctest_optionflags = "NORMALIZE_WHITESPACE"
 examples = [
     "matplotlib",
     "pandas>=2.3.3",
+    "scikit-learn>=1.6.1",
 ]

@@ -31,31 +31,42 @@ from one parameter distribution. No observation noise enters anywhere.
 #          Danny Perez <danny_perez@lanl.gov>
 # SPDX-License-Identifier: BSD-3-Clause
 
-import warnings
 from dataclasses import dataclass, field
-from numbers import Integral, Real
+from functools import partial
 
+import jax
+import jax.numpy as jnp
 import numpy as np
-from scipy.linalg import eigh
-from scipy.optimize import minimize
-from scipy.sparse import csr_matrix
-from scipy.special import betainc, gammaln, logsumexp, xlogy
-from sklearn.base import BaseEstimator, RegressorMixin, _fit_context, clone
-from sklearn.utils import check_random_state
-from sklearn.utils._param_validation import HasMethods, Interval, Options, StrOptions
-from sklearn.utils.validation import (
-    _check_sample_weight,
+from scipy.special import gammaln, logsumexp, xlogy
+from scipy.stats import norm
+
+from ._base import (
+    BaseEstimator,
     check_is_fitted,
-    validate_data,
+    check_option,
+    check_random_state,
+    check_sample_weight,
+    check_scalar,
+    check_X,
+    check_X_y,
+    clone_unfitted,
+)
+from ._ellipse import _EllipsoidPosterior
+from ._optimize import lbfgs
+from ._projected_ball import (
+    ball_constants,
+    cdf_table,
+    floor_contaminated_loss_bounds,
+    jx_ball_curvature,
+    jx_ball_loss,
+    jx_cdf,
+    jx_cdf_pdf,
+    jx_logpdf,
+    projected_ball_quantile,
 )
 
-from ._ellipse import DiagnosticBoundWarning, _EllipsoidPosterior
-from ._projected_ball import (
-    floor_contaminated_loss_bounds,
-    log_norm_constant,
-    projected_ball_logpdf,
-    smooth_log,
-)
+# Largest number of array elements a prediction kernel materializes at once.
+_ELEMENT_BUDGET = 2**22
 
 
 @dataclass(frozen=True)
@@ -257,6 +268,24 @@ def _maurer_xi(n):
     return float(np.exp(logsumexp(log_terms)))
 
 
+@jax.jit
+def _frozen_pushforward(Z, b0, centers, factors, y_offset, delta2):
+    """Means and half-widths of ``(center, U)`` hyperparameter draws."""
+    H = jnp.einsum("nd,mdr->mnr", Z, factors)
+    s = b0[None, :] + jnp.sum(H * H, axis=2) + delta2
+    return centers @ Z.T + y_offset, jnp.sqrt(s)
+
+
+def _axis_pushforward(design, eta, omega, delta2):
+    """Means and half-widths of axis hyperparameter draws ``(eta, omega)``."""
+    m0, A, E = design
+    s = jnp.exp(jnp.clip(2.0 * omega, -60.0, 60.0)) @ E.T
+    return m0[None, :] + eta @ A.T, jnp.sqrt(s + delta2)
+
+
+_axis_pushforward_jit = jax.jit(_axis_pushforward)
+
+
 class _Kernel:
     """Shared parts of the frozen and axis kernels.
 
@@ -311,6 +340,10 @@ class _FrozenKernel(_Kernel):
         self.rank = int(engine.rank_)
         self.psi_hat = np.concatenate([engine.center_whitened_, engine.U_.ravel()])
 
+    def elements_per_point(self, n_draws):
+        """Array elements needed per input row by :meth:`pushforward`."""
+        return n_draws * self.rank
+
     def design(self, X):
         """Whitened design and baseline squared widths."""
         Xc, Z = self.whitened(X)
@@ -318,14 +351,14 @@ class _FrozenKernel(_Kernel):
 
     def pushforward(self, design, psi):
         """Pushforward means and support half-widths, shape (m, n)."""
-        Z, b0 = design
         n_dim = self.n_dim
-        C = psi[:, :n_dim]
-        Us = psi[:, n_dim:].reshape(psi.shape[0], n_dim, self.rank)
-        mean = C @ Z.T + self.engine._y_offset
-        H = np.einsum("nd,mdr->mnr", Z, Us)
-        s = b0[None, :] + np.einsum("mnr,mnr->mn", H, H) + self.delta**2
-        return mean, np.sqrt(s)
+        return _frozen_pushforward(
+            *design,
+            psi[:, :n_dim],
+            psi[:, n_dim:].reshape(psi.shape[0], n_dim, self.rank),
+            self.engine._y_offset,
+            self.delta**2,
+        )
 
     def coefficients(self, psi):
         return _center_coefficients(self.engine, psi[:, : self.n_dim])
@@ -338,7 +371,7 @@ class _FrozenKernel(_Kernel):
         u, offset = self._split_ball(rng, psi.shape[0])
         for j, row in enumerate(psi):
             U = row[n_dim:].reshape(n_dim, self.rank)
-            evals, evecs = eigh(B0 + U @ U.T)
+            evals, evecs = np.linalg.eigh(B0 + U @ U.T)
             L = evecs * np.sqrt(np.maximum(evals, 0.0))
             out[:, j] = row[:n_dim] + L @ u[:, j]
         return out, offset
@@ -364,11 +397,15 @@ class _AxisKernel(_Kernel):
     def __init__(self, engine, preprocessor=None, rel_floor=1e-8):
         self._setup(engine, preprocessor)
         B = engine.baseline_B0_ + engine.U_ @ engine.U_.T
-        lam0, V = eigh(B)
+        lam0, V = np.linalg.eigh(B)
         self.lam0 = np.maximum(lam0, rel_floor * max(lam0.max(), np.finfo(float).tiny))
         self.V = V
         self.c0 = engine.center_whitened_.copy()
         self.psi_hat = np.zeros(2 * self.n_dim)
+
+    def elements_per_point(self, n_draws):
+        """Array elements needed per input row by :meth:`pushforward`."""
+        return n_draws
 
     def design(self, X):
         """Pilot mean and the axis coordinates of each input.
@@ -383,11 +420,8 @@ class _AxisKernel(_Kernel):
         return Z @ self.c0 + self.engine._y_offset, A, A * A
 
     def pushforward(self, design, psi):
-        m0, A, E = design
         n = self.n_dim
-        mean = m0[None, :] + psi[:, :n] @ A.T
-        s = np.exp(np.clip(2.0 * psi[:, n:], -60.0, 60.0)) @ E.T
-        return mean, np.sqrt(s + self.delta**2)
+        return _axis_pushforward_jit(design, psi[:, :n], psi[:, n:], self.delta**2)
 
     def centers(self, psi):
         return self.c0[None, :] + (psi[:, : self.n_dim] * np.sqrt(self.lam0)) @ self.V.T
@@ -400,42 +434,6 @@ class _AxisKernel(_Kernel):
         axes = np.sqrt(self.lam0[None, :] * np.exp(2.0 * psi[:, n:]))
         u, offset = self._split_ball(rng, psi.shape[0])
         return self.centers(psi).T + self.V @ (axes.T * u), offset
-
-    def objective(self, psi, design, y, weights, rho, prior_precision):
-        """Weighted smooth-barrier loss plus Gaussian prior, and gradient."""
-        m0, A, E = design
-        n = self.n_dim
-        k = 0.5 * (self.ball_dim - 1)
-        e2 = np.exp(np.clip(2.0 * psi[n:], -60.0, 60.0))
-        r = y - m0 - A @ psi[:n]
-        v = E @ e2 + self.delta**2
-        q = 1.0 - r * r / v
-        log_q, d1, _ = smooth_log(q, rho)
-        ell = 0.5 * np.log(v) - log_norm_constant(self.ball_dim) - k * log_q
-        g_r = weights * (2.0 * k * r * d1 / v)
-        g_v = weights * (0.5 / v - k * r * r * d1 / (v * v))
-        grad = np.concatenate([-(A.T @ g_r), 2.0 * e2 * (E.T @ g_v)])
-        value = float(weights @ ell) + 0.5 * float(prior_precision @ (psi * psi))
-        return value, grad + prior_precision * psi
-
-    def hess_diag(self, psi, design, y, weights, rho):
-        """Exact diagonal Hessian of the weighted loss (prior excluded)."""
-        m0, A, E = design
-        n = self.n_dim
-        k = 0.5 * (self.ball_dim - 1)
-        e2 = np.exp(np.clip(2.0 * psi[n:], -60.0, 60.0))
-        r = y - m0 - A @ psi[:n]
-        v = E @ e2 + self.delta**2
-        q = 1.0 - r * r / v
-        _, d1, d2 = smooth_log(q, rho)
-        r2, v2 = r * r, v * v
-        a_rr = 2.0 * k * d1 / v - 4.0 * k * r2 * d2 / v2
-        a_vv = -0.5 / v2 + 2.0 * k * d1 * r2 / (v2 * v) - k * d2 * r2 * r2 / (v2 * v2)
-        g_v = 0.5 / v - k * r2 * d1 / v2
-        D = 2.0 * E * e2  # dv / domega
-        hd_eta = (A * A).T @ (weights * a_rr)
-        hd_omega = (D * D).T @ (weights * a_vv) + 2.0 * D.T @ (weights * g_v)
-        return np.concatenate([hd_eta, hd_omega])
 
 
 def _bernoulli_kl(q, p):
@@ -487,7 +485,234 @@ def _empirical_bernstein(values, value_range, delta):
     )
 
 
-class POPSEllipseRegression(RegressorMixin, BaseEstimator):
+# ---------------------------------------------------------------------------
+# compiled kernels of the PAC certification
+# ---------------------------------------------------------------------------
+
+
+def _axis_loss(eta, omega, design, y, weights, delta2, rho, k, log_c):
+    """Weighted smooth-barrier loss of the axis hyperparameters."""
+    m0, A, E = design
+    v = E @ jnp.exp(jnp.clip(2.0 * omega, -60.0, 60.0)) + delta2
+    return weights @ jx_ball_loss(y - m0 - A @ eta, v, rho, k, log_c)
+
+
+def _axis_hess_diag(eta, omega, design, y, weights, delta2, rho, k, log_c):
+    """Exact diagonal Hessian of :func:`_axis_loss` in ``(eta, omega)``."""
+    m0, A, E = design
+    e2 = jnp.exp(jnp.clip(2.0 * omega, -60.0, 60.0))
+    v = E @ e2 + delta2
+    a_rr, a_vv, g_v = jx_ball_curvature(y - m0 - A @ eta, v, rho, k, log_c)
+    D = 2.0 * E * e2  # dv / domega
+    hd_eta = (A * A).T @ (weights * a_rr)
+    hd_omega = (D * D).T @ (weights * a_vv) + 2.0 * D.T @ (weights * g_v)
+    return hd_eta, hd_omega
+
+
+@partial(jax.jit, static_argnames=("optimize_center",))
+def _laplace_hyperposteriors(
+    precisions,
+    design,
+    y,
+    weights,
+    delta2,
+    rhos,
+    k,
+    log_c,
+    tol,
+    max_iter,
+    optimize_center,
+):
+    """Modes and diagonal variances of a batch of Gibbs hyperposteriors.
+
+    Each row of ``precisions`` (shape ``(n_candidates, 2 n_dim)``) is the
+    diagonal precision of a Gaussian hyperprior ``N(0, 1 / precision)``
+    in the scale of the summed loss. Every candidate is minimized by
+    continuation L-BFGS, all of them in one batched kernel.
+
+    Returns ``(modes, hess_diag, n_iter)``: the minimizers, the diagonal
+    Hessian of the loss there and the iteration counts. Frozen coordinates
+    stay at 0.
+    """
+    n_dim = design[1].shape[1]
+
+    def split(x):
+        if optimize_center:
+            return x[:n_dim], x[n_dim:]
+        return jnp.zeros(n_dim, x.dtype), x
+
+    def fit(precision):
+        prior = precision if optimize_center else precision[n_dim:]
+
+        def stage(x, rho):
+            def objective(x):
+                eta, omega = split(x)
+                loss = _axis_loss(eta, omega, design, y, weights, delta2, rho, k, log_c)
+                return loss + 0.5 * prior @ (x * x)
+
+            x, _, n_iter = lbfgs(
+                jax.value_and_grad(objective), x, max_iter=max_iter, tol=tol
+            )
+            return x, n_iter
+
+        x, n_iter = jax.lax.scan(stage, jnp.zeros_like(prior), rhos)
+        eta, omega = split(x)
+        hess = _axis_hess_diag(
+            eta, omega, design, y, weights, delta2, rhos[-1], k, log_c
+        )
+        return jnp.concatenate([eta, omega]), jnp.concatenate(hess), jnp.sum(n_iter)
+
+    return jax.vmap(fit)(precisions)
+
+
+# Hyperparameter draws evaluated per compiled call of the certified loss.
+_DRAW_BLOCK = 256
+
+
+@partial(jax.jit, static_argnames=("frozen_center", "grouped", "with_mixture"))
+def _draw_losses(
+    psi,
+    n_valid,
+    design,
+    y,
+    row_weights,
+    unit_ends,
+    constants,
+    frozen_center,
+    grouped,
+    with_mixture,
+):
+    """Floor-contaminated log loss of a block of hyperparameter draws.
+
+    ``psi`` holds one draw per row, of which the first ``n_valid`` are real.
+    The rows of the certification sample are sorted by unit, ``unit_ends``
+    holding the last row of each unit, and ``row_weights`` averages the rows
+    of a unit.
+
+    Returns, per draw, the unit-averaged loss and the number of rows outside
+    the compact support and, if ``with_mixture``, per unit the log of the
+    summed likelihood ``sum_draws exp(-loss)`` over the valid draws.
+    """
+    delta2, k, ball_scale, floor = constants
+    m0, A, E = design
+    n_dim = psi.shape[1] // 2
+    v = jnp.exp(jnp.clip(2.0 * psi[:, n_dim:], -60.0, 60.0)) @ E.T + delta2
+    r = y - m0 if frozen_center else y - m0 - psi[:, :n_dim] @ A.T
+    u = 1.0 - r * r / v
+    inside = u > 0.0
+    # (1 - beta) C_P (1 - r^2 / a^2)^k / a + beta / R_y, with a^2 = v.
+    ball = ball_scale * jnp.power(jnp.where(inside, u, 1.0), k) * jax.lax.rsqrt(v)
+    weighted = -jnp.log(jnp.where(inside, ball, 0.0) + floor) * row_weights
+    per_draw = jnp.sum(weighted, axis=1) / unit_ends.shape[0]
+    outside = jnp.sum(~inside, axis=1)
+    if not with_mixture:
+        return per_draw, outside
+    if grouped:
+        ends = jnp.cumsum(weighted, axis=1)[:, unit_ends]
+        weighted = jnp.diff(ends, axis=1, prepend=0.0)
+    valid = (jnp.arange(psi.shape[0]) < n_valid)[:, None]
+    log_likelihood = jax.scipy.special.logsumexp(
+        jnp.where(valid, -weighted, -jnp.inf), axis=0
+    )
+    return per_draw, outside, log_likelihood
+
+
+# ---------------------------------------------------------------------------
+# compiled kernels of the mixture predictive
+# ---------------------------------------------------------------------------
+
+
+@jax.jit
+def _mixture_moments(w, mean, half, ball_dim):
+    """Mean, standard deviation and support envelope of the mixture."""
+    y_mean = w @ mean
+    second = w @ (half**2 / (ball_dim + 2.0) + mean**2)
+    std = jnp.sqrt(jnp.maximum(second - y_mean**2, 0.0))
+    return y_mean, std, (mean + half).max(axis=0), (mean - half).min(axis=0)
+
+
+@jax.jit
+def _mixture_logpdf(w, mean, half, y, k, log_c):
+    comp = jx_logpdf(y[None, :] - mean, half, k, log_c)
+    return jax.scipy.special.logsumexp(comp, axis=0, b=w[:, None])
+
+
+@jax.jit
+def _mixture_cdf(w, mean, half, y, table):
+    return w @ jx_cdf((y[None, :] - mean) / half, table)
+
+
+# Newton steps compiled into one kernel. They are unrolled because XLA runs
+# a loop body on the CPU several times slower than straight-line code.
+_NEWTON_BLOCK = 3
+
+
+@jax.jit
+def _quantile_start(w, mean, half, z, ball_dim):
+    """Initial bracket (the support envelope) and Gaussian starting point."""
+    lo = (mean - half).min(axis=0)
+    hi = (mean + half).max(axis=0)
+    center, std, _, _ = _mixture_moments(w, mean, half, ball_dim)
+    return jnp.clip(center + z * std, lo, hi), lo, hi
+
+
+@jax.jit
+def _quantile_steps(x, lo, hi, w, mean, inverse_half, prob, table):
+    """A block of safeguarded Newton steps on the mixture CDF.
+
+    A Newton step that would leave the current bracket is replaced by
+    bisection. Returns the new iterate and bracket, and the size of the
+    last move.
+    """
+    for _ in range(_NEWTON_BLOCK):
+        F, f = jx_cdf_pdf((x[None, :] - mean) * inverse_half, table)
+        F, f = w @ F, w @ (f * inverse_half)
+        below = F < prob
+        lo = jnp.where(below, x, lo)
+        hi = jnp.where(below, hi, x)
+        newton = x - (F - prob) / jnp.where(f > 0, f, 1.0)
+        # The bracket is closed: a converged iterate sits on its edge, and
+        # bisecting there would throw the solution away.
+        inside = (f > 0) & (newton >= lo) & (newton <= hi)
+        x_new = jnp.where(inside, newton, 0.5 * (lo + hi))
+        move = jnp.abs(x_new - x)
+        x = x_new
+    return x, lo, hi, move
+
+
+def _mixture_quantile(w, mean, half, prob, table, ball_dim, n_steps, xtol):
+    """Quantile of the mixture at every input, to relative tolerance ``xtol``.
+
+    The iteration starts from the Gaussian quantile of the mixture and
+    stops when no quantile moves by more than ``xtol`` times the width of
+    its initial bracket.
+    """
+    x, lo, hi = _quantile_start(w, mean, half, float(norm.ppf(prob)), ball_dim)
+    scale = jnp.maximum(hi - lo, jnp.finfo(mean.dtype).tiny)
+    inverse_half = 1.0 / half
+    for _ in range(0, n_steps, _NEWTON_BLOCK):
+        x, lo, hi, move = _quantile_steps(x, lo, hi, w, mean, inverse_half, prob, table)
+        if float(jnp.max(move / scale)) < xtol:
+            break
+    return x
+
+
+def _chunks(n_points, elements_per_point):
+    """Row index blocks of one fixed (power of two) size covering ``n_points``.
+
+    The last block is padded by repeating the final row, so that every
+    block has the same shape and each kernel is compiled once per model.
+    """
+    limit = max(1, _ELEMENT_BUDGET // max(1, int(elements_per_point)))
+    size = 1 << (limit.bit_length() - 1)
+    while size >= 2 * n_points:
+        size //= 2
+    for start in range(0, n_points, size):
+        rows = np.minimum(np.arange(start, start + size), n_points - 1)
+        yield rows, min(size, n_points - start)
+
+
+class POPSEllipseRegression(BaseEstimator):
     """Uniform-ellipsoid POPS regression with optional hierarchical regularization.
 
     The parameter posterior is uniform on an ellipsoid
@@ -564,8 +789,9 @@ class POPSEllipseRegression(RegressorMixin, BaseEstimator):
         Center the data and append an unwhitened intercept coordinate.
 
     preprocessor : transformer, default=None
-        Optional scikit-learn transformer (for example a PCA projection)
-        applied to ``X`` before the ellipsoid model. It is cloned and fitted
+        Optional object with ``fit(X, y)`` and ``transform(X)`` methods (for
+        example a PCA projection, or any scikit-learn transformer) applied
+        to ``X`` before the ellipsoid model. It is copied and fitted
         on the training sample for ``None`` and ``'empirical-bayes'``, and on
         each **pilot split only** for ``'PAC'``, so the certification units
         never influence the features. With a preprocessor, :meth:`sample`
@@ -711,7 +937,7 @@ class POPSEllipseRegression(RegressorMixin, BaseEstimator):
         Total L-BFGS iterations over all fits.
 
     n_features_in_ : int
-        Number of features seen during :term:`fit`.
+        Number of features seen during ``fit``.
 
     See Also
     --------
@@ -737,39 +963,6 @@ class POPSEllipseRegression(RegressorMixin, BaseEstimator):
     >>> bool(pac.certificate_.raw_bound > pac.certificate_.loss_lower)
     True
     """
-
-    _parameter_constraints: dict = {
-        "regularization": [StrOptions({"empirical-bayes", "PAC"}), None],
-        "rank": [Interval(Integral, 1, None, closed="left")],
-        "delta": [Interval(Real, 0, None, closed="left")],
-        "baseline": [StrOptions({"pops", "ridge", "zero"})],
-        "optimize_center": ["boolean"],
-        "fit_intercept": ["boolean"],
-        "preprocessor": [HasMethods(["fit", "transform"]), None],
-        "rho_schedule": ["array-like"],
-        "tol": [Interval(Real, 0, None, closed="neither")],
-        "max_iter": [Interval(Integral, 1, None, closed="left")],
-        "hyperprior_scale": [
-            Interval(Real, 0, None, closed="neither"),
-            Options(Real, {np.inf}),
-        ],
-        "n_hyper_samples": [Interval(Integral, 1, None, closed="left")],
-        "pac_log_scale_std": [Interval(Real, 0, None, closed="neither"), "array-like"],
-        "pac_inequality": [StrOptions({"linear", "kl"})],
-        "pac_center_std": [Interval(Real, 0, None, closed="neither")],
-        "y_bounds": ["array-like", None],
-        "floor_weight": [Interval(Real, 0, 1, closed="neither")],
-        "min_half_width": [Interval(Real, 0, None, closed="neither"), None],
-        "pilot_fraction": [Interval(Real, 0, 1, closed="neither")],
-        "cross_fit": ["boolean"],
-        "lambda_fractions": ["array-like", None],
-        "failure_probability": [Interval(Real, 0, 1, closed="neither")],
-        "mc_failure_probability": [Interval(Real, 0, 1, closed="neither")],
-        "mixture_failure_probability": [Interval(Real, 0, 1, closed="neither")],
-        "n_bound_samples": [Interval(Integral, 2, None, closed="left")],
-        "n_select_samples": [Interval(Integral, 2, None, closed="left")],
-        "random_state": ["random_state"],
-    }
 
     def __init__(
         self,
@@ -834,6 +1027,31 @@ class POPSEllipseRegression(RegressorMixin, BaseEstimator):
     # fitting
     # ------------------------------------------------------------------
 
+    def _validate(self):
+        check_option(
+            "regularization", self.regularization, {None, "empirical-bayes", "PAC"}
+        )
+        check_option("pac_inequality", self.pac_inequality, {"linear", "kl"})
+        check_scalar("n_hyper_samples", self.n_hyper_samples, low=1)
+        check_scalar("pac_center_std", self.pac_center_std, low=0.0, low_open=True)
+        check_scalar("floor_weight", self.floor_weight, 0.0, 1.0, True, True)
+        check_scalar("pilot_fraction", self.pilot_fraction, 0.0, 1.0, True, True)
+        for name in (
+            "failure_probability",
+            "mc_failure_probability",
+            "mixture_failure_probability",
+        ):
+            check_scalar(name, getattr(self, name), 0.0, 1.0, True, True)
+        check_scalar("n_bound_samples", self.n_bound_samples, low=2)
+        check_scalar("n_select_samples", self.n_select_samples, low=2)
+        if self.min_half_width is not None:
+            check_scalar("min_half_width", self.min_half_width, low=0.0, low_open=True)
+        if self.preprocessor is not None and not (
+            hasattr(self.preprocessor, "fit")
+            and hasattr(self.preprocessor, "transform")
+        ):
+            raise ValueError("preprocessor must provide fit and transform methods.")
+
     def _engine(self, delta, pac_bayes, seed, weights=None):
         return _EllipsoidPosterior(
             rank=self.rank,
@@ -847,11 +1065,9 @@ class POPSEllipseRegression(RegressorMixin, BaseEstimator):
             optimize_center=self.optimize_center,
             random_state=seed,
             pac_bayes=pac_bayes,
-            hyperprior_center="phase1",
             hyperprior_scale=self.hyperprior_scale,
         )
 
-    @_fit_context(prefer_skip_nested_validation=True)
     def fit(self, X, y, sample_weight=None, groups=None):
         """Fit the ellipsoid posterior and its regularization.
 
@@ -878,9 +1094,9 @@ class POPSEllipseRegression(RegressorMixin, BaseEstimator):
         self : object
             Returns the instance itself.
         """
-        X, y = validate_data(self, X, y, dtype=[np.float64, np.float32], y_numeric=True)
-        X = np.asarray(X, dtype=np.float64)
-        y = np.asarray(y, dtype=np.float64).ravel()
+        self._validate()
+        X, y = check_X_y(X, y)
+        self.n_features_in_ = X.shape[1]
         rng = check_random_state(0 if self.random_state is None else self.random_state)
         if self.regularization == "PAC":
             if sample_weight is not None:
@@ -891,27 +1107,29 @@ class POPSEllipseRegression(RegressorMixin, BaseEstimator):
         kernel = self.components_[0][1]
         self._n_coef = kernel.n_dim
         self._ball_dim = kernel.ball_dim
+        self._ball_constants = ball_constants(kernel.ball_dim)
+        tau_max, *nodes = cdf_table(kernel.ball_dim)
+        self._cdf_table = (tau_max, *(jnp.asarray(t) for t in nodes))
         if self.preprocessor is None:
             self._set_mean_coefficients()
+        self._fitted = True
         return self
 
     def _preprocess(self, X, y):
-        """Clone and fit the preprocessor on ``(X, y)``; transformed ``X``."""
+        """Copy and fit the preprocessor on ``(X, y)``; transformed ``X``."""
         if self.preprocessor is None:
             return None, X
-        pre = clone(self.preprocessor).fit(X, y)
+        pre = clone_unfitted(self.preprocessor).fit(X, y)
         return pre, np.asarray(pre.transform(X), dtype=np.float64)
 
     def _fit_one_sample(self, X, y, sample_weight, rng):
         weights = None
         if sample_weight is not None:
-            weights = _check_sample_weight(sample_weight, X, ensure_non_negative=True)
+            weights = check_sample_weight(sample_weight, X.shape[0])
         eb = self.regularization == "empirical-bayes"
         engine = self._engine(self.delta, eb, int(rng.randint(2**31 - 1)), weights)
         pre, Xt = self._preprocess(X, y)
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", DiagnosticBoundWarning)
-            engine.fit(Xt, y)
+        engine.fit(Xt, y)
         kernel = _FrozenKernel(engine, pre)
         self.n_iter_ = int(engine.n_iter_)
         self.coverage_fraction_ = engine.coverage_fraction_
@@ -1064,12 +1282,16 @@ class POPSEllipseRegression(RegressorMixin, BaseEstimator):
         the stored-mixture step.
         """
         xi, xi_mc, xi_mix = budgets
-        n_units = int(unit_index.max()) + 1
+        # Sort the rows by unit, so that unit sums are differences of
+        # cumulative sums.
+        order = np.argsort(unit_index, kind="stable")
+        X1, y1, unit_index = X1[order], y1[order], unit_index[order]
+        n_units = int(unit_index[-1]) + 1
         counts = np.bincount(unit_index, minlength=n_units)
         row_weights = 1.0 / counts[unit_index]
-        design = kernel.design(X1)
+        unit_ends = np.cumsum(counts) - 1
+        design = tuple(jnp.asarray(d) for d in kernel.design(X1))
         n_dim = kernel.n_dim
-        ball_dim = kernel.ball_dim
         free = np.ones(2 * n_dim, dtype=bool)
         if not self.optimize_center:
             free[:n_dim] = False
@@ -1098,82 +1320,95 @@ class POPSEllipseRegression(RegressorMixin, BaseEstimator):
             total = loss_lower + loss_range * _kl_inverse(q, (kl + log_card) / n_units)
             return total, total - empirical_upper, 0.0
 
-        rho_schedule = np.atleast_1d(np.asarray(self.rho_schedule, dtype=float))
-        averaging = csr_matrix(
-            (row_weights, (np.arange(y1.size), unit_index)), shape=(y1.size, n_units)
+        k, log_c = ball_constants(kernel.ball_dim)
+        delta2 = kernel.delta**2
+        loss_constants = (
+            delta2,
+            k,
+            (1.0 - beta) * np.exp(log_c),
+            beta / (y_bounds[1] - y_bounds[0]),
         )
-        log_floor = np.log(beta) - np.log(y_bounds[1] - y_bounds[0])
 
-        def unit_losses(psi):
-            losses, outside = [], 0
-            for start in range(0, psi.shape[0], 512):
-                mean, half = kernel.pushforward(design, psi[start : start + 512])
-                log_ball = projected_ball_logpdf(y1[None, :] - mean, half, ball_dim)
-                outside += int(np.sum(np.isneginf(log_ball)))
-                log_p = np.logaddexp(np.log1p(-beta) + log_ball, log_floor)
-                losses.append(np.asarray((averaging.T @ -log_p.T).T))
-            return np.vstack(losses), outside / (psi.shape[0] * y1.size)
-
-        def hyperposterior(lam, tau2):
-            # Laplace approximation to the Gibbs hyperposterior at
-            # temperature lam: mode of lam * G_hat + ||psi||^2 / (2 tau^2)
-            # (sum form: sum_rows w l + (N_1 / lam) ||psi||^2 / (2 tau^2)).
-            prec = np.where(free, n_units / (lam * tau2), 0.0)
-            psi = np.zeros(2 * n_dim)
-            for rho in rho_schedule:
-
-                def objective(p_free):
-                    full = psi.copy()
-                    full[free] = p_free
-                    value, grad = kernel.objective(
-                        full, design, y1, row_weights, rho, prec
-                    )
-                    return value, grad[free]
-
-                res = minimize(
-                    objective,
-                    psi[free],
-                    jac=True,
-                    method="L-BFGS-B",
-                    tol=self.tol,
-                    options={"maxiter": self.max_iter},
+        def draw_losses(psi, with_mixture=False):
+            """Per-draw losses, outside fraction and (optionally) mixture loss."""
+            n_draws = psi.shape[0]
+            results = []
+            for start in range(0, n_draws, _DRAW_BLOCK):
+                # Blocks have one fixed size (the last is padded by
+                # repeating its final draw), so the kernel compiles once.
+                rows = np.minimum(np.arange(start, start + _DRAW_BLOCK), n_draws - 1)
+                n_valid = min(_DRAW_BLOCK, n_draws - start)
+                out = _draw_losses(
+                    psi[rows],
+                    n_valid,
+                    design,
+                    y1,
+                    row_weights,
+                    unit_ends,
+                    loss_constants,
+                    frozen_center=not self.optimize_center,
+                    grouped=n_units < y1.size,
+                    with_mixture=with_mixture,
                 )
-                psi[free] = res.x
-                self.n_iter_ += int(res.nit)
-            hd = kernel.hess_diag(psi, design, y1, row_weights, rho_schedule[-1])
-            var = np.zeros_like(psi)
-            var[free] = 1.0 / (
-                (lam / n_units) * np.maximum(hd[free], 0.0) + 1.0 / tau2[free]
-            )
-            m, v, t = psi[free], var[free], tau2[free]
-            kl = 0.5 * float(np.sum(v / t + m * m / t - 1.0 + np.log(t / v)))
-            return psi, var, kl
+                results.append(
+                    [np.asarray(o)[:n_valid] for o in out[:2]] + list(out[2:])
+                )
+            per_draw = np.concatenate([r[0] for r in results])
+            outside = sum(int(r[1].sum()) for r in results) / (n_draws * y1.size)
+            if not with_mixture:
+                return per_draw, outside
+            log_likelihood = np.logaddexp.reduce([np.asarray(r[2]) for r in results])
+            return per_draw, outside, float(np.mean(np.log(n_draws) - log_likelihood))
+
+        # Candidate hyperposteriors: one Laplace approximation to the Gibbs
+        # hyperposterior per (hyperprior, temperature) of the predeclared
+        # grids, i.e. the mode of lam * G_hat + ||psi||^2 / (2 tau^2), in
+        # sum form sum_rows w l + (N_1 / lam) ||psi||^2 / (2 tau^2).
+        tau2 = np.repeat(prior_stds[:, None] ** 2, 2 * n_dim, axis=1)
+        tau2[:, :n_dim] = float(self.pac_center_std) ** 2
+        grid = [(t, lam) for t in range(prior_stds.size) for lam in lambdas]
+        tau2 = np.stack([tau2[t] for t, _ in grid])
+        lam_grid = np.array([lam for _, lam in grid])
+        modes, hess, n_iter = _laplace_hyperposteriors(
+            n_units / (lam_grid[:, None] * tau2),
+            design,
+            y1,
+            row_weights,
+            delta2,
+            np.atleast_1d(np.asarray(self.rho_schedule, dtype=float)),
+            k,
+            log_c,
+            float(self.tol),
+            int(self.max_iter),
+            optimize_center=bool(self.optimize_center),
+        )
+        self.n_iter_ += int(np.sum(n_iter))
+        modes = np.asarray(modes)
+        curvature = (lam_grid[:, None] / n_units) * np.maximum(np.asarray(hess), 0.0)
+        variances = np.where(free, 1.0 / (curvature + 1.0 / tau2), 0.0)
+        m, v, t = modes[:, free], variances[:, free], tau2[:, free]
+        kls = 0.5 * np.sum(v / t + m * m / t - 1.0 + np.log(t / v), axis=1)
 
         def draw(mean, var, n):
             return mean + np.sqrt(var) * rng.randn(n, mean.size)
 
         # Select (prior, lambda) on a small independent Monte Carlo sample;
         # the log-cardinality term makes any data-dependent choice valid.
-        candidates = []
-        for prior_std in prior_stds:
-            tau2 = np.full(2 * n_dim, prior_std**2)
-            tau2[:n_dim] = float(self.pac_center_std) ** 2
-            for lam in lambdas:
-                mean, var, kl = hyperposterior(lam, tau2)
-                losses, _ = unit_losses(draw(mean, var, self.n_select_samples))
-                estimate = right_side(losses.mean(), kl, lam)[0]
-                candidates.append((estimate, lam, prior_std, mean, var, kl))
-        _, lam, prior_std, mean, var, kl = min(candidates, key=lambda c: c[0])
+        estimates = []
+        for mean, var, kl, lam in zip(modes, variances, kls, lam_grid):
+            per_draw, _ = draw_losses(draw(mean, var, self.n_select_samples))
+            estimates.append(right_side(per_draw.mean(), kl, lam)[0])
+        best = int(np.argmin(estimates))
+        mean, var, kl, lam = modes[best], variances[best], kls[best], lam_grid[best]
+        prior_std = prior_stds[grid[best][0]]
 
         # Certified evaluation on fresh draws.
-        losses, outside = unit_losses(draw(mean, var, self.n_bound_samples))
-        per_draw = losses.mean(axis=1)
+        per_draw, outside, mixture = draw_losses(
+            draw(mean, var, self.n_bound_samples), with_mixture=True
+        )
         empirical = float(per_draw.mean())
         mc = _empirical_bernstein(per_draw, loss_range, xi_mc)
         raw, complexity, concentration = right_side(empirical + mc, kl, lam)
-        mixture = float(
-            np.mean(-(logsumexp(-losses, axis=0) - np.log(losses.shape[0])))
-        )
         # Conditional on the fit, fresh population losses are iid and bounded.
         # Jensen followed by Hoeffding controls the stored finite predictive.
         n_stored = int(self.n_hyper_samples)
@@ -1210,18 +1445,46 @@ class POPSEllipseRegression(RegressorMixin, BaseEstimator):
     # prediction
     # ------------------------------------------------------------------
 
-    def _mixture(self, X):
-        """Weights, means and half-widths of every pushforward component."""
-        check_is_fitted(self)
-        X = validate_data(self, X, dtype=[np.float64, np.float32], reset=False)
-        X = np.asarray(X, dtype=np.float64)
-        weights, means, halves = [], [], []
-        for weight, kernel, draws in self.components_:
-            mean, half = kernel.pushforward(kernel.design(X), draws)
-            weights.append(np.full(draws.shape[0], weight / draws.shape[0]))
-            means.append(mean)
-            halves.append(half)
-        return np.concatenate(weights), np.vstack(means), np.vstack(halves)
+    def _mixture_blocks(self, X, *columns):
+        """Mixture weights and pushforward components, block by block.
+
+        Yields ``(n_valid, w, mean, half, *columns)`` for consecutive row
+        blocks of ``X`` (and of the row-aligned ``columns``). ``mean`` and
+        ``half`` have one row per stored hyperparameter draw of every fold
+        and one column per input; only the first ``n_valid`` columns of a
+        block are real inputs.
+        """
+        check_is_fitted(self, "_fitted")
+        X = check_X(X, self.n_features_in_)
+        columns = [np.asarray(c, dtype=float).ravel() for c in columns]
+        for c in columns:
+            if c.shape[0] != X.shape[0]:
+                raise ValueError("y must have one entry per row of X.")
+        w = np.concatenate(
+            [
+                np.full(d.shape[0], weight / d.shape[0])
+                for weight, _, d in self.components_
+            ]
+        )
+        cost = sum(k.elements_per_point(d.shape[0]) for _, k, d in self.components_)
+        for rows, n_valid in _chunks(X.shape[0], cost):
+            parts = [
+                kernel.pushforward(kernel.design(X[rows]), draws)
+                for _, kernel, draws in self.components_
+            ]
+            mean = jnp.concatenate([p[0] for p in parts])
+            half = jnp.concatenate([p[1] for p in parts])
+            yield (n_valid, w, mean, half, *(c[rows] for c in columns))
+
+    def _blockwise(self, X, kernel, *columns, n_out=1):
+        """Apply ``kernel(w, mean, half, *columns)`` to every block of ``X``."""
+        out = [[] for _ in range(n_out)]
+        for n_valid, *block in self._mixture_blocks(X, *columns):
+            result = kernel(*block)
+            for store, value in zip(out, result if n_out > 1 else (result,)):
+                store.append(np.asarray(value)[:n_valid])
+        out = [np.concatenate(o) for o in out]
+        return out if n_out > 1 else out[0]
 
     def predict(self, X, return_std=False, return_bounds=False):
         """Predict the mean of the parameter-only predictive.
@@ -1249,16 +1512,16 @@ class POPSEllipseRegression(RegressorMixin, BaseEstimator):
         y_max, y_min : ndarray of shape (n_samples,)
             Only if ``return_bounds=True``.
         """
-        w, mean, half = self._mixture(X)
-        y_mean = w @ mean
+        y_mean, y_std, y_max, y_min = self._blockwise(
+            X, lambda w, m, h: _mixture_moments(w, m, h, self._ball_dim), n_out=4
+        )
         if not (return_std or return_bounds):
             return y_mean
         result = [y_mean]
         if return_std:
-            second = w @ (half**2 / (self._ball_dim + 2.0) + mean**2)
-            result.append(np.sqrt(np.maximum(second - y_mean**2, 0.0)))
+            result.append(y_std)
         if return_bounds:
-            result.extend([(mean + half).max(axis=0), (mean - half).min(axis=0)])
+            result.extend([y_max, y_min])
         return tuple(result)
 
     def predict_logpdf(self, X, y):
@@ -1267,23 +1530,16 @@ class POPSEllipseRegression(RegressorMixin, BaseEstimator):
         Equal to ``-inf`` where ``y`` is outside the support of every
         pushforward component.
         """
-        w, mean, half = self._mixture(X)
-        y = np.asarray(y, dtype=float).ravel()
-        with np.errstate(divide="ignore"):
-            log_w = np.log(w)[:, None]
-        comp = projected_ball_logpdf(y[None, :] - mean, half, self._ball_dim)
-        return logsumexp(log_w + comp, axis=0)
+        k, log_c = self._ball_constants
+        return self._blockwise(
+            X, lambda w, m, h, y: _mixture_logpdf(w, m, h, y, k, log_c), y
+        )
 
     def predict_cdf(self, X, y):
         """Cumulative distribution function of the predictive at ``y``."""
-        w, mean, half = self._mixture(X)
-        y = np.asarray(y, dtype=float).ravel()
-        return w @ self._component_cdf(y[None, :], mean, half)
-
-    def _component_cdf(self, y, mean, half):
-        a = 0.5 * (self._ball_dim + 1)
-        u = np.clip(0.5 * ((y - mean) / half + 1.0), 0.0, 1.0)
-        return betainc(a, a, u)
+        return self._blockwise(
+            X, lambda w, m, h, y: _mixture_cdf(w, m, h, y, self._cdf_table), y
+        )
 
     def predict_interval(self, X, level=0.9545, n_bisect=60, xtol=1e-10):
         """Central interval of the parameter-only predictive.
@@ -1292,7 +1548,8 @@ class POPSEllipseRegression(RegressorMixin, BaseEstimator):
         returned predictive, which is the stored finite mixture of
         hyperparameter draws; for ``'empirical-bayes'`` and ``'PAC'`` that
         mixture is a Monte Carlo representation of the continuous
-        hyperposterior mixture, whose quantiles are not computed.
+        hyperposterior mixture, whose quantiles are not computed. The bare
+        ellipsoid has a single component, whose quantiles are closed form.
 
         Parameters
         ----------
@@ -1317,34 +1574,22 @@ class POPSEllipseRegression(RegressorMixin, BaseEstimator):
         """
         if not 0.0 < level < 1.0:
             raise ValueError("level must lie in (0, 1).")
-        w, mean, half = self._mixture(X)
-        lo0 = (mean - half).min(axis=0)
-        hi0 = (mean + half).max(axis=0)
-        scale = np.maximum(hi0 - lo0, np.finfo(float).tiny)
-
-        def quantile(prob):
-            lo, hi = lo0.copy(), hi0.copy()
-            x = np.clip(w @ mean, lo, hi)
-            for _ in range(n_bisect):
-                F = w @ self._component_cdf(x[None, :], mean, half)
-                f = w @ np.exp(
-                    projected_ball_logpdf(x[None, :] - mean, half, self._ball_dim)
-                )
-                below = F < prob
-                lo = np.where(below, x, lo)
-                hi = np.where(below, hi, x)
-                with np.errstate(divide="ignore", invalid="ignore"):
-                    newton = x - (F - prob) / f
-                inside = (f > 0) & (newton > lo) & (newton < hi)
-                x_new = np.where(inside, newton, 0.5 * (lo + hi))
-                done = np.max(np.abs(x_new - x) / scale) < xtol
-                x = x_new
-                if done:
-                    break
-            return x
-
         tail = 0.5 * (1.0 - level)
-        return quantile(tail), quantile(1.0 - tail)
+        if sum(d.shape[0] for _, _, d in self.components_) == 1:
+            reach = projected_ball_quantile(1.0 - tail, self._ball_dim)
+            return self._blockwise(
+                X, lambda w, m, h: (m[0] - reach * h[0], m[0] + reach * h[0]), n_out=2
+            )
+
+        def interval(w, mean, half):
+            return tuple(
+                _mixture_quantile(
+                    w, mean, half, prob, self._cdf_table, self._ball_dim, n_bisect, xtol
+                )
+                for prob in (tail, 1.0 - tail)
+            )
+
+        return tuple(self._blockwise(X, interval, n_out=2))
 
     def _assign_draws(self, n_samples, rng):
         """Fold and stored hyperparameter draw of each sample."""
@@ -1385,7 +1630,7 @@ class POPSEllipseRegression(RegressorMixin, BaseEstimator):
         offsets : ndarray of shape (n_samples,)
             Only if ``return_offset=True``.
         """
-        check_is_fitted(self)
+        check_is_fitted(self, "_fitted")
         if self.preprocessor is not None:
             raise ValueError(
                 "sample() is unavailable with a preprocessor: the parameters of "
@@ -1421,9 +1666,8 @@ class POPSEllipseRegression(RegressorMixin, BaseEstimator):
         -------
         draws : ndarray of shape (n_points, n_samples)
         """
-        check_is_fitted(self)
-        X = validate_data(self, X, dtype=[np.float64, np.float32], reset=False)
-        X = np.asarray(X, dtype=np.float64)
+        check_is_fitted(self, "_fitted")
+        X = check_X(X, self.n_features_in_)
         rng = check_random_state(random_state)
         out = np.empty((X.shape[0], n_samples))
         for idx, kernel, psi in self._assign_draws(n_samples, rng):

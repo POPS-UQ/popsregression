@@ -4,16 +4,16 @@
 #          Danny Perez <danny_perez@lanl.gov>
 # SPDX-License-Identifier: BSD-3-Clause
 
+import subprocess
+import sys
 import warnings
 
 import numpy as np
 import pytest
 from numpy.testing import assert_allclose, assert_array_less
-from sklearn.linear_model import BayesianRidge
-from sklearn.preprocessing import PolynomialFeatures
-from sklearn.utils.estimator_checks import parametrize_with_checks
 
 from popsregression import POPSRegression
+from popsregression._base import NotFittedError
 
 
 def _make_low_noise_data(n_samples=50, n_features=5, noise=0.01, seed=42):
@@ -21,117 +21,281 @@ def _make_low_noise_data(n_samples=50, n_features=5, noise=0.01, seed=42):
     rng = np.random.RandomState(seed)
     x = np.sort(rng.uniform(-1, 1, n_samples)) * 10
     f = lambda x: (x**3 + 0.01 * x**4) * 0.1 + np.sin(x) * x * 10.0
-
-    poly = PolynomialFeatures(degree=n_features - 1, include_bias=True)
-    X = poly.fit_transform(x.reshape(-1, 1))
+    X = np.vander(x, n_features, increasing=True)
     y = f(x) + noise * rng.randn(n_samples)
-    return X, y, poly
+    return X, y
+
+
+def _make_low_leverage_data(scale, n_samples=2000, n_features=8, n_low=5, seed=0):
+    """Misspecified data in which a few rows barely excite the model."""
+    rng = np.random.RandomState(seed)
+    X = rng.randn(n_samples, n_features)
+    X[:n_low] *= scale
+    y = X @ rng.randn(n_features) + 0.05 * np.sin(3 * X[:, 0])
+    y += 0.02 * np.cos(5 * X[:, 1])
+    return X, y, rng.randn(500, n_features)
+
+
+def _gram(model, X, weights=None):
+    """Regularized Gram matrix of the mean fit."""
+    weights = np.ones(X.shape[0]) if weights is None else weights
+    ratio = model.lambda_ / model.alpha_
+    return (X * weights[:, None]).T @ X + ratio * np.eye(X.shape[1])
 
 
 # --- Basic functionality ---
 
 
 def test_fit_returns_self():
-    X, y, _ = _make_low_noise_data()
+    X, y = _make_low_noise_data()
     model = POPSRegression()
-    result = model.fit(X, y)
-    assert result is model
+    assert model.fit(X, y) is model
 
 
 def test_fitted_attributes():
-    X, y, _ = _make_low_noise_data()
+    X, y = _make_low_noise_data()
     model = POPSRegression().fit(X, y)
-
-    assert hasattr(model, "coef_")
-    assert hasattr(model, "sigma_")
-    assert hasattr(model, "misspecification_sigma_")
-    assert hasattr(model, "posterior_samples_")
-    assert hasattr(model, "alpha_")
-    assert hasattr(model, "lambda_")
-    assert hasattr(model, "n_iter_")
 
     n_features = X.shape[1]
     assert model.coef_.shape == (n_features,)
+    assert model.intercept_ == 0.0
     assert model.sigma_.shape == (n_features, n_features)
     assert model.misspecification_sigma_.shape == (n_features, n_features)
     assert model.posterior_samples_.shape[0] == n_features
+    assert model.pointwise_corrections_.shape == X.shape
+    assert model.leverage_.shape == (X.shape[0],)
+    assert model.selected_.dtype == bool
+    assert model.n_features_in_ == n_features
+    assert model.alpha_ > 0 and model.lambda_ > 0 and model.n_iter_ >= 1
+    for name in ("coef_", "sigma_", "posterior_samples_", "leverage_"):
+        assert isinstance(getattr(model, name), np.ndarray)
 
 
-def test_predict_mean_only():
-    X, y, _ = _make_low_noise_data()
-    model = POPSRegression().fit(X, y)
-    y_pred = model.predict(X)
-    assert y_pred.shape == (X.shape[0],)
+def test_predict_before_fit_raises():
+    with pytest.raises(NotFittedError):
+        POPSRegression().predict(np.ones((2, 3)))
 
 
-def test_predict_return_std():
-    X, y, _ = _make_low_noise_data()
-    model = POPSRegression().fit(X, y)
-    y_pred, y_std = model.predict(X, return_std=True)
-    assert y_pred.shape == (X.shape[0],)
-    assert y_std.shape == (X.shape[0],)
-    assert np.all(y_std >= 0)
+def test_predict_shapes_and_signs():
+    X, y = _make_low_noise_data()
+    model = POPSRegression(random_state=0).fit(X, y)
+    assert model.predict(X).shape == (X.shape[0],)
 
-
-def test_predict_return_bounds():
-    X, y, _ = _make_low_noise_data()
-    model = POPSRegression().fit(X, y)
-    y_pred, y_max, y_min = model.predict(X, return_bounds=True)
-    assert y_pred.shape == (X.shape[0],)
-    assert_array_less(y_min, y_max + 1e-10)
-
-
-def test_predict_return_all():
-    X, y, _ = _make_low_noise_data()
-    model = POPSRegression().fit(X, y)
-    result = model.predict(
+    y_pred, y_std, y_max, y_min, y_epi_std = model.predict(
         X, return_std=True, return_bounds=True, return_epistemic_std=True
     )
-    assert len(result) == 5
-    y_pred, y_std, y_max, y_min, y_epi_std = result
-    assert y_pred.shape == (X.shape[0],)
-    assert y_std.shape == (X.shape[0],)
-    assert y_epi_std.shape == (X.shape[0],)
+    for out in (y_pred, y_std, y_max, y_min, y_epi_std):
+        assert out.shape == (X.shape[0],)
+    assert np.all(y_std >= y_epi_std) and np.all(y_epi_std >= 0)
+    assert_array_less(y_min, y_max + 1e-10)
+    assert_allclose(model.predict(X, return_epistemic_std=True)[1], y_epi_std)
+    assert_allclose(model.predict(X, return_bounds=True)[1], y_max)
 
 
-def test_predict_return_epistemic_std():
-    X, y, _ = _make_low_noise_data()
+def test_predict_checks_the_feature_count():
+    X, y = _make_low_noise_data()
     model = POPSRegression().fit(X, y)
-    y_pred, y_epi_std = model.predict(X, return_epistemic_std=True)
-    assert np.all(y_epi_std >= 0)
+    with pytest.raises(ValueError, match="features"):
+        model.predict(X[:, :-1])
 
 
-# --- Posterior types ---
+def test_score_is_r_squared():
+    X, y = _make_low_noise_data()
+    model = POPSRegression().fit(X, y)
+    residual = y - model.predict(X)
+    expected = 1.0 - residual @ residual / np.sum((y - y.mean()) ** 2)
+    assert_allclose(model.score(X, y), expected)
+
+
+# --- Mean fit ---
+
+
+def test_mean_fit_is_the_ridge_solution_of_its_precisions():
+    X, y = _make_low_noise_data()
+    model = POPSRegression().fit(X, y)
+    A = _gram(model, X)
+    assert_allclose(model.coef_, np.linalg.solve(A, X.T @ y), rtol=1e-8)
+    assert_allclose(model.sigma_, np.linalg.inv(A) / model.alpha_, rtol=1e-8)
+
+
+@pytest.mark.parametrize("shape", [(60, 5), (20, 30)])
+@pytest.mark.parametrize("weighted", [False, True])
+def test_mean_fit_matches_scikit_learn(shape, weighted):
+    linear_model = pytest.importorskip("sklearn.linear_model")
+    rng = np.random.RandomState(1)
+    X = rng.randn(*shape)
+    y = X @ rng.randn(shape[1]) + 0.1 * np.sin(3 * X[:, 0])
+    weights = rng.uniform(0.5, 2.0, shape[0]) if weighted else None
+
+    model = POPSRegression().fit(X, y, sample_weight=weights)
+    reference = linear_model.BayesianRidge(fit_intercept=False)
+    reference.fit(X, y, sample_weight=weights)
+    assert model.n_iter_ == reference.n_iter_
+    assert_allclose(model.coef_, reference.coef_, rtol=1e-7, atol=1e-10)
+    assert_allclose(model.alpha_, reference.alpha_, rtol=1e-7)
+    assert_allclose(model.lambda_, reference.lambda_, rtol=1e-7)
+    assert_allclose(model.sigma_, reference.sigma_, rtol=1e-6, atol=1e-12)
+
+
+def test_initial_precisions_are_used():
+    X, y = _make_low_noise_data()
+    default = POPSRegression(max_iter=1).fit(X, y)
+    started = POPSRegression(max_iter=1, alpha_init=1e3, lambda_init=1e-3).fit(X, y)
+    assert not np.isclose(default.alpha_, started.alpha_)
+
+
+# --- Pointwise corrections and leverage ---
+
+
+def test_unregularized_corrections_fit_every_point_exactly():
+    X, y = _make_low_noise_data()
+    model = POPSRegression(leverage_regularization=0.0).fit(X, y)
+    fitted = np.einsum("ij,ij->i", X, model.coef_ + model.pointwise_corrections_)
+    assert_allclose(fitted, y, rtol=1e-7, atol=1e-7 * np.abs(y).max())
+
+
+@pytest.mark.parametrize("regularization", [0.0, 1e-2, 1.0])
+def test_corrections_follow_the_regularized_leverage_formula(regularization):
+    X, y = _make_low_noise_data()
+    model = POPSRegression(leverage_regularization=regularization).fit(X, y)
+    solved = np.linalg.solve(_gram(model, X), X.T).T
+    leverage = np.einsum("ij,ij->i", X, solved)
+    errors = y - X @ model.coef_
+    eps = regularization * leverage.mean()
+    expected = (errors / (leverage + eps))[:, None] * solved
+    assert_allclose(model.leverage_, leverage, rtol=1e-7)
+    scale = np.abs(expected).max()
+    assert_allclose(
+        model.pointwise_corrections_, expected, rtol=1e-6, atol=1e-9 * scale
+    )
+
+
+def test_low_leverage_points_destabilize_the_exact_pointwise_fit():
+    """A few rows of vanishing leverage dominate the unregularized posterior."""
+    X_ref, y_ref, X_test = _make_low_leverage_data(scale=1.0)
+    X_low, y_low, _ = _make_low_leverage_data(scale=1e-4)
+
+    def mean_std(X, y, regularization):
+        model = POPSRegression(
+            leverage_regularization=regularization, random_state=0
+        ).fit(X, y)
+        return model.predict(X_test, return_std=True)[1].mean()
+
+    reference = mean_std(X_ref, y_ref, 0.0)
+    assert mean_std(X_low, y_low, 0.0) > 100 * reference
+    default = POPSRegression().leverage_regularization
+    assert default > 0
+    assert_allclose(mean_std(X_low, y_low, default), reference, rtol=0.2)
+    # On a well-conditioned design the default changes little.
+    assert_allclose(mean_std(X_ref, y_ref, default), reference, rtol=0.02)
+
+
+def test_regularized_corrections_are_bounded_in_the_fit_metric():
+    """||d_i||_A <= |e_i| / (2 sqrt(eps)) whatever the leverage."""
+    X, y, _ = _make_low_leverage_data(scale=1e-6)
+    regularization = 1e-2
+    model = POPSRegression(leverage_regularization=regularization).fit(X, y)
+    d = model.pointwise_corrections_
+    norm_A = np.sqrt(np.einsum("ij,ij->i", d @ _gram(model, X), d))
+    eps = regularization * model.leverage_.mean()
+    bound = np.abs(y - X @ model.coef_) / (2.0 * np.sqrt(eps))
+    assert np.all(norm_A <= bound * (1 + 1e-8))
+
+
+# --- Selection by correction norm ---
+
+
+def test_selection_is_relative_to_the_rms_correction_norm():
+    X, y = _make_low_noise_data()
+    model = POPSRegression(minimum_relative_correction=0.5).fit(X, y)
+    norm = np.linalg.norm(model.pointwise_corrections_, axis=1)
+    expected = norm >= 0.5 * np.sqrt(np.mean(norm**2))
+    assert np.array_equal(model.selected_, expected)
+    assert 0 < model.selected_.sum() < X.shape[0]
+
+
+def test_selection_keeps_everything_at_zero_threshold():
+    X, y = _make_low_noise_data()
+    assert POPSRegression(minimum_relative_correction=0.0).fit(X, y).selected_.all()
+
+
+def test_selection_is_scale_invariant():
+    X, y = _make_low_noise_data()
+    model = POPSRegression(minimum_relative_correction=0.5).fit(X, y)
+    scaled = POPSRegression(minimum_relative_correction=0.5).fit(X, 1000.0 * y)
+    assert np.array_equal(model.selected_, scaled.selected_)
+
+
+def test_selection_falls_back_when_all_filtered():
+    X, y = _make_low_noise_data()
+    model = POPSRegression(minimum_relative_correction=1e12).fit(X, y)
+    assert model.selected_.all()
+
+
+def test_pruned_points_do_not_enter_the_posterior():
+    X, y = _make_low_noise_data()
+    model = POPSRegression(minimum_relative_correction=0.5, posterior="ensemble")
+    model.fit(X, y)
+    kept = model.pointwise_corrections_[model.selected_]
+    assert_allclose(model.posterior_samples_, kept.T)
+    assert_allclose(model.misspecification_sigma_, kept.T @ kept / kept.shape[0])
+
+
+def test_hypercube_is_the_bounding_box_of_the_selected_corrections():
+    X, y = _make_low_noise_data()
+    model = POPSRegression(minimum_relative_correction=0.3).fit(X, y)
+    support = model._hypercube_support
+    low, high = model._hypercube_bounds
+    assert_allclose(support.T @ support, np.eye(support.shape[1]), atol=1e-10)
+    projected = model.pointwise_corrections_[model.selected_] @ support
+    assert_allclose(projected.min(axis=0), low, rtol=1e-8, atol=1e-12)
+    assert_allclose(projected.max(axis=0), high, rtol=1e-8, atol=1e-12)
+    inside = support.T @ model.posterior_samples_
+    assert np.all(inside >= low[:, None] - 1e-9) and np.all(
+        inside <= high[:, None] + 1e-9
+    )
+
+
+def test_percentile_clipping_shrinks_the_hypercube():
+    X, y = _make_low_noise_data(n_samples=200)
+    full = POPSRegression(minimum_relative_correction=0.0).fit(X, y)
+    clipped = POPSRegression(minimum_relative_correction=0.0, percentile_clipping=10.0)
+    clipped.fit(X, y)
+    width = lambda m: np.sum(m._hypercube_bounds[1] - m._hypercube_bounds[0])
+    assert width(clipped) < width(full)
+
+
+def test_minimum_relative_error_is_deprecated_and_forwarded():
+    X, y = _make_low_noise_data()
+    with pytest.warns(FutureWarning, match="minimum_relative_error"):
+        old = POPSRegression(minimum_relative_error=0.5).fit(X, y)
+    new = POPSRegression(minimum_relative_correction=0.5).fit(X, y)
+    assert np.array_equal(old.selected_, new.selected_)
+
+
+def test_no_warning_by_default():
+    X, y = _make_low_noise_data()
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        POPSRegression().fit(X, y)
+
+
+# --- Posterior types and resampling ---
 
 
 @pytest.mark.parametrize("posterior", ["hypercube", "ensemble"])
 def test_posterior_types(posterior):
-    X, y, _ = _make_low_noise_data()
-    model = POPSRegression(posterior=posterior, random_state=0).fit(X, y)
-    y_pred, y_std = model.predict(X, return_std=True)
-    assert y_pred.shape == (X.shape[0],)
-    assert np.all(y_std >= 0)
-
-
-@pytest.mark.parametrize("posterior", ["hypercube", "ensemble"])
-def test_posterior_common_attributes(posterior):
-    X, y, _ = _make_low_noise_data()
+    X, y = _make_low_noise_data()
     model = POPSRegression(posterior=posterior, random_state=0).fit(X, y)
     n_features = X.shape[1]
-    assert model.coef_.shape == (n_features,)
     assert model.posterior_samples_.shape[0] == n_features
     assert model.misspecification_sigma_.shape == (n_features, n_features)
-    y_pred, y_max, y_min = model.predict(X, return_bounds=True)
-    assert np.all(y_max >= y_min)
-    _, y_epi_std = model.predict(X, return_epistemic_std=True)
-    assert np.all(y_epi_std >= 0)
-
-
-# --- Resampling ---
+    _, y_std, y_max, y_min = model.predict(X, return_std=True, return_bounds=True)
+    assert np.all(y_std >= 0) and np.all(y_max >= y_min)
 
 
 def test_random_state_makes_resampling_reproducible():
-    X, y, _ = _make_low_noise_data()
+    X, y = _make_low_noise_data()
     first = POPSRegression(random_state=7).fit(X, y).posterior_samples_
     second = POPSRegression(random_state=7).fit(X, y).posterior_samples_
     assert_allclose(first, second)
@@ -139,7 +303,7 @@ def test_random_state_makes_resampling_reproducible():
 
 def test_random_state_none_uses_the_global_rng():
     """The historical np.random.seed reproducibility must be preserved."""
-    X, y, _ = _make_low_noise_data()
+    X, y = _make_low_noise_data()
     np.random.seed(0)
     first = POPSRegression().fit(X, y).posterior_samples_
     np.random.seed(0)
@@ -147,216 +311,153 @@ def test_random_state_none_uses_the_global_rng():
     assert_allclose(first, second)
 
 
-# --- Resampling methods ---
-
-
 @pytest.mark.parametrize("method", ["uniform", "sobol", "latin", "halton"])
 def test_resampling_methods(method):
-    X, y, _ = _make_low_noise_data()
-    model = POPSRegression(resampling_method=method).fit(X, y)
-    y_pred, y_std = model.predict(X, return_std=True)
-    assert y_pred.shape == (X.shape[0],)
-    assert np.all(y_std >= 0)
+    X, y = _make_low_noise_data()
+    model = POPSRegression(resampling_method=method, random_state=0).fit(X, y)
+    assert model.posterior_samples_.shape[1] >= 64
+    assert np.all(model.predict(X, return_std=True)[1] >= 0)
 
 
-# --- POPS vs BayesianRidge uncertainty ---
+def test_resample_density_sets_the_number_of_samples():
+    X, y = _make_low_noise_data(n_samples=200)
+    model = POPSRegression(resample_density=3.0, random_state=0).fit(X, y)
+    assert model.posterior_samples_.shape[1] == 600
 
 
-def test_misspecification_sigma_larger_than_epistemic():
-    """POPS misspecification uncertainty should generally be larger than
-    epistemic-only uncertainty for low-noise misspecified models."""
-    X, y, _ = _make_low_noise_data(n_samples=30, n_features=5, noise=0.001)
-    model = POPSRegression().fit(X, y)
-
-    misspec_trace = np.trace(model.misspecification_sigma_)
-    epistemic_trace = np.trace(model.sigma_)
-    assert misspec_trace > epistemic_trace
+# --- POPS vs epistemic uncertainty ---
 
 
-def test_pops_wider_uncertainty_than_bayesian_ridge():
-    """POPS combined uncertainty should be wider than BayesianRidge
-    epistemic-only uncertainty for misspecified low-noise data."""
-    X, y, _ = _make_low_noise_data(n_samples=30, n_features=5, noise=0.001)
-
-    pops = POPSRegression().fit(X, y)
-    br = BayesianRidge(fit_intercept=False).fit(X, y)
-
-    _, pops_std = pops.predict(X, return_std=True)
-    br_epistemic_std = np.sqrt(np.sum(np.dot(X, br.sigma_) * X, axis=1))
-
-    assert np.mean(pops_std) > np.mean(br_epistemic_std)
+def test_misspecification_dominates_epistemic_uncertainty():
+    """In the low-noise misspecified regime POPS is far wider than sigma_."""
+    X, y = _make_low_noise_data(n_samples=30, n_features=5, noise=0.001)
+    model = POPSRegression(random_state=0).fit(X, y)
+    assert np.trace(model.misspecification_sigma_) > np.trace(model.sigma_)
+    _, std, epistemic_std = model.predict(X, return_std=True, return_epistemic_std=True)
+    assert std.mean() > epistemic_std.mean()
 
 
 # --- fit_intercept ---
 
 
-def test_fit_intercept():
+def test_fit_intercept_separates_the_intercept():
     rng = np.random.RandomState(42)
     X = rng.randn(50, 3)
-    y = X @ np.array([1, 2, 3]) + 5.0 + 0.01 * rng.randn(50)
+    y = X @ np.array([1.0, 2.0, 3.0]) + 5.0 + 0.01 * rng.randn(50)
 
-    model = POPSRegression(fit_intercept=True).fit(X, y)
-    y_pred = model.predict(X)
-    assert y_pred.shape == (50,)
-    assert np.mean((y - y_pred) ** 2) < 1.0
-
-
-def test_fit_intercept_get_params_consistency():
-    """fit_intercept should be correctly reported after fit."""
-    model = POPSRegression(fit_intercept=True)
+    model = POPSRegression(fit_intercept=True, random_state=0).fit(X, y)
+    assert model.coef_.shape == (3,)
+    assert_allclose(model.coef_, [1.0, 2.0, 3.0], atol=0.02)
+    assert_allclose(model.intercept_, 5.0, atol=0.02)
+    assert_allclose(model.predict(X), X @ model.coef_ + model.intercept_)
+    # The intercept takes part in the posterior: it is the last coordinate.
+    assert model.sigma_.shape == (4, 4)
+    assert model.posterior_samples_.shape[0] == 4
     assert model.get_params()["fit_intercept"] is True
 
-    X, y, _ = _make_low_noise_data()
-    model.fit(X, y)
-    assert model.get_params()["fit_intercept"] is True
-
-
-# --- Parameter validation ---
-
-
-def test_invalid_posterior():
-    with pytest.raises(ValueError):
-        POPSRegression(posterior="invalid").fit(*_make_low_noise_data()[:2])
-
-
-def test_invalid_resampling_method():
-    with pytest.raises(ValueError):
-        POPSRegression(resampling_method="invalid").fit(*_make_low_noise_data()[:2])
+    explicit = POPSRegression(random_state=0).fit(np.hstack([X, np.ones((50, 1))]), y)
+    assert_allclose(model.coef_, explicit.coef_[:-1], rtol=1e-10)
+    assert_allclose(model.intercept_, explicit.coef_[-1], rtol=1e-10)
 
 
 # --- sample_weight ---
 
 
-def test_sample_weight():
-    X, y, _ = _make_low_noise_data()
+def test_integer_weights_repeat_rows_in_the_mean_fit():
+    X, y = _make_low_noise_data()
     weights = np.ones(X.shape[0])
     weights[:10] = 2.0
-
-    model = POPSRegression().fit(X, y, sample_weight=weights)
-    y_pred = model.predict(X)
-    assert y_pred.shape == (X.shape[0],)
-
-
-# --- compute_score ---
+    weighted = POPSRegression().fit(X, y, sample_weight=weights)
+    repeated = POPSRegression().fit(np.vstack([X, X[:10]]), np.concatenate([y, y[:10]]))
+    assert_allclose(weighted.coef_, repeated.coef_, rtol=1e-6)
+    assert_allclose(weighted.alpha_, repeated.alpha_, rtol=1e-6)
 
 
-def test_compute_score():
-    X, y, _ = _make_low_noise_data()
-    model = POPSRegression(compute_score=True).fit(X, y)
-    assert hasattr(model, "scores_")
-    assert len(model.scores_) > 0
+def test_zero_weight_points_are_excluded_from_the_posterior():
+    X, y = _make_low_noise_data()
+    y_outlier = y.copy()
+    y_outlier[3] += 1e4
+    weights = np.ones(X.shape[0])
+    weights[3] = 0.0
 
-
-# --- Minimum relative error ---
-
-
-@pytest.mark.parametrize("minimum_relative_error", [0.0, 0.01, 0.5])
-def test_minimum_relative_error(minimum_relative_error):
-    X, y, _ = _make_low_noise_data()
-    model = POPSRegression(minimum_relative_error=minimum_relative_error).fit(X, y)
-    y_pred = model.predict(X)
-    assert y_pred.shape == (X.shape[0],)
-
-
-def test_minimum_relative_error_filters_points():
-    """Points with residuals below the threshold are excluded."""
-    X, y, _ = _make_low_noise_data()
-
-    all_points = POPSRegression(minimum_relative_error=0.0).fit(X, y)
-    assert all_points._filtering_mask.all()
-
-    filtered = POPSRegression(minimum_relative_error=0.5).fit(X, y)
-    assert filtered._filtering_mask.sum() < X.shape[0]
-
-
-def test_minimum_relative_error_is_relative_to_rmse():
-    """The threshold is minimum_relative_error * RMSE of the mean fit."""
-    X, y, _ = _make_low_noise_data()
-    model = POPSRegression(minimum_relative_error=0.5).fit(X, y)
-
-    errors = y - X @ model.coef_
-    rmse = np.sqrt(np.mean(errors**2))
-    expected = np.abs(errors) >= 0.5 * rmse
-    assert np.array_equal(model._filtering_mask, expected)
-
-
-def test_minimum_relative_error_is_scale_invariant():
-    """Rescaling y leaves the selected points unchanged."""
-    X, y, _ = _make_low_noise_data()
-    model = POPSRegression(minimum_relative_error=0.5).fit(X, y)
-    scaled = POPSRegression(minimum_relative_error=0.5).fit(X, 1000.0 * y)
-    assert np.array_equal(model._filtering_mask, scaled._filtering_mask)
-
-
-def test_minimum_relative_error_falls_back_when_all_filtered():
-    """If no point passes the threshold, all points are used."""
-    X, y, _ = _make_low_noise_data()
-    model = POPSRegression(minimum_relative_error=1e12).fit(X, y)
-    assert model._filtering_mask.all()
-
-
-# --- Deprecation of leverage_percentile ---
-
-
-def test_leverage_percentile_deprecated():
-    X, y, _ = _make_low_noise_data()
-    model = POPSRegression(leverage_percentile=50.0)
-    with pytest.warns(FutureWarning, match="leverage_percentile"):
-        model.fit(X, y)
-
-
-def test_leverage_percentile_is_ignored():
-    """The deprecated parameter no longer affects the fit."""
-    X, y, _ = _make_low_noise_data()
-
-    reference = POPSRegression(posterior="ensemble").fit(X, y)
-    with pytest.warns(FutureWarning):
-        deprecated = POPSRegression(posterior="ensemble", leverage_percentile=90.0).fit(
-            X, y
-        )
-
+    kwargs = dict(minimum_relative_correction=0.0, posterior="ensemble")
+    dropped = POPSRegression(**kwargs).fit(X, y_outlier, sample_weight=weights)
+    deleted = POPSRegression(**kwargs).fit(np.delete(X, 3, axis=0), np.delete(y, 3))
+    assert not dropped.selected_[3]
+    assert_allclose(dropped.coef_, deleted.coef_, rtol=1e-6)
     assert_allclose(
-        deprecated.misspecification_sigma_, reference.misspecification_sigma_
+        dropped.misspecification_sigma_, deleted.misspecification_sigma_, rtol=1e-5
     )
 
 
-def test_no_warning_without_leverage_percentile():
-    X, y, _ = _make_low_noise_data()
-    with warnings.catch_warnings():
-        warnings.simplefilter("error", FutureWarning)
-        POPSRegression().fit(X, y)
+def test_invalid_sample_weight():
+    X, y = _make_low_noise_data()
+    with pytest.raises(ValueError):
+        POPSRegression().fit(X, y, sample_weight=-np.ones(X.shape[0]))
+    with pytest.raises(ValueError):
+        POPSRegression().fit(X, y, sample_weight=np.ones(3))
 
 
-# --- Cloning and get_params/set_params ---
+# --- Input and parameter validation ---
 
 
-def test_clone():
-    from sklearn.base import clone
+@pytest.mark.parametrize(
+    "params",
+    [
+        {"posterior": "invalid"},
+        {"resampling_method": "invalid"},
+        {"percentile_clipping": 60.0},
+        {"leverage_regularization": -1.0},
+        {"minimum_relative_correction": -0.1},
+        {"mode_threshold": 0.0},
+    ],
+)
+def test_invalid_parameters(params):
+    with pytest.raises(ValueError):
+        POPSRegression(**params).fit(*_make_low_noise_data())
 
-    model = POPSRegression(
-        posterior="ensemble",
-        resample_density=2.0,
-        minimum_relative_error=0.05,
-    )
-    cloned = clone(model)
-    assert cloned.get_params() == model.get_params()
+
+def test_invalid_inputs():
+    X, y = _make_low_noise_data()
+    with pytest.raises(ValueError):
+        POPSRegression().fit(X, y[:-1])
+    with pytest.raises(ValueError):
+        POPSRegression().fit(X[:, 0], y)
+    X_bad = X.copy()
+    X_bad[0, 0] = np.nan
+    with pytest.raises(ValueError):
+        POPSRegression().fit(X_bad, y)
 
 
-def test_get_set_params():
-    model = POPSRegression()
+def test_more_features_than_samples():
+    rng = np.random.RandomState(0)
+    X = rng.randn(20, 30)
+    y = X @ rng.randn(30)
+    model = POPSRegression(random_state=0).fit(X, y)
+    assert np.all(np.isfinite(model.predict(X, return_std=True)[1]))
+
+
+# --- Parameters ---
+
+
+def test_get_set_params_and_repr():
+    model = POPSRegression(posterior="ensemble")
     params = model.get_params()
-    assert "posterior" in params
-    assert "resample_density" in params
-    assert "minimum_relative_error" in params
+    assert params["posterior"] == "ensemble"
+    assert "leverage_regularization" in params
+    assert "minimum_relative_correction" in params
+    assert repr(model) == "POPSRegression(posterior='ensemble')"
 
-    model.set_params(posterior="ensemble", resample_density=5.0)
-    assert model.posterior == "ensemble"
+    assert model.set_params(posterior="hypercube", resample_density=5.0) is model
     assert model.resample_density == 5.0
+    assert repr(model) == "POPSRegression(resample_density=5.0)"
+    with pytest.raises(ValueError):
+        model.set_params(not_a_parameter=1)
+
+    rebuilt = POPSRegression(**model.get_params())
+    assert rebuilt.get_params() == model.get_params()
 
 
-# --- sklearn estimator checks ---
-
-
-@parametrize_with_checks([POPSRegression()])
-def test_sklearn_compatible(estimator, check):
-    check(estimator)
+def test_importing_the_package_does_not_import_scikit_learn():
+    code = "import sys, popsregression; sys.exit('sklearn' in sys.modules)"
+    assert subprocess.run([sys.executable, "-c", code]).returncode == 0

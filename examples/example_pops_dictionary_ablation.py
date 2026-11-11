@@ -267,7 +267,9 @@ def run_one(study, repeat, n_pilot, n_cert, n_test, level, unit_store):
         eb_test_width=width_in,
     )
 
-    hyc = POPSRegression(minimum_relative_error=0.0, random_state=0).fit(X_all, y_all)
+    hyc = POPSRegression(minimum_relative_correction=0.0, random_state=0).fit(
+        X_all, y_all
+    )
     _, hi, lo = hyc.predict(X_test, return_bounds=True)
     row["hypercube_test_coverage"], row["hypercube_test_width"] = coverage_and_width(
         y_test, lo, hi

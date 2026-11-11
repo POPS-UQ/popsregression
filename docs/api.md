@@ -40,18 +40,16 @@ the finite POPS dictionary) are not part of the package. They live in
       show_root_heading: true
       show_root_full_path: false
 
-### Inherited methods
+### Common methods
 
-`POPSRegression` subclasses
-[`BayesianRidge`](https://scikit-learn.org/stable/modules/generated/sklearn.linear_model.BayesianRidge.html)
-and inherits the standard scikit-learn estimator methods unchanged:
+Both estimators provide the usual parameter and scoring methods, without
+depending on scikit-learn:
 
 | Method | Description |
 |---|---|
 | `get_params(deep=True)` | Parameters of this estimator |
 | `set_params(**params)` | Set parameters of this estimator |
-| `score(X, y, sample_weight=None)` | Coefficient of determination R² of the prediction |
-| `get_metadata_routing()` | Metadata routing of this object |
+| `score(X, y)` | Coefficient of determination R² of the prediction |
 
 `score` uses the mean prediction only; uncertainty outputs are available
 through [`predict`](#predict).
@@ -108,12 +106,13 @@ See [Ellipse posteriors](ellipse.md) for the method and the PAC protocol.
 
 ## Deprecated parameters
 
-| Since | Removed in | Parameter | Replacement |
-|---|---|---|---|
-| 0.5 | 0.7 | `leverage_percentile` | `minimum_relative_error` |
+| Parameter | Replacement |
+|---|---|
+| `minimum_relative_error` | `minimum_relative_correction` |
 
-Passing `leverage_percentile` raises a `FutureWarning` on `fit` and has no
-effect on the fitted model.
+Passing `minimum_relative_error` raises a `FutureWarning` on `fit`; its value
+is forwarded to `minimum_relative_correction`. `leverage_percentile` and the
+unused `compute_score`, `copy_X` and `verbose` parameters have been removed.
 
 The top-level `POPSRegression` module shim (`import POPSRegression`) is
 deprecated in favour of `from popsregression import POPSRegression` and raises
