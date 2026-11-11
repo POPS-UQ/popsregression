@@ -677,6 +677,7 @@ class _EllipsoidPosterior(RegressorMixin, BaseEstimator):
         n_outer = self.n_outer if update_mode else 1
         self.n_iter_ = 0
         self.n_outer_iter_ = 0
+        self.stage_info_ = []
         for outer in range(n_outer):
             prec = 1.0 / tau2 if self.pac_bayes and not center_on_phase1 else 0.0
             for rho in rho_schedule:
@@ -691,6 +692,15 @@ class _EllipsoidPosterior(RegressorMixin, BaseEstimator):
                 )
                 psi[free] = res.x
                 self.n_iter_ += int(res.nit)
+                self.stage_info_.append(
+                    {
+                        "rho": float(rho),
+                        "nit": int(res.nit),
+                        "success": bool(res.success),
+                        "message": str(res.message),
+                        "fun": float(res.fun),
+                    }
+                )
             self.n_outer_iter_ += 1
             if not update_mode or outer == n_outer - 1:
                 break
