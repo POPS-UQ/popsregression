@@ -55,6 +55,39 @@ reaches the edge of the support. The optimization therefore enforces
   `transform` such as a scikit-learn one (e.g. a PCA
   projection) first; see [preprocessor](glossary.md#preprocessor-pilot-only-features).
 
+### Prior on the ellipsoid shape
+
+The fit sees each training point only through its predictive width
+`xᵀ B x`, so a direction of parameter space that no training point excites
+has no gradient: its width stays wherever the random start left it.
+`prior_kl=True` adds to the objective
+
+```text
+KL = ½ [ tr(M B) / (d + 2)  −  log det B ],        M = λ Λ
+```
+
+the KL divergence (up to a constant) from the prior `N(0, M⁻¹)` to the
+Gaussian with the ellipsoid's covariance `B / (d + 2)`. `Λ` is
+`prior_precision` (the identity by default) and `λ` the scale learned by the
+Bayesian ridge fit. The first term penalizes an ellipsoid wider than the
+prior, the second one narrower than it, so unconstrained directions settle at
+the prior width `B / (d + 2) = M⁻¹` while directions the data constrain
+barely move.
+
+```python
+model = POPSEllipseRegression(
+    prior_precision=Lambda, prior_kl=True, rank=X.shape[1]
+).fit(X, y)
+```
+
+It is off by default, for three reasons. The widths of unconstrained
+directions become those of the prior, so they are only as meaningful as the
+prior is there. `B` must be able to reach full rank, which needs
+`rank >= n_features`. And every evaluation factors a dense
+`(n_features, n_features)` matrix, with more iterations than the plain fit.
+It is not available with `regularization='empirical-bayes'`; with `'PAC'` it
+shapes the pilot ellipsoid.
+
 Covering the training data does not imply covering new data. At small N a
 bare ellipse typically misses a few percent of held-out targets, where its
 density is zero. The two hierarchical layers address this.

@@ -797,6 +797,21 @@ class POPSEllipseRegression(BaseEstimator):
         ellipsoid shape itself. With a ``preprocessor`` it refers to the
         transformed features.
 
+    prior_kl : bool, default=False
+        Let the prior also act on the ellipsoid shape. With ``M = lambda *
+        Lambda`` (``Lambda`` is ``prior_precision``, the identity by
+        default, and ``lambda`` the learned scale of the Bayesian ridge
+        fit) the objective gains ``0.5 * (tr(M B) / (d + 2) - log det B)``,
+        the KL divergence (up to a constant) from the prior ``N(0, M^-1)``
+        to the Gaussian with the ellipsoid's covariance ``B / (d + 2)``.
+        Directions that no datum constrains then take the prior width
+        instead of the width of their random start, so the result is only
+        as good as the prior there. Requires ``baseline='pops'``, is not
+        available with ``regularization='empirical-bayes'``, and needs
+        ``rank >= n_features`` (a warning is raised otherwise). It factors
+        a dense ``(n_features, n_features)`` matrix at every evaluation.
+        For ``'PAC'`` it shapes the pilot ellipsoid.
+
     preprocessor : transformer, default=None
         Optional object with ``fit(X, y)`` and ``transform(X)`` methods (for
         example a PCA projection, or any scikit-learn transformer) applied
@@ -983,6 +998,7 @@ class POPSEllipseRegression(BaseEstimator):
         optimize_center=False,
         fit_intercept=False,
         prior_precision=None,
+        prior_kl=False,
         preprocessor=None,
         rho_schedule=(1e-1, 1e-2, 1e-3, 1e-4),
         tol=1e-8,
@@ -1012,6 +1028,7 @@ class POPSEllipseRegression(BaseEstimator):
         self.optimize_center = optimize_center
         self.fit_intercept = fit_intercept
         self.prior_precision = prior_precision
+        self.prior_kl = prior_kl
         self.preprocessor = preprocessor
         self.rho_schedule = rho_schedule
         self.tol = tol
@@ -1043,6 +1060,10 @@ class POPSEllipseRegression(BaseEstimator):
             "regularization", self.regularization, {None, "empirical-bayes", "PAC"}
         )
         check_option("pac_inequality", self.pac_inequality, {"linear", "kl"})
+        if self.prior_kl and self.regularization == "empirical-bayes":
+            raise ValueError(
+                "prior_kl is not available with regularization='empirical-bayes'."
+            )
         check_scalar("n_hyper_samples", self.n_hyper_samples, low=1)
         check_scalar("pac_center_std", self.pac_center_std, low=0.0, low_open=True)
         check_scalar("floor_weight", self.floor_weight, 0.0, 1.0, True, True)
@@ -1073,6 +1094,7 @@ class POPSEllipseRegression(BaseEstimator):
             max_iter=self.max_iter,
             fit_intercept=self.fit_intercept,
             prior_precision=self.prior_precision,
+            prior_kl=self.prior_kl,
             weights=weights,
             optimize_center=self.optimize_center,
             random_state=seed,

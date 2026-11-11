@@ -41,7 +41,7 @@ from ._base import (
     check_X_y,
 )
 from ._optimize import lbfgs
-from ._pops import POPSRegression
+from ._pops import POPSRegression, prior_shape
 from ._projected_ball import ball_constants, jx_ball_curvature, jx_ball_loss
 
 
@@ -58,11 +58,44 @@ def _nll(center, U, Z, y, b0, weights, delta2, rho, k, log_c):
     return weights @ jx_ball_loss(y - Z @ center, v, rho, k, log_c)
 
 
+@jax.jit
+def _prior_kl(U, precision, B0, scale):
+    """KL term ``0.5 * (tr(M B) / scale - log det B)`` of a parameter prior.
+
+    ``B = B0 + U U^T`` in whitened coordinates and ``M = precision`` there.
+    Up to a constant this is the KL divergence from the prior ``N(0, M^-1)``
+    to the Gaussian with the covariance ``B / scale`` of the ellipsoid. It is
+    minimal at ``B / scale = M^-1``. Costs ``O(n_dim**3)``.
+    """
+    B = B0 + U @ U.T
+    n_dim = B.shape[0]
+    jitter = 1e-12 * jnp.maximum(jnp.trace(B) / n_dim, jnp.finfo(B.dtype).tiny)
+    factor = jnp.linalg.cholesky(B + jitter * jnp.eye(n_dim))
+    log_det = 2.0 * jnp.sum(jnp.log(jnp.diagonal(factor)))
+    return 0.5 * (jnp.sum(precision * B) / scale - log_det)
+
+
 @partial(jax.jit, static_argnames=("optimize_center",))
 def _fit_ellipsoid(
-    center, U, Z, y, b0, weights, delta2, rhos, k, log_c, tol, max_iter, optimize_center
+    center,
+    U,
+    Z,
+    y,
+    b0,
+    weights,
+    delta2,
+    rhos,
+    k,
+    log_c,
+    tol,
+    max_iter,
+    optimize_center,
+    prior=None,
 ):
     """Continuation L-BFGS over the barrier schedule ``rhos``.
+
+    ``prior`` is ``None`` or the arguments ``(precision, B0, scale)`` of
+    :func:`_prior_kl`, which is then added to the objective.
 
     Returns the optimized center and factor, the objective at the last
     stage and the number of iterations of every stage.
@@ -82,7 +115,11 @@ def _fit_ellipsoid(
 
     def stage(x, rho):
         def loss(x):
-            return _nll(*split(x), Z, y, b0, weights, delta2, rho, k, log_c)
+            center, U = split(x)
+            value = _nll(center, U, Z, y, b0, weights, delta2, rho, k, log_c)
+            if prior is not None:
+                value = value + _prior_kl(U, *prior)
+            return value
 
         x, value, n_iter = lbfgs(
             jax.value_and_grad(loss), x, max_iter=max_iter, tol=tol
@@ -217,6 +254,24 @@ class _EllipsoidPosterior(BaseEstimator):
         :class:`POPSRegression`), which sets the frozen center and the
         baseline. Used with ``baseline='pops'`` only.
 
+    prior_kl : bool, default=False
+        Let the parameter prior act on the ellipsoid shape. With ``M =
+        lambda * Lambda`` the prior precision of the POPS pre-fit
+        (``Lambda`` is ``prior_precision``, the identity by default, and
+        ``lambda`` the learned scale), the objective gains
+
+            KL = 0.5 * (tr(M B) / (d + 2) - log det B),
+
+        the KL divergence (up to a constant) from ``N(0, M^-1)`` to the
+        Gaussian with the ellipsoid's covariance ``B / (d + 2)``, at unit
+        weight against the summed per-datum terms, as a log posterior adds
+        the log prior. Directions that no datum constrains then settle at
+        the prior width ``B / (d + 2) = M^-1`` instead of their random
+        start; the term ``- log det B`` is what gives them a finite width.
+        Requires ``baseline='pops'`` and ``pac_bayes=False``. Use ``rank >=
+        n_dim`` so that ``B`` can be full rank. Each evaluation factors a
+        dense ``(n_dim, n_dim)`` matrix.
+
     weights : array-like of shape (n_samples,), default=None
         Non-negative per-datum weights ``w_i`` of the empirical
         generalization error ``G_hat = mean_i(w_i * ell_i)``.
@@ -297,6 +352,10 @@ class _EllipsoidPosterior(BaseEstimator):
     stage_iterations_ : ndarray of shape (n_stages,)
         L-BFGS iterations of each continuation stage.
 
+    prior_kl_ : float or None
+        Value of the KL term at the optimum (``None`` unless
+        ``prior_kl=True``). ``objective_`` never includes it.
+
     tau2_ : float
         Effective (absolute) hyperprior variance (only if
         ``pac_bayes=True``).
@@ -357,6 +416,7 @@ class _EllipsoidPosterior(BaseEstimator):
         max_iter=500,
         fit_intercept=False,
         prior_precision=None,
+        prior_kl=False,
         weights=None,
         optimize_center=False,
         random_state=None,
@@ -376,6 +436,7 @@ class _EllipsoidPosterior(BaseEstimator):
         self.max_iter = max_iter
         self.fit_intercept = fit_intercept
         self.prior_precision = prior_precision
+        self.prior_kl = prior_kl
         self.weights = weights
         self.optimize_center = optimize_center
         self.random_state = random_state
@@ -398,6 +459,11 @@ class _EllipsoidPosterior(BaseEstimator):
         check_scalar("bound_xi", self.bound_xi, 0.0, 1.0, low_open=True, high_open=True)
         if self.prior_precision is not None and self.baseline != "pops":
             raise ValueError("prior_precision requires baseline='pops'.")
+        if self.prior_kl and (self.baseline != "pops" or self.pac_bayes):
+            raise ValueError(
+                "prior_kl requires baseline='pops' and is not available with "
+                "the empirical-Bayes layer."
+            )
         rho_schedule = np.atleast_1d(np.asarray(self.rho_schedule, dtype=float))
         if rho_schedule.ndim != 1 or rho_schedule.size == 0:
             raise ValueError("rho_schedule must be a non-empty 1d sequence.")
@@ -461,6 +527,15 @@ class _EllipsoidPosterior(BaseEstimator):
         # --- Baseline B0, warm start and optimization ---
         b0, center = self._setup_baseline(Xc, yc, Z, sample_weight)
         U0 = 1e-3 * rng.randn(n_dim * rank).reshape(n_dim, rank)
+        prior = self._shape_prior() if self.prior_kl else None
+        if prior is not None:
+            # Start the widths at the prior optimum U U^T = (d + 2) M^-1 (its
+            # widest directions), not at a tiny random factor: there B is
+            # near-singular off the baseline's span and the log det gradient
+            # B^-1 U dwarfs U.
+            evals, evecs = np.linalg.eigh(prior[0])
+            evals = np.maximum(evals, np.finfo(float).tiny)
+            U0 = evecs[:, :rank] * np.sqrt(prior[2] / evals[:rank])
         constants = ball_constants(self._projection_dim)
         data = (jnp.asarray(Z), yc, b0, sample_weight, float(self.delta) ** 2)
         center, U, value, stage_iterations = _fit_ellipsoid(
@@ -472,7 +547,12 @@ class _EllipsoidPosterior(BaseEstimator):
             float(self.tol),
             int(self.max_iter),
             optimize_center=bool(self.optimize_center),
+            prior=prior,
         )
+        self.prior_kl_ = None
+        if prior is not None:
+            self.prior_kl_ = float(_prior_kl(U, *prior))
+            value = float(value) - self.prior_kl_
 
         # --- Recover fitted attributes ---
         self.center_whitened_ = c_t = np.asarray(center)
@@ -513,6 +593,7 @@ class _EllipsoidPosterior(BaseEstimator):
             pops = POPSRegression(prior_precision=self.prior_precision)
             pops.n_features_in_ = Xc.shape[1]
             mu0 = pops._fit_hypercube(design, yc, sample_weight)
+            self._prior_scale = pops.lambda_
             support = pops._hypercube_support
             low, high = pops._hypercube_bounds
             mid = 0.5 * (low + high)
@@ -529,6 +610,26 @@ class _EllipsoidPosterior(BaseEstimator):
             # near-identity second-moment matrix by construction.
             center = Z.T @ (sample_weight * yc) / sample_weight.sum()
         return self._baseline_widths(Xc, Z), np.asarray(center, dtype=np.float64)
+
+    def _shape_prior(self):
+        """``(M, B0_t, d + 2)`` of :func:`_prior_kl`, in whitened coordinates."""
+        n_dim = self._ball_dim
+        if self.rank_ < n_dim:
+            warnings.warn(
+                (
+                    f"prior_kl with rank={self.rank_} < {n_dim}: B can be "
+                    "singular off the baseline's span, where log det B is then "
+                    "set by a jitter. Use rank >= the number of coefficients."
+                ),
+                UserWarning,
+            )
+        shape = prior_shape(self.prior_precision, n_dim, self.n_features_in_)
+        # Whitened to design coordinates: W on the features, 1 on the intercept.
+        J = np.eye(n_dim)
+        n_features = self._whiten_W.shape[0]
+        J[:n_features, :n_features] = self._whiten_W
+        M = self._prior_scale * (J.T @ shape @ J)
+        return 0.5 * (M + M.T), self.baseline_B0_, self._projection_dim + 2.0
 
     def _finalize_pac_bayes(self, hess, n_samples):
         """Closed-form Laplace hyperposterior, KL and diagnostic bound.
@@ -701,7 +802,7 @@ class _EllipsoidPosterior(BaseEstimator):
     @property
     def baseline_B0_(self):
         """Dense fixed baseline ``B0_t`` in whitened coordinates (lazy)."""
-        check_is_fitted(self)
+        check_is_fitted(self, "_baseline_factor")
         n_dim = self._ball_dim
         if self.baseline == "zero":
             return np.zeros((n_dim, n_dim))

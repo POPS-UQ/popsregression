@@ -562,3 +562,71 @@ def test_large_problem_time():
     elapsed = time.perf_counter() - start
     assert elapsed < 60.0, f"fit took {elapsed:.1f} s"
     assert model.U_.shape == (n_features, 32)
+
+
+# --- Parameter prior on the ellipsoid shape ---
+
+
+def _unconstrained_feature_data():
+    """Misspecified data whose last feature is identically zero."""
+    rng = np.random.default_rng(1)
+    X = rng.normal(size=(400, 4))
+    X[:, 3] = 0.0
+    y = X @ np.array([1.0, -0.5, 0.3, 0.0]) + 0.05 * rng.normal(size=400)
+    return X, y + 0.1 * X[:, 0] ** 2
+
+
+@pytest.mark.parametrize("prior", [np.array([1.0, 1.0, 1.0, 4.0]), None])
+def test_prior_kl_sets_the_width_of_an_unconstrained_direction(prior):
+    """An unconstrained coefficient settles at the prior variance.
+
+    Coefficients the data constrain barely move, and neither does the data
+    term of the objective.
+    """
+    X, y = _unconstrained_feature_data()
+    kwargs = dict(rank=4, prior_precision=prior, random_state=0)
+    bare = _EllipsoidPosterior(**kwargs).fit(X, y)
+    model = _EllipsoidPosterior(prior_kl=True, **kwargs).fit(X, y)
+    assert bare.prior_kl_ is None and np.isfinite(model.prior_kl_)
+
+    shape = 1.0 if prior is None else prior[3]
+    prior_variance = 1.0 / (model._prior_scale * shape)
+    scale = model._projection_dim + 2.0
+    variance = np.diag(model.ellipsoid_B_) / scale
+    reference = np.diag(bare.ellipsoid_B_) / scale
+    assert_allclose(variance[3], prior_variance, rtol=1e-3)
+    assert not np.isclose(reference[3], prior_variance, rtol=0.5)
+    assert_allclose(variance[:3], reference[:3], rtol=0.05)
+    assert_allclose(model.objective_, bare.objective_, atol=1e-3)
+    assert model.coverage_fraction_ == 1.0
+    assert_allclose(model.coef_, bare.coef_)
+
+
+def test_prior_kl_term_and_its_minimum():
+    from popsregression._ellipse import _prior_kl
+
+    rng = np.random.RandomState(0)
+    root = rng.randn(5, 5)
+    precision = root @ root.T + np.eye(5)
+    B0 = 0.1 * np.eye(5)
+    U = rng.randn(5, 5)
+    B = B0 + U @ U.T
+    expected = 0.5 * (np.trace(precision @ B) / 7.0 - np.linalg.slogdet(B)[1])
+    assert_allclose(_prior_kl(U, precision, B0, 7.0), expected, rtol=1e-9)
+    # Minimal where B / scale is the prior covariance.
+    optimum = np.linalg.cholesky(7.0 * np.linalg.inv(precision))
+    zero = np.zeros((5, 5))
+    best = _prior_kl(optimum, precision, zero, 7.0)
+    for _ in range(5):
+        other = optimum + 0.05 * rng.randn(5, 5)
+        assert _prior_kl(other, precision, zero, 7.0) > best
+
+
+def test_prior_kl_requirements():
+    X, y = _unconstrained_feature_data()
+    with pytest.raises(ValueError, match="prior_kl"):
+        _EllipsoidPosterior(prior_kl=True, baseline="ridge").fit(X, y)
+    with pytest.raises(ValueError, match="prior_kl"):
+        _EllipsoidPosterior(prior_kl=True, pac_bayes=True).fit(X, y)
+    with pytest.warns(UserWarning, match="rank"):
+        _EllipsoidPosterior(prior_kl=True, rank=2, max_iter=5).fit(X, y)

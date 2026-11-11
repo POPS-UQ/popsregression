@@ -213,6 +213,37 @@ def test_prior_precision_sets_the_center_and_baseline():
         POPSEllipseRegression(prior_precision=prior, baseline="ridge").fit(X, y)
 
 
+@pytest.mark.parametrize("regularization", [None, "PAC"])
+@pytest.mark.parametrize("fit_intercept", [False, True])
+def test_prior_kl_widens_an_unconstrained_direction(regularization, fit_intercept):
+    rng = np.random.RandomState(0)
+    X = rng.randn(200, 4)
+    X[:, 3] = 0.0
+    y = X @ np.array([1.0, -0.5, 0.3, 0.0]) + 0.1 * X[:, 0] ** 2 + fit_intercept
+    kwargs = dict(
+        regularization=regularization,
+        fit_intercept=fit_intercept,
+        rank=5,
+        y_bounds=(-10.0, 10.0),
+        n_bound_samples=300,
+        random_state=0,
+    )
+    model = POPSEllipseRegression(prior_kl=True, **kwargs).fit(X, y)
+    probe = np.array([[0.0, 0.0, 0.0, 1.0], [0.0, 0.0, 0.0, 2.0]])
+    std = model.predict(probe, return_std=True)[1]
+    # Along the feature no datum constrains, the width is the prior's: it
+    # grows with the feature instead of staying at the width floor.
+    assert std[0] > 0.1 and std[1] > 1.5 * std[0]
+    assert np.all(np.isfinite(model.predict_interval(X[:5])))
+
+
+def test_prior_kl_is_not_available_with_empirical_bayes():
+    X, y = _quartic_data(40)
+    model = POPSEllipseRegression(regularization="empirical-bayes", prior_kl=True)
+    with pytest.raises(ValueError, match="prior_kl"):
+        model.fit(X, y)
+
+
 # --- regularization='PAC' ------------------------------------------------------
 
 

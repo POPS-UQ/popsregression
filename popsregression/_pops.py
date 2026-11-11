@@ -146,6 +146,17 @@ def prior_whitening(prior_precision, n_design, n_features):
     return T
 
 
+def prior_shape(prior_precision, n_design, n_features):
+    """Dense prior shape ``Lambda`` over the columns of the design."""
+    T = prior_whitening(prior_precision, n_design, n_features)
+    if T is None:
+        return np.eye(n_design)
+    if T.ndim == 1:
+        return np.diag(1.0 / (T * T))
+    inverse = np.linalg.inv(T)
+    return inverse.T @ inverse
+
+
 def _from_whitened(T, M):
     """``T @ M`` for the map of :func:`prior_whitening`."""
     if T is None:

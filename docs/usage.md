@@ -139,8 +139,9 @@ a pointwise correction takes. With `fit_intercept=True` the intercept keeps
 unit prior precision unless `Λ` is given with one more row and column for it.
 
 [`POPSEllipseRegression`][popsregression.POPSEllipseRegression] takes the same
-argument. There it sets the center and the POPS baseline of the ellipsoid; it
-does not constrain the fitted ellipsoid shape.
+argument. There it sets the center and the POPS baseline of the ellipsoid;
+with `prior_kl=True` it also constrains the fitted shape (see
+[Ellipse posteriors](ellipse.md#prior-on-the-ellipsoid-shape)).
 
 ### `leverage_regularization`
 
