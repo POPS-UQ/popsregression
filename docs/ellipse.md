@@ -130,6 +130,7 @@ So `diagnostic_bound_` has the form of a PAC-Bayes right side but is **not** a
 bound, and `certificate_status_` is `"diagnostic_empirical_bayes"`.
 
 ## `regularization="PAC"`
+For an executable Python example, see [PAC-Ellipse regression with JAX](pac-ellipse.md).
 
 This path computes an actual PAC-Bayes bound on the population log risk of its
 own predictive. It follows Theorem 1 of the paper. The theorem requires the

@@ -32,6 +32,7 @@ nav:
   - Home: index.md
   - Usage: usage.md
   - "Ellipse posteriors": ellipse.md
+  - PAC-Ellipse regression: pac-ellipse.md
   - "Example: POPS vs Bayesian ridge": example.md
   - Studies: studies.md
   - API reference: api.md

@@ -49,6 +49,7 @@ pac.fit(X_train, y_train)
 pac.certificate_.raw_bound
 ```
 
+- [PAC-Ellipse regression with JAX](pac-ellipse.md) walks through fitting, certification and propagation.
 - [Usage](usage.md): fitting, prediction and parameters of `POPSRegression`
 - [Ellipse posteriors](ellipse.md): `POPSEllipseRegression`, including the
   PAC protocol

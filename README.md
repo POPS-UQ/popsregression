@@ -89,6 +89,7 @@ The Bayesian ridge parameters of the mean fit (`max_iter`, `tol`, `alpha_1`,
 | `pointwise_corrections_`, `leverage_`, `selected_` | Pointwise corrections, leverages and the points kept for the posterior |
 
 ## Ellipsoid posteriors: `POPSEllipseRegression`
+[Run the PAC-Ellipse tutorial](docs/pac-ellipse.md) to fit a bounded simulator, inspect its risk certificate and propagate joint predictions.
 
 `POPSEllipseRegression` fits a parameter distribution that is uniform on an
 ellipsoid. For a linear model its predictive density at `x` has a closed form,
