@@ -1,115 +1,86 @@
-# Example: POPS vs BayesianRidge
+# Example: POPS vs Bayesian ridge
 
-A runnable comparison of [`POPSRegression`][popsregression.POPSRegression] and
-[`BayesianRidge`](https://scikit-learn.org/stable/modules/generated/sklearn.linear_model.BayesianRidge.html)
-on a misspecified, low-noise fit. For why the two differ, see
-[Concepts](https://pops-uq.github.io/method/concepts/) on the POPS site; for
-the options used here, see [Usage](usage.md).
+A misspecified, noise-free fit of a quartic polynomial to an oscillatory
+function, comparing
+[`BayesianRidge`](https://scikit-learn.org/stable/modules/generated/sklearn.linear_model.BayesianRidge.html),
+the POPS hypercube ([`POPSRegression`][popsregression.POPSRegression]) and the
+three settings of
+[`POPSEllipseRegression`][popsregression.POPSEllipseRegression]. The full
+script is
+[`examples/example_polynomial.py`](https://github.com/POPS-UQ/popsregression/blob/jax-integration/examples/example_polynomial.py).
+Terms are defined in the [glossary](glossary.md).
 
-The full script is available in the repository under
-[`examples/plot_pops_regression.py`](https://github.com/POPS-UQ/popsregression/blob/main/examples/plot_pops_regression.py).
-
-## A misspecified, low-noise problem
-
-We create a target function that a 4th-degree polynomial cannot perfectly
-reproduce. This is the *misspecification*: the model is structurally unable to
-capture the true function, regardless of how much data we have.
+## The problem
 
 ```python
 import numpy as np
 
-rng = np.random.RandomState(42)
 
-
-def target_function(x):
+def target(x):
     return (x**3 + 0.01 * x**4) * 0.1 + np.sin(x) * x * 10.0
 
 
-x_test = np.linspace(-11, 11, 200)
-y_test = target_function(x_test)
+def features(x):
+    return np.vander(x, 5, increasing=True)   # 1, x, ..., x^4  (P = 5)
+
+
+rng = np.random.RandomState(1042)
+x_train = np.sort(np.append(rng.uniform(-10, 10, 10), [-10.0, 10.0]))
+X_train, y_train = features(x_train), target(x_train)
+x_dense = np.linspace(-10, 10, 401)
+X_dense = features(x_dense)
 ```
 
-## Fitting at increasing training set sizes
+No quartic reproduces the target, whatever the amount of data: the model is
+[misspecified](glossary.md#surrogate-engine-and-misspecification), and the
+data carry no noise.
 
-We compare `POPSRegression` and `BayesianRidge` for `N = 10, 30, 500` training
-points. As `N` increases, the `BayesianRidge` epistemic uncertainty shrinks to
-near-zero, but the POPS misspecification uncertainty persists because the
-polynomial is fundamentally unable to fit the target.
+## Fitting
 
 ```python
 from sklearn.linear_model import BayesianRidge
-from sklearn.preprocessing import PolynomialFeatures
+from popsregression import POPSEllipseRegression, POPSRegression
 
-from popsregression import POPSRegression
-
-for n_samples in [10, 30, 500]:
-    # Generate training data (no noise — purely deterministic)
-    x_train = np.sort(
-        np.append(rng.uniform(-1, 1, n_samples), np.linspace(-1, 1, 2)) * 10
-    )
-    y_train = target_function(x_train)
-
-    poly = PolynomialFeatures(degree=4, include_bias=True)
-    X_train = poly.fit_transform(x_train.reshape(-1, 1))
-    X_test = poly.fit_transform(x_test.reshape(-1, 1))
-
-    # POPS Regression: mean, combined std, and min/max posterior bounds
-    pops = POPSRegression(resampling_method="sobol", resample_density=10.0)
-    pops.fit(X_train, y_train)
-    y_pred, y_std, y_max, y_min = pops.predict(
-        X_test, return_std=True, return_bounds=True
-    )
-
-    # BayesianRidge (epistemic uncertainty only, excluding aleatoric alpha_)
-    br = BayesianRidge(fit_intercept=False)
-    br.fit(X_train, y_train)
-    br_pred = br.predict(X_test)
-    br_epistemic_std = np.sqrt(np.sum(np.dot(X_test, br.sigma_) * X_test, axis=1))
+ridge = BayesianRidge(fit_intercept=False).fit(X_train, y_train)
+hypercube = POPSRegression(minimum_relative_correction=0.0).fit(X_train, y_train)
+ellipse = POPSEllipseRegression().fit(X_train, y_train)
+eb = POPSEllipseRegression(regularization="empirical-bayes").fit(X_train, y_train)
+# The target lies in [-144.4, 136.9] on [-10, 10]; y_bounds is known in advance.
+pac = POPSEllipseRegression(regularization="PAC", y_bounds=(-160, 160))
+pac.fit(X_train, y_train)
 ```
 
-Plotting the POPS `±2σ` band (orange), the POPS min/max envelope (grey), and the
-`BayesianRidge` epistemic-only `±2σ` band (green) against the truth (black)
-produces the following comparison.
+## Intervals
 
-![POPS vs BayesianRidge uncertainty](images/example.png)
-
-**Result**
-
-- **N = 10**: Both methods show wide uncertainty, but POPS is wider and provides
-  better coverage of the true function.
-- **N = 30**: The `BayesianRidge` epistemic uncertainty has already shrunk
-  significantly, while POPS correctly maintains wider bands where the polynomial
-  deviates from the truth.
-- **N = 500**: The `BayesianRidge` epistemic uncertainty is nearly invisible,
-  yet the polynomial still cannot match the oscillatory target. POPS maintains
-  honest uncertainty that reflects this structural limitation.
-
-For low-noise misspecified models, more data reduces only the *epistemic*
-component of the uncertainty; POPS captures the *misspecification* component
-that remains.
-
-## Posterior types
-
-`POPSRegression` supports two posterior forms over the pointwise corrections:
-
-- `'hypercube'` (default): fits a PCA-aligned hypercube to the corrections,
-  giving conservative bounds suitable for most use cases.
-- `'ensemble'`: uses the raw pointwise corrections directly as posterior
-  samples.
-
-`minimum_relative_error=0.0` below keeps every training point in the posterior
-estimate rather than only those the model fits poorly.
+Every panel of the figure shows the same two exact central intervals of the
+[parameter-only predictive](glossary.md#parameter-only-predictive-no-aleatoric-term),
+95.45% and 99.9%:
 
 ```python
-for posterior in ["ensemble", "hypercube"]:
-    pops = POPSRegression(
-        posterior=posterior,
-        resampling_method="uniform",
-        resample_density=10.0,
-        minimum_relative_error=0.0,
-    )
-    pops.fit(X_train, y_train)
-    y_pred, y_std, y_max, y_min = pops.predict(
-        X_test, return_std=True, return_bounds=True
-    )
+lo, hi = eb.predict_interval(X_dense, level=0.9545)           # ellipse family
+mean = ridge.predict(X_dense)                                  # Bayesian ridge:
+std = np.sqrt(np.einsum("ij,jk,ik->i", X_dense, ridge.sigma_, X_dense))
+draws = hypercube.predict(X_dense)[:, None] + X_dense @ hypercube.posterior_samples_
 ```
+
+Bayesian ridge uses the weight posterior `sigma_` only; its fitted noise
+precision `alpha_` is never used. The hypercube intervals are empirical
+quantiles of its parameter draws.
+
+![Quartic surrogate](images/example_polynomial.png)
+
+Rows are N = 10 and N = 100 training points (plus the two endpoints). The
+labels give the held-out coverage of both intervals on a dense grid.
+
+- The Bayesian ridge uncertainty contracts as N grows (95.45% coverage 0.16
+  and 0.09), although the approximation error does not.
+- The POPS posteriors keep a finite width.
+- At N = 10 the bare ellipse misses part of the domain. Ellipse+EB and
+  Ellipse+PAC restore the coverage.
+- Ellipse+PAC is much broader at N = 10: with 6 certification units per fold,
+  its bound can only justify a hyperposterior close to its prior. At N = 100
+  it is comparable to Ellipse+EB, with a non-vacuous bound of 7.0 nats against
+  a trivial ceiling of 9.7.
+
+Repeated-split versions of this comparison, including Bayesian stacking,
+PVI, PACm and PAC²-T, are in [Studies](studies.md).

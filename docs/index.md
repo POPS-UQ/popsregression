@@ -1,54 +1,73 @@
 # popsregression
 
 The Python implementation of the POPS (Pointwise Optimal Parameter Sets)
-algorithm. [`POPSRegression`][popsregression.POPSRegression] is a
-[scikit-learn](https://scikit-learn.org) compatible estimator extending
-[`BayesianRidge`](https://scikit-learn.org/stable/modules/generated/sklearn.linear_model.BayesianRidge.html)
-with model misspecification uncertainty.
+approach to misspecification-aware linear regression for near-deterministic
+surrogate models. Two estimators with the familiar `fit` / `predict` usage
+are provided; their numerical kernels are written in
+[JAX](https://jax.readthedocs.io) (see [Usage](usage.md#backend)):
 
-**Method and theory** — concepts, algorithm, tutorials, citation and the Julia
-implementation — are documented at
-[pops-uq.github.io](https://pops-uq.github.io).
-**These pages** cover this package: installation, [usage](usage.md) and the
-[API reference](api.md).
+- [`POPSRegression`][popsregression.POPSRegression] extends Bayesian ridge
+  regression with the POPS hypercube or ensemble posterior.
+- [`POPSEllipseRegression`][popsregression.POPSEllipseRegression] fits a
+  uniform-ellipsoid posterior with an exact predictive density. It has an
+  optional empirical-Bayes layer, and a PAC construction that comes with a
+  finite-sample bound.
+
+**Method and theory** — concepts, algorithm, tutorials and citations — are documented at
+[pops-uq.github.io](https://pops-uq.github.io). The [Julia implementation](https://github.com/POPS-UQ/POPSRegression.jl) is maintained separately. **These pages** cover this
+package. Specialised terms are defined in the [glossary](glossary.md).
 
 ## Installation
 
 ```bash
-pip install popsregression
+python -m pip install "popsregression @ git+https://github.com/POPS-UQ/popsregression.git@jax-integration"
 ```
 
-Requires Python >= 3.9. Dependencies: `scikit-learn>=1.6.1`, `scipy>=1.6.0`,
-`numpy>=1.20.0`.
+Requires Python >= 3.10. Dependencies: `jax>=0.4.35`, `scipy>=1.7.0`,
+`numpy>=1.22.0`. scikit-learn is not required.
 
 ## Quick start
 
 ```python
-from popsregression import POPSRegression
+from popsregression import POPSEllipseRegression, POPSRegression
 
 X_train, X_test, y_train, y_test = ...
 
-# fit_intercept=False by default
-model = POPSRegression()
-model.fit(X_train, y_train)
-
-# Combined misspecification + epistemic standard deviation
+# POPS hypercube posterior: mean and misspecification + epistemic std
+model = POPSRegression().fit(X_train, y_train)
 y_pred, y_std = model.predict(X_test, return_std=True)
+
+# Ellipse posterior with the empirical-Bayes finite-data layer
+ellipse = POPSEllipseRegression(regularization="empirical-bayes")
+ellipse.fit(X_train, y_train)
+lo, hi = ellipse.predict_interval(X_test, level=0.9545)
+fields = ellipse.sample_predictions(X_test, 1000)  # joint draws for propagation
+
+# The same with a PAC-Bayes bound; y_bounds must be known in advance
+pac = POPSEllipseRegression(regularization="PAC", y_bounds=(y_lower, y_upper))
+pac.fit(X_train, y_train)
+pac.certificate_.raw_bound
 ```
 
-- [Usage](usage.md) — fitting, prediction, parameter choice
-- [API reference](api.md) — signatures, parameters, attributes
-- [Example: POPS vs BayesianRidge](example.md) — runnable comparison
+- [PAC-Ellipse regression with JAX](pac-ellipse.md) walks through fitting, certification and propagation.
+- [Usage](usage.md): fitting, prediction and parameters of `POPSRegression`
+- [Ellipse posteriors](ellipse.md): `POPSEllipseRegression`, including the
+  PAC protocol
+- [Example](example.md): a runnable comparison
+- [Studies](studies.md): the paper's studies and comparison methods
+- [API reference](api.md): signatures, parameters, attributes
+- [Glossary](glossary.md)
 
 ## Development
 
 Source and issue tracker:
 [github.com/POPS-UQ/popsregression](https://github.com/POPS-UQ/popsregression).
 
-```bash
-pytest -vsl popsregression   # tests
+The repository is managed with [uv](https://docs.astral.sh/uv/), which
+resolves the pinned environment from `uv.lock`:
 
-pixi run test                # or, with pixi
-pixi run lint
-pixi run build-doc
+```bash
+uv run --group test pytest -vsl popsregression examples/comparisons   # tests
+uv run --group lint ruff check popsregression                         # linter
+uv run --group doc mkdocs serve                                       # docs
 ```
