@@ -31,9 +31,15 @@ theme:
 nav:
   - Home: index.md
   - Usage: usage.md
+  - "Ellipse posteriors": ellipse.md
+  - "Example: POPS vs Bayesian ridge": example.md
+  - Studies: studies.md
   - API reference: api.md
-  - "Example: POPS vs BayesianRidge": example.md
+  - Glossary: glossary.md
   - POPS method site: https://pops-uq.github.io/
+
+validation:
+  anchors: warn
 
 plugins:
   - search
@@ -53,9 +59,14 @@ plugins:
 
 markdown_extensions:
   - admonition
+  - pymdownx.arithmatex:
+      generic: true
   - pymdownx.highlight:
       anchor_linenums: true
   - pymdownx.inlinehilite
   - pymdownx.superfences
   - toc:
       permalink: true
+
+extra_javascript:
+  - https://unpkg.com/mathjax@3/es5/tex-mml-chtml.js
