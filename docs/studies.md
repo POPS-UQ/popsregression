@@ -1,7 +1,7 @@
 # Studies and comparison methods
 
 The numerical studies of the paper are scripts in
-[`examples/`](https://github.com/POPS-UQ/popsregression/tree/main/examples).
+[`examples/`](https://github.com/POPS-UQ/popsregression/tree/jax-integration/examples).
 The comparison methods they use are deliberately **not** part of the package.
 They are baselines, not POPS models, and live in `examples/comparisons/`:
 

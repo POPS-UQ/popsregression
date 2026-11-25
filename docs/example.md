@@ -7,7 +7,7 @@ the POPS hypercube ([`POPSRegression`][popsregression.POPSRegression]) and the
 three settings of
 [`POPSEllipseRegression`][popsregression.POPSEllipseRegression]. The full
 script is
-[`examples/example_polynomial.py`](https://github.com/POPS-UQ/popsregression/blob/main/examples/example_polynomial.py).
+[`examples/example_polynomial.py`](https://github.com/POPS-UQ/popsregression/blob/jax-integration/examples/example_polynomial.py).
 Terms are defined in the [glossary](glossary.md).
 
 ## The problem

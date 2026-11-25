@@ -1,6 +1,6 @@
 # PAC-Ellipse regression with JAX
 
-Use `POPSEllipseRegression(regularization="PAC")` when you want an ellipsoid predictive distribution and a finite-sample certificate for its population log risk. Install the [JAX integration branch](https://github.com/POPS-UQ/popsregression/tree/jax-integration#installation) to run this example.
+Use `POPSEllipseRegression(regularization="PAC")` when you want an ellipsoid predictive distribution and a finite-sample certificate for its population log risk. Install the [JAX integration branch](index.md#installation) to run this example.
 
 ## Fit a bounded simulator response
 

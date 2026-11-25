@@ -20,7 +20,7 @@ package. Specialised terms are defined in the [glossary](glossary.md).
 ## Installation
 
 ```bash
-pip install popsregression
+python -m pip install "popsregression @ git+https://github.com/POPS-UQ/popsregression.git@jax-integration"
 ```
 
 Requires Python >= 3.10. Dependencies: `jax>=0.4.35`, `scipy>=1.7.0`,
