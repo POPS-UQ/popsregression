@@ -1,18 +1,34 @@
-popsregression
-=================================================
+# popsregression
 
-FULL README / DOCS REMOVED FOR ANONYMOUS REVIEW
+Post-Bayesian regression for misspecified, near-deterministic models. This is the JAX implementation of **Pointwise Optimal Parameter Sets (POPS)** for models linear in their parameters, including polynomial surrogates and linear interatomic potentials.
 
-SEE `POPSEllipseRegression` BELOW FOR PAC IMPLEMENTATION
+A single coefficient vector can minimize the total training loss while leaving systematic residuals on individual observations. POPS uses pointwise constrained fits to estimate how far those coefficients must vary to account for model-form error. Sampling whole coefficient vectors lets that uncertainty propagate to downstream observables.
 
-**Dependencies**: jax >= 0.4.35, scipy >= 1.7.0, numpy >= 1.22.0 (Python >= 3.10). scikit-learn is not required.
+- **`POPSRegression`** constructs the pointwise ensemble or its PCA-aligned hypercube.
+- **`POPSEllipseRegression`** fits an ellipsoidal parameter distribution with optional empirical-Bayes or PAC-Bayes regularization.
+
+[Method and tutorials](https://pops-uq.github.io/) · [Python documentation for this branch](docs/index.md) · [Kermode group regression demo](https://kermodegroup.github.io/demos/regression-demo.html) · [Standalone Julia implementation](https://github.com/POPS-UQ/POPSRegression.jl)
+
+## Installation
+
+Install this checkout with Python 3.10 or newer. The numerical dependencies are JAX, SciPy and NumPy.
+
+```bash
+git clone --branch jax-integration https://github.com/POPS-UQ/popsregression.git
+cd popsregression
+python -m pip install -e .
+```
 
 ## Quick start
 
 ```python
+import numpy as np
 from popsregression import POPSRegression
 
-X_train, X_test, y_train, y_test = ...
+x = np.linspace(-1, 1, 32)
+X_train = np.polynomial.legendre.legvander(x, 4)
+y_train = np.sin(2 * np.pi * x) + 0.3 * x**2
+X_test = np.polynomial.legendre.legvander(np.linspace(-1, 1, 201), 4)
 
 # Fit POPSRegression
 # fit_intercept=False by default
@@ -68,7 +84,7 @@ The Bayesian ridge parameters of the mean fit (`max_iter`, `tol`, `alpha_1`,
 | `coef_`, `intercept_` | Regression coefficients (posterior mean) and intercept |
 | `sigma_` | Epistemic variance-covariance matrix |
 | `misspecification_sigma_` | Misspecification variance-covariance matrix from POPS |
-| `posterior_samples_` | Samples from the POPS posterior |
+| `posterior_samples_` | Weight perturbations, with one sample per column |
 | `alpha_` | Estimated noise precision (not used for prediction) |
 | `pointwise_corrections_`, `leverage_`, `selected_` | Pointwise corrections, leverages and the points kept for the posterior |
 
@@ -108,8 +124,8 @@ fields = eb.sample_predictions(X_test, 1000)          # joint draws for propagat
 All predictions refer to parameter uncertainty only; no noise term is added.
 The PAC bound certifies the log risk of the predictive density, not interval
 coverage. See the
-[ellipse documentation](https://POPS-UQ.github.io/popsregression/ellipse/)
-and the [glossary](https://POPS-UQ.github.io/popsregression/glossary/) for the
+[ellipse documentation](docs/ellipse.md)
+and the [glossary](docs/glossary.md) for the
 terms used above.
 
 ## Comparison methods and paper studies
@@ -170,7 +186,26 @@ Without uv, `pip install -e ".[examples]"` and run the tools directly.
 
 ## Citation
 
-> *COMING SOON*
+> *Parameter uncertainties for imperfect surrogate models in the low-noise regime*
+>
+> TD Swinburne and D Perez, [Machine Learning: Science and Technology 2025](https://doi.org/10.1088/2632-2153/ad9fce)
 
-## AI Usage
-LLM tools were used to produce fuller documentation and some test cases. All code was reviewed by a human. 
+```bibtex
+@article{swinburne2025,
+    author={Swinburne, Thomas and Perez, Danny},
+    title={Parameter uncertainties for imperfect surrogate models in the low-noise regime},
+    journal={Machine Learning: Science and Technology},
+    doi={10.1088/2632-2153/ad9fce},
+    year={2025}
+}
+```
+
+For the PAC-Bayes construction, see Thomas D. Swinburne, Omar Hussein, Ian Lynch and Danny Perez, [PAC-Bayesian regression for misspecified, near-deterministic surrogate models](https://openreview.net/forum?id=gD3LoosP0w).
+
+## Contributors
+
+Thomas D. Swinburne and Danny Perez developed the original POPS method. James Kermode contributed the Gaussian parameter prior for the ellipsoid shape and its initialization in [PR #15](https://github.com/POPS-UQ/popsregression/pull/15). The [JAX adaptation](https://github.com/POPS-UQ/popsregression/commit/8c129db) uses the prior scale learned by the Bayesian ridge fit. Enable it with `prior_kl=True` on `POPSEllipseRegression`.
+
+## AI usage
+
+Claude assisted with documentation and test cases. Thomas D. Swinburne reviewed the code described in the original release.

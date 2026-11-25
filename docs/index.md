@@ -13,9 +13,8 @@ are provided; their numerical kernels are written in
   optional empirical-Bayes layer, and a PAC construction that comes with a
   finite-sample bound.
 
-**Method and theory** — concepts, algorithm, tutorials, citation and the Julia
-implementation — are documented at
-[pops-uq.github.io](https://pops-uq.github.io). **These pages** cover this
+**Method and theory** — concepts, algorithm, tutorials and citations — are documented at
+[pops-uq.github.io](https://pops-uq.github.io). The [Julia implementation](https://github.com/POPS-UQ/POPSRegression.jl) is maintained separately. **These pages** cover this
 package. Specialised terms are defined in the [glossary](glossary.md).
 
 ## Installation

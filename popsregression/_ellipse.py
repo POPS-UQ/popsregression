@@ -391,8 +391,9 @@ class _EllipsoidPosterior(BaseEstimator):
 
     References
     ----------
-    .. [1] Swinburne, T.D. et al. (2026). Hierarchical PAC-Bayes
-           ellipsoid posteriors for misspecified surrogate models.
+    .. [1] Swinburne, T.D., Hussein, O., Lynch, I. and Perez, D. (2026).
+           PAC-Bayesian regression for misspecified, near-deterministic
+           surrogate models. https://openreview.net/forum?id=gD3LoosP0w
            NeurIPS Sim2Science workshop.
 
     .. [2] Swinburne, T.D. and Perez, D. (2025).
