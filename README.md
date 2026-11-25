@@ -1,5 +1,9 @@
 # popsregression
 
+[![tests](https://github.com/POPS-UQ/popsregression/actions/workflows/python-app.yml/badge.svg?branch=main)](https://github.com/POPS-UQ/popsregression/actions/workflows/python-app.yml)
+[![codecov](https://codecov.io/gh/POPS-UQ/popsregression/graph/badge.svg?token=L0XPWwoPLw)](https://codecov.io/gh/POPS-UQ/popsregression)
+[![docs](https://img.shields.io/badge/docs-POPS--UQ-blue)](https://pops-uq.github.io/implementations/python/)
+
 Post-Bayesian regression for misspecified, near-deterministic models. This is the JAX implementation of **Pointwise Optimal Parameter Sets (POPS)** for models linear in their parameters, including polynomial surrogates and linear interatomic potentials.
 
 A single coefficient vector can minimize the total training loss while leaving systematic residuals on individual observations. POPS uses pointwise constrained fits to estimate how far those coefficients must vary to account for model-form error. Sampling whole coefficient vectors lets that uncertainty propagate to downstream observables.
@@ -7,7 +11,7 @@ A single coefficient vector can minimize the total training loss while leaving s
 - **`POPSRegression`** constructs the pointwise ensemble or its PCA-aligned hypercube.
 - **`POPSEllipseRegression`** fits an ellipsoidal parameter distribution with optional empirical-Bayes or PAC-Bayes regularization.
 
-[Method and tutorials](https://pops-uq.github.io/) · [Python documentation for this branch](docs/index.md) · [Kermode group regression demo](https://kermodegroup.github.io/demos/regression-demo.html) · [Standalone Julia implementation](https://github.com/POPS-UQ/POPSRegression.jl)
+[Method and tutorials](https://pops-uq.github.io/) · [Python documentation](https://pops-uq.github.io/implementations/python/) · [Kermode group regression demo](https://kermodegroup.github.io/demos/regression-demo.html) · [Standalone Julia implementation](https://github.com/POPS-UQ/POPSRegression.jl)
 
 ## Installation
 
