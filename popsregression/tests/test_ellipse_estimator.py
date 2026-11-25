@@ -602,6 +602,15 @@ def test_prior_kl_sets_the_width_of_an_unconstrained_direction(prior):
     assert_allclose(model.coef_, bare.coef_)
 
 
+def test_prior_kl_with_strong_whitening_of_a_null_feature():
+    X, y = _unconstrained_feature_data()
+    model = _EllipsoidPosterior(
+        rank=4, prior_kl=True, whiten_ridge=2e-11, mode_threshold=2e-11, random_state=0
+    ).fit(X, y)
+    variance = model.ellipsoid_B_[3, 3] / (model._projection_dim + 2)
+    assert_allclose(variance, 1.0 / model._prior_scale, rtol=1e-3)
+
+
 def test_prior_kl_term_and_its_minimum():
     from popsregression._ellipse import _prior_kl
 

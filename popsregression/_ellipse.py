@@ -91,6 +91,7 @@ def _fit_ellipsoid(
     max_iter,
     optimize_center,
     prior=None,
+    factor_transform=None,
 ):
     """Continuation L-BFGS over the barrier schedule ``rhos``.
 
@@ -101,17 +102,13 @@ def _fit_ellipsoid(
     stage and the number of iterations of every stage.
     """
     n_dim, rank = U.shape
-    if optimize_center:
-        x0 = jnp.concatenate([center, U.ravel()])
+    x0 = jnp.concatenate([center, U.ravel()]) if optimize_center else U.ravel()
 
-        def split(x):
-            return x[:n_dim], x[n_dim:].reshape(n_dim, rank)
-
-    else:
-        x0 = U.ravel()
-
-        def split(x):
-            return center, x.reshape(n_dim, rank)
+    def split(x):
+        factor = x[-n_dim * rank :].reshape(n_dim, rank)
+        if factor_transform is not None:
+            factor = factor_transform @ factor
+        return (x[:n_dim] if optimize_center else center), factor
 
     def stage(x, rho):
         def loss(x):
@@ -529,6 +526,7 @@ class _EllipsoidPosterior(BaseEstimator):
         b0, center = self._setup_baseline(Xc, yc, Z, sample_weight)
         U0 = 1e-3 * rng.randn(n_dim * rank).reshape(n_dim, rank)
         prior = self._shape_prior() if self.prior_kl else None
+        factor_transform = None
         if prior is not None:
             # Start the widths at the prior optimum U U^T = (d + 2) M^-1 (its
             # widest directions), not at a tiny random factor: there B is
@@ -536,7 +534,11 @@ class _EllipsoidPosterior(BaseEstimator):
             # B^-1 U dwarfs U.
             evals, evecs = np.linalg.eigh(prior[0])
             evals = np.maximum(evals, np.finfo(float).tiny)
-            U0 = evecs[:, :rank] * np.sqrt(prior[2] / evals[:rank])
+            # Optimize dimensionless factors in prior units throughout the fit.
+            # Whitening can make a null feature's factor tiny while its KL
+            # curvature is enormous, ill-conditioning the L-BFGS line search.
+            factor_transform = evecs * np.sqrt(prior[2] / evals)
+            U0 = np.eye(n_dim, rank)
         constants = ball_constants(self._projection_dim)
         data = (jnp.asarray(Z), yc, b0, sample_weight, float(self.delta) ** 2)
         center, U, value, stage_iterations = _fit_ellipsoid(
@@ -549,6 +551,7 @@ class _EllipsoidPosterior(BaseEstimator):
             int(self.max_iter),
             optimize_center=bool(self.optimize_center),
             prior=prior,
+            factor_transform=factor_transform,
         )
         self.prior_kl_ = None
         if prior is not None:
